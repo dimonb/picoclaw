@@ -26,7 +26,6 @@ type AgentInstance struct {
 	MaxIterations             int
 	MaxTokens                 int
 	Temperature               float64
-	ThinkingLevel             ThinkingLevel
 	ContextWindow             int
 	SummarizeMessageThreshold int
 	SummarizeTokenPercent     int
@@ -125,12 +124,6 @@ func NewAgentInstance(
 		temperature = *defaults.Temperature
 	}
 
-	var thinkingLevelStr string
-	if mc, err := cfg.GetModelConfig(model); err == nil {
-		thinkingLevelStr = mc.ThinkingLevel
-	}
-	thinkingLevel := parseThinkingLevel(thinkingLevelStr)
-
 	summarizeMessageThreshold := defaults.SummarizeMessageThreshold
 	if summarizeMessageThreshold == 0 {
 		summarizeMessageThreshold = 20
@@ -216,7 +209,6 @@ func NewAgentInstance(
 		MaxIterations:             maxIter,
 		MaxTokens:                 maxTokens,
 		Temperature:               temperature,
-		ThinkingLevel:             thinkingLevel,
 		ContextWindow:             maxTokens,
 		SummarizeMessageThreshold: summarizeMessageThreshold,
 		SummarizeTokenPercent:     summarizeTokenPercent,
