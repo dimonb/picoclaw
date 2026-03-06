@@ -8,6 +8,29 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 )
 
+// ThinkingLevel controls how the provider sends thinking parameters (main compatibility).
+// Session-level resolution uses string internally; this type is used for agent default from model config.
+type ThinkingLevel string
+
+const (
+	ThinkingOff      ThinkingLevel = "off"
+	ThinkingLow      ThinkingLevel = "low"
+	ThinkingMedium   ThinkingLevel = "medium"
+	ThinkingHigh     ThinkingLevel = "high"
+	ThinkingXHigh    ThinkingLevel = "xhigh"
+	ThinkingAdaptive ThinkingLevel = "adaptive"
+)
+
+// parseThinkingLevel normalizes a config string to a ThinkingLevel (main compatibility).
+// Case-insensitive and whitespace-tolerant. Returns ThinkingOff for unknown or empty.
+func parseThinkingLevel(level string) ThinkingLevel {
+	if normalized, ok := normalizeThinkingLevel(level); ok {
+		return ThinkingLevel(normalized)
+	}
+	return ThinkingOff
+}
+
+// Unexported string constants for internal use (session, downgrade, aliases).
 const (
 	thinkingOff      = "off"
 	thinkingMinimal  = "minimal"
@@ -50,6 +73,10 @@ func resolveThinkingLevel(cfg *config.Config, agent *AgentInstance, sessionKey s
 	}
 	if modelLevel := modelThinkingLevel(cfg, agent.Model); modelLevel != "" {
 		return modelLevel
+	}
+	// Main compatibility: fall back to agent default (from model config at creation).
+	if agent.ThinkingLevel != ThinkingOff {
+		return string(agent.ThinkingLevel)
 	}
 	if cfg != nil {
 		if level, ok := normalizeThinkingLevel(cfg.Agents.Defaults.Thinking); ok {
