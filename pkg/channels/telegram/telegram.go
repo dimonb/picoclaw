@@ -164,23 +164,31 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 }
 
 func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+	_, err := c.SendMessageWithID(ctx, msg.ChatID, msg.Content)
+	return err
+}
+
+// SendMessageWithID implements an optional interface for AgentLoop to send a message synchronously and get the MessageID.
+func (c *TelegramChannel) SendMessageWithID(ctx context.Context, chatID string, content string) (string, error) {
 	if !c.IsRunning() {
-		return channels.ErrNotRunning
+		return "", channels.ErrNotRunning
 	}
 
-	chatID, err := parseChatID(msg.ChatID)
+	cid, err := parseChatID(chatID)
 	if err != nil {
-		return fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed)
+		return "", fmt.Errorf("invalid chat ID %s: %w", chatID, channels.ErrSendFailed)
 	}
 
-	if msg.Content == "" {
-		return nil
+	if content == "" {
+		return "", nil
 	}
 
 	// The Manager already splits messages to ≤4000 chars (WithMaxMessageLength),
 	// so msg.Content is guaranteed to be within that limit. We still need to
 	// check if HTML expansion pushes it beyond Telegram's 4096-char API limit.
-	queue := []string{msg.Content}
+	queue := []string{content}
+	var lastMsgID int
+
 	for len(queue) > 0 {
 		chunk := queue[0]
 		queue = queue[1:]
@@ -200,31 +208,38 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 			continue
 		}
 
-		if err := c.sendHTMLChunk(ctx, chatID, htmlContent, chunk); err != nil {
-			return err
+		msgID, err := c.sendHTMLChunk(ctx, cid, htmlContent, chunk)
+		if err != nil {
+			return "", err
 		}
+		lastMsgID = msgID
 	}
 
-	return nil
+	if lastMsgID == 0 {
+		return "", nil
+	}
+	return fmt.Sprintf("%d", lastMsgID), nil
 }
 
 // sendHTMLChunk sends a single HTML message, falling back to the original
 // markdown as plain text on parse failure so users never see raw HTML tags.
-func (c *TelegramChannel) sendHTMLChunk(ctx context.Context, chatID int64, htmlContent, mdFallback string) error {
+func (c *TelegramChannel) sendHTMLChunk(ctx context.Context, chatID int64, htmlContent, mdFallback string) (int, error) {
 	tgMsg := tu.Message(tu.ID(chatID), htmlContent)
 	tgMsg.ParseMode = telego.ModeHTML
 
-	if _, err := c.bot.SendMessage(ctx, tgMsg); err != nil {
+	msg, err := c.bot.SendMessage(ctx, tgMsg)
+	if err != nil {
 		logger.ErrorCF("telegram", "HTML parse failed, falling back to plain text", map[string]any{
 			"error": err.Error(),
 		})
 		tgMsg.Text = mdFallback
 		tgMsg.ParseMode = ""
-		if _, err = c.bot.SendMessage(ctx, tgMsg); err != nil {
-			return fmt.Errorf("telegram send: %w", channels.ErrTemporary)
+		msg, err = c.bot.SendMessage(ctx, tgMsg)
+		if err != nil {
+			return 0, fmt.Errorf("telegram send: %w", channels.ErrTemporary)
 		}
 	}
-	return nil
+	return msg.MessageID, nil
 }
 
 // StartTyping implements channels.TypingCapable.

@@ -50,3 +50,10 @@ type PlaceholderRecorder interface {
 type CommandRegistrarCapable interface {
 	RegisterCommands(ctx context.Context, defs []commands.Definition) error
 }
+
+// SyncSender — channels that can bypass the async bus to send a message synchronously.
+// This is typically used by internal tools (like TaskTool) that must immediately
+// receive the generated message ID in order to edit it later.
+type SyncSender interface {
+	SendMessageWithID(ctx context.Context, chatID, content string) (string, error)
+}
