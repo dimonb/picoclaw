@@ -909,6 +909,7 @@ func (al *AgentLoop) runLLMIteration(
 ) (string, int, error) {
 	iteration := 0
 	var finalContent string
+	var directToolOutputs []string
 
 	// Determine effective model tier for this conversation turn.
 	// selectCandidates evaluates routing once and the decision is sticky for
@@ -1241,17 +1242,21 @@ func (al *AgentLoop) runLLMIteration(
 		// Process results in original order (send to user, save to session)
 		for _, r := range agentResults {
 			// Send ForUser content to user immediately if not Silent
-			if !r.result.Silent && r.result.ForUser != "" && opts.SendResponse {
-				al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-					Channel: opts.Channel,
-					ChatID:  opts.ChatID,
-					Content: r.result.ForUser,
-				})
-				logger.DebugCF("agent", "Sent tool result to user",
-					map[string]any{
-						"tool":        r.tc.Name,
-						"content_len": len(r.result.ForUser),
+			if !r.result.Silent && r.result.ForUser != "" {
+				if opts.SendResponse {
+					al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+						Channel: opts.Channel,
+						ChatID:  opts.ChatID,
+						Content: r.result.ForUser,
 					})
+					logger.DebugCF("agent", "Sent tool result to user",
+						map[string]any{
+							"tool":        r.tc.Name,
+							"content_len": len(r.result.ForUser),
+						})
+				} else {
+					directToolOutputs = append(directToolOutputs, r.result.ForUser)
+				}
 			}
 
 			// If tool returned media refs, publish them as outbound media
@@ -1291,6 +1296,10 @@ func (al *AgentLoop) runLLMIteration(
 			// Save tool result message to session
 			agent.Sessions.AddFullMessage(opts.SessionKey, toolResultMsg)
 		}
+	}
+
+	if strings.TrimSpace(finalContent) == "" && len(directToolOutputs) > 0 {
+		finalContent = strings.Join(directToolOutputs, "\n\n")
 	}
 
 	return finalContent, iteration, nil

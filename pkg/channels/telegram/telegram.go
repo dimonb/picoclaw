@@ -183,42 +183,20 @@ func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.Outboun
 		return "", nil
 	}
 
-	// The Manager already splits messages to ≤4000 chars (WithMaxMessageLength),
-	// so msg.Content is guaranteed to be within that limit. We still need to
-	// check if HTML expansion pushes it beyond Telegram's 4096-char API limit.
-	queue := []string{msg.Content}
-	var lastMsgID int
-
-	for len(queue) > 0 {
-		chunk := queue[0]
-		queue = queue[1:]
-
-		htmlContent := markdownToTelegramHTML(chunk)
-
-		if len([]rune(htmlContent)) > 4096 {
-			ratio := float64(len([]rune(chunk))) / float64(len([]rune(htmlContent)))
-			smallerLen := int(float64(4096) * ratio * 0.95) // 5% safety margin
-			if smallerLen < 100 {
-				smallerLen = 100
-			}
-			// Push sub-chunks back to the front of the queue for
-			// re-validation instead of sending them blindly.
-			subChunks := channels.SplitMessage(chunk, smallerLen)
-			queue = append(subChunks, queue...)
-			continue
-		}
-
-		msgID, err := c.sendHTMLChunk(ctx, cid, htmlContent, chunk)
+	chunks := telegramMessageChunks(msg.Content)
+	ids := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		msgID, err := c.sendHTMLChunk(ctx, cid, chunk.HTML, chunk.Markdown)
 		if err != nil {
 			return "", err
 		}
-		lastMsgID = msgID
+		ids = append(ids, strconv.Itoa(msgID))
 	}
 
-	if lastMsgID == 0 {
+	if len(ids) == 0 {
 		return "", nil
 	}
-	return fmt.Sprintf("%d", lastMsgID), nil
+	return strings.Join(ids, ","), nil
 }
 
 // sendHTMLChunk sends a single HTML message, falling back to the original
@@ -278,15 +256,22 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 	if err != nil {
 		return err
 	}
-	mid, err := strconv.Atoi(messageID)
+	messageIDs, err := parseTelegramMessageIDs(messageID)
 	if err != nil {
 		return err
 	}
-	htmlContent := markdownToTelegramHTML(content)
-	editMsg := tu.EditMessageText(tu.ID(cid), mid, htmlContent)
-	editMsg.ParseMode = telego.ModeHTML
-	_, err = c.bot.EditMessageText(ctx, editMsg)
-	return err
+	chunks := telegramMessageChunks(content)
+	if len(messageIDs) != len(chunks) {
+		return fmt.Errorf("telegram edit: chunk count changed from %d to %d", len(messageIDs), len(chunks))
+	}
+
+	for i, mid := range messageIDs {
+		if err := c.editHTMLChunk(ctx, cid, mid, chunks[i].HTML, chunks[i].Markdown); err != nil {
+			return err
+		}
+	}
+
+	return nil
 }
 
 // SendPlaceholder implements channels.PlaceholderCapable.
@@ -602,6 +587,82 @@ func parseChatID(chatIDStr string) (int64, error) {
 	var id int64
 	_, err := fmt.Sscanf(chatIDStr, "%d", &id)
 	return id, err
+}
+
+type telegramMessageChunk struct {
+	Markdown string
+	HTML     string
+}
+
+func telegramMessageChunks(content string) []telegramMessageChunk {
+	queue := []string{content}
+	chunks := make([]telegramMessageChunk, 0, 1)
+
+	for len(queue) > 0 {
+		chunk := queue[0]
+		queue = queue[1:]
+
+		htmlContent := markdownToTelegramHTML(chunk)
+		if len([]rune(htmlContent)) > 4096 {
+			ratio := float64(len([]rune(chunk))) / float64(len([]rune(htmlContent)))
+			smallerLen := int(float64(4096) * ratio * 0.95) // 5% safety margin
+			if smallerLen < 100 {
+				smallerLen = 100
+			}
+			subChunks := channels.SplitMessage(chunk, smallerLen)
+			queue = append(subChunks, queue...)
+			continue
+		}
+
+		chunks = append(chunks, telegramMessageChunk{
+			Markdown: chunk,
+			HTML:     htmlContent,
+		})
+	}
+
+	return chunks
+}
+
+func parseTelegramMessageIDs(messageID string) ([]int, error) {
+	parts := strings.Split(messageID, ",")
+	ids := make([]int, 0, len(parts))
+
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+
+		id, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("telegram edit: empty message ID")
+	}
+
+	return ids, nil
+}
+
+func (c *TelegramChannel) editHTMLChunk(ctx context.Context, chatID int64, messageID int, htmlContent, mdFallback string) error {
+	editMsg := tu.EditMessageText(tu.ID(chatID), messageID, htmlContent)
+	editMsg.ParseMode = telego.ModeHTML
+
+	if _, err := c.bot.EditMessageText(ctx, editMsg); err != nil {
+		logger.ErrorCF("telegram", "HTML edit failed, falling back to plain text", map[string]any{
+			"error": err.Error(),
+		})
+		editMsg.Text = mdFallback
+		editMsg.ParseMode = ""
+		if _, err = c.bot.EditMessageText(ctx, editMsg); err != nil {
+			return fmt.Errorf("telegram edit: %w", channels.ErrTemporary)
+		}
+	}
+
+	return nil
 }
 
 func markdownToTelegramHTML(text string) string {

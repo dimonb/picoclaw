@@ -342,6 +342,48 @@ func (m *countingMockProvider) GetDefaultModel() string {
 	return "counting-mock-model"
 }
 
+type taskToolPlanMockProvider struct {
+	calls int
+}
+
+func (m *taskToolPlanMockProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	m.calls++
+	if m.calls == 1 {
+		return &providers.LLMResponse{
+			ToolCalls: []providers.ToolCall{
+				{
+					ID:   "call_tasktool",
+					Name: "tasktool",
+					Arguments: map[string]any{
+						"action": "create_plan",
+						"tasks": []any{
+							map[string]any{
+								"id":          "step_1",
+								"description": "Inspect direct mode",
+							},
+						},
+					},
+				},
+			},
+		}, nil
+	}
+
+	return &providers.LLMResponse{
+		Content:   "",
+		ToolCalls: []providers.ToolCall{},
+	}, nil
+}
+
+func (m *taskToolPlanMockProvider) GetDefaultModel() string {
+	return "tasktool-mock-model"
+}
+
 // mockCustomTool is a simple mock tool for registration testing
 type mockCustomTool struct{}
 
@@ -656,6 +698,36 @@ func TestToolResult_UserFacingToolDoesSendMessage(t *testing.T) {
 	// User-facing tool should include the output in final response
 	if response != "Command output: hello world" {
 		t.Errorf("Expected 'Command output: hello world', got: %s", response)
+	}
+}
+
+func TestTaskTool_DirectModeWithoutChannelManagerReturnsPlan(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := config.DefaultConfig()
+	cfg.Agents.Defaults.Workspace = tmpDir
+	cfg.Agents.Defaults.Model = "test-model"
+	cfg.Agents.Defaults.MaxTokens = 4096
+	cfg.Agents.Defaults.MaxToolIterations = 4
+
+	msgBus := bus.NewMessageBus()
+	provider := &taskToolPlanMockProvider{}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	response, err := al.ProcessDirect(context.Background(), "make a plan", "cli:default")
+	if err != nil {
+		t.Fatalf("ProcessDirect failed: %v", err)
+	}
+
+	if !strings.Contains(response, "Execution Plan") {
+		t.Fatalf("expected direct-mode response to include the execution plan, got: %q", response)
+	}
+	if !strings.Contains(response, "Inspect direct mode") {
+		t.Fatalf("expected direct-mode response to include the task description, got: %q", response)
 	}
 }
 

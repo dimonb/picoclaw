@@ -836,7 +836,7 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 
 // SendMessageWithID sends a message synchronously via the channel's native API if supported,
 // returning the platform-specific message ID. If the channel does not support SyncSender,
-// it falls back to the async bus and returns an error.
+// it falls back to the async bus and returns an empty message ID with a nil error.
 func (m *Manager) SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (string, error) {
 	ch, ok := m.GetChannel(msg.Channel)
 	if !ok {
@@ -845,21 +845,20 @@ func (m *Manager) SendMessageWithID(ctx context.Context, msg bus.OutboundMessage
 
 	if syncSender, ok := ch.(SyncSender); ok {
 		msgID, err := syncSender.SendMessageWithID(ctx, msg)
-		if err == nil && msgID != "" {
-			return msgID, nil
+		if err != nil {
+			logger.ErrorCF("manager", "SendMessageWithID failed", map[string]any{"error": err, "msgID": msgID})
+			return "", err
 		}
-		logger.ErrorCF("manager", "SendMessageWithID failed", map[string]any{"error": err, "msgID": msgID})
-		if err == nil {
-			err = fmt.Errorf("sync sender returned empty message ID")
-		}
-		return "", err
+		return msgID, nil
 	}
 
 	logger.WarnCF("manager", "channel does not implement SyncSender", map[string]any{"channel": msg.Channel})
 	logger.WarnCF("manager", "falling back to bus publish", nil)
-	m.bus.PublishOutbound(ctx, msg)
+	if err := m.bus.PublishOutbound(ctx, msg); err != nil {
+		return "", err
+	}
 
-	return "", fmt.Errorf("channel does not support returning message ID")
+	return "", nil
 }
 
 // EditMessage synchronously edits an existing message if the channel supports MessageEditor.

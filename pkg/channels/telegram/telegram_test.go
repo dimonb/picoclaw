@@ -50,8 +50,12 @@ func (s *stubConstructor) MultipartRequest(
 
 // successResponse returns a ta.Response that telego will treat as a successful SendMessage.
 func successResponse(t *testing.T) *ta.Response {
+	return successResponseWithID(t, 1)
+}
+
+func successResponseWithID(t *testing.T, id int) *ta.Response {
 	t.Helper()
-	msg := &telego.Message{MessageID: 1}
+	msg := &telego.Message{MessageID: id}
 	b, err := json.Marshal(msg)
 	require.NoError(t, err)
 	return &ta.Response{Ok: true, Result: b}
@@ -199,9 +203,11 @@ func TestSendMessageWithID_LongMessage_HTMLFallback_StopsOnError(t *testing.T) {
 }
 
 func TestSendMessageWithID_MarkdownShortButHTMLLong_MultipleCalls(t *testing.T) {
+	callCount := 0
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
-			return successResponse(t), nil
+			callCount++
+			return successResponseWithID(t, callCount), nil
 		},
 	}
 	ch := newTestChannel(t, caller)
@@ -212,8 +218,24 @@ func TestSendMessageWithID_MarkdownShortButHTMLLong_MultipleCalls(t *testing.T) 
 	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: markdownContent})
 
 	assert.NoError(t, err)
-	assert.Equal(t, "1", msgID)
 	assert.Greater(t, len(caller.calls), 1, "markdown-short but HTML-long message should be split into multiple SendMessage calls")
+	assert.Equal(t, "1,2", msgID)
+}
+
+func TestEditMessage_MultipleChunkIDs(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	content := strings.Repeat("**a** ", 600)
+
+	err := ch.EditMessage(context.Background(), "12345", "1,2", content)
+
+	assert.NoError(t, err)
+	assert.Len(t, caller.calls, 2, "multi-part edit should update every tracked message")
 }
 
 func TestSendMessageWithID_NotRunning(t *testing.T) {
