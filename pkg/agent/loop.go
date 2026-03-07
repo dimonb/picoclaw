@@ -29,6 +29,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/routing"
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/skills"
 	"github.com/sipeed/picoclaw/pkg/state"
 	"github.com/sipeed/picoclaw/pkg/tools"
@@ -48,6 +49,7 @@ type AgentLoop struct {
 	mediaStore     media.MediaStore
 	transcriber    voice.Transcriber
 	cmdRegistry    *commands.Registry
+	taskManager    *session.TaskManager
 }
 
 // processOptions configures how a message is processed
@@ -80,9 +82,6 @@ func NewAgentLoop(
 ) *AgentLoop {
 	registry := NewAgentRegistry(cfg, provider)
 
-	// Register shared tools to all agents
-	registerSharedTools(cfg, msgBus, registry, provider)
-
 	// Set up shared fallback chain
 	cooldown := providers.NewCooldownTracker()
 	fallbackChain := providers.NewFallbackChain(cooldown)
@@ -102,7 +101,11 @@ func NewAgentLoop(
 		summarizing: sync.Map{},
 		fallback:    fallbackChain,
 		cmdRegistry: commands.NewRegistry(commands.BuiltinDefinitions()),
+		taskManager: session.NewTaskManager(filepath.Join(cfg.WorkspacePath(), "tasks")),
 	}
+
+	// Register shared tools to all agents (TaskTool needs task manager from AgentLoop)
+	registerSharedTools(cfg, msgBus, registry, provider, al.taskManager)
 
 	return al
 }
@@ -113,6 +116,7 @@ func registerSharedTools(
 	msgBus *bus.MessageBus,
 	registry *AgentRegistry,
 	provider providers.LLMProvider,
+	taskManager *session.TaskManager,
 ) {
 	for _, agentID := range registry.ListAgentIDs() {
 		agent, ok := registry.GetAgent(agentID)
@@ -231,6 +235,12 @@ func registerSharedTools(
 			} else {
 				logger.WarnCF("agent", "spawn tool requires subagent to be enabled", nil)
 			}
+		}
+
+		// Task planning tool
+		if cfg.Tools.IsToolEnabled("tasktool") {
+			taskTool := tools.NewTaskTool(taskManager, cfg.Tools.TaskTool.Icons)
+			agent.Tools.Register(taskTool)
 		}
 	}
 }
@@ -437,6 +447,26 @@ func (al *AgentLoop) RegisterTool(tool tools.Tool) {
 
 func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	al.channelManager = cm
+	al.bindAdvancedMessageManagers(cm)
+}
+
+// bindAdvancedMessageManagers wires up channel callbacks to any tools that
+// require asynchronous, advanced message management (e.g., TaskTool)
+func (al *AgentLoop) bindAdvancedMessageManagers(cm *channels.Manager) {
+	al.registry.ForEachToolInstance(func(t tools.Tool) {
+		if advancedManager, ok := t.(tools.AdvancedMessageManager); ok {
+			advancedManager.SetCallbacks(
+				// sendPlaceholder
+				func(channelName, chatID, content string) (string, error) {
+					return cm.SendMessageWithID(context.Background(), channelName, chatID, content)
+				},
+				// editMessage
+				func(channelName, chatID, messageID, content string) error {
+					return cm.EditMessage(context.Background(), channelName, chatID, messageID, content)
+				},
+			)
+		}
+	})
 }
 
 // SetMediaStore injects a MediaStore for media lifecycle management.

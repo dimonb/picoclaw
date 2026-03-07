@@ -698,6 +698,19 @@ type ToolsConfig struct {
 	Subagent        ToolConfig         `json:"subagent"                                                 envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
 	WebFetch        ToolConfig         `json:"web_fetch"                                                envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
 	WriteFile       ToolConfig         `json:"write_file"                                               envPrefix:"PICOCLAW_TOOLS_WRITE_FILE_"`
+	TaskTool        TaskToolConfig     `json:"tasktool"`
+}
+
+type TaskToolConfig struct {
+	ToolConfig `envPrefix:"PICOCLAW_TOOLS_TASK_TOOL_"`
+	Icons      TaskToolIconsConfig `json:"icons"`
+}
+
+type TaskToolIconsConfig struct {
+	Pending    string `json:"pending"     env:"PICOCLAW_TOOLS_TASK_TOOL_ICONS_PENDING"    default:"⚪"`
+	InProgress string `json:"in_progress" env:"PICOCLAW_TOOLS_TASK_TOOL_ICONS_IN_PROGRESS" default:"🟡"`
+	Completed  string `json:"completed"   env:"PICOCLAW_TOOLS_TASK_TOOL_ICONS_COMPLETED"  default:"🟢"`
+	Failed     string `json:"failed"      env:"PICOCLAW_TOOLS_TASK_TOOL_ICONS_FAILED"     default:"🔴"`
 }
 
 type SearchCacheConfig struct {
