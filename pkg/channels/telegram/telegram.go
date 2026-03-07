@@ -164,29 +164,29 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 }
 
 func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	_, err := c.SendMessageWithID(ctx, msg.ChatID, msg.Content)
+	_, err := c.SendMessageWithID(ctx, msg)
 	return err
 }
 
 // SendMessageWithID implements an optional interface for AgentLoop to send a message synchronously and get the MessageID.
-func (c *TelegramChannel) SendMessageWithID(ctx context.Context, chatID string, content string) (string, error) {
+func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (string, error) {
 	if !c.IsRunning() {
 		return "", channels.ErrNotRunning
 	}
 
-	cid, err := parseChatID(chatID)
+	cid, err := parseChatID(msg.ChatID)
 	if err != nil {
-		return "", fmt.Errorf("invalid chat ID %s: %w", chatID, channels.ErrSendFailed)
+		return "", fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed)
 	}
 
-	if content == "" {
+	if msg.Content == "" {
 		return "", nil
 	}
 
 	// The Manager already splits messages to ≤4000 chars (WithMaxMessageLength),
 	// so msg.Content is guaranteed to be within that limit. We still need to
 	// check if HTML expansion pushes it beyond Telegram's 4096-char API limit.
-	queue := []string{content}
+	queue := []string{msg.Content}
 	var lastMsgID int
 
 	for len(queue) > 0 {

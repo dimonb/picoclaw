@@ -1,19 +1,19 @@
 package telegram
 
 import (
-"context"
-"encoding/json"
-"errors"
-"strings"
-"testing"
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"testing"
 
-"github.com/mymmrac/telego"
-ta "github.com/mymmrac/telego/telegoapi"
-"github.com/stretchr/testify/assert"
-"github.com/stretchr/testify/require"
+	"github.com/mymmrac/telego"
+	ta "github.com/mymmrac/telego/telegoapi"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-"github.com/sipeed/picoclaw/pkg/bus"
-"github.com/sipeed/picoclaw/pkg/channels"
+	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/channels"
 )
 
 const testToken = "1234567890:aaaabbbbaaaabbbbaaaabbbbaaaabbbbccc"
@@ -42,8 +42,8 @@ func (s *stubConstructor) JSONRequest(parameters any) (*ta.RequestData, error) {
 }
 
 func (s *stubConstructor) MultipartRequest(
-parameters map[string]string,
-files map[string]ta.NamedReader,
+	parameters map[string]string,
+	files map[string]ta.NamedReader,
 ) (*ta.RequestData, error) {
 	return &ta.RequestData{}, nil
 }
@@ -62,15 +62,15 @@ func newTestChannel(t *testing.T, caller *stubCaller) *TelegramChannel {
 	t.Helper()
 
 	bot, err := telego.NewBot(testToken,
-telego.WithAPICaller(caller),
-telego.WithRequestConstructor(&stubConstructor{}),
+		telego.WithAPICaller(caller),
+		telego.WithRequestConstructor(&stubConstructor{}),
 		telego.WithDiscardLogger(),
 	)
 	require.NoError(t, err)
 
 	base := channels.NewBaseChannel("telegram", nil, nil, nil,
-channels.WithMaxMessageLength(4000),
-)
+		channels.WithMaxMessageLength(4000),
+	)
 	base.SetRunning(true)
 
 	return &TelegramChannel{
@@ -106,7 +106,7 @@ func TestSendMessageWithID_EmptyContent(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	msgID, err := ch.SendMessageWithID(context.Background(), "12345", "")
+	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: ""})
 
 	assert.NoError(t, err)
 	assert.Empty(t, msgID)
@@ -121,7 +121,7 @@ func TestSendMessageWithID_ShortMessage_SingleCall(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	msgID, err := ch.SendMessageWithID(context.Background(), "12345", "Hello, world!")
+	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: "Hello, world!"})
 
 	assert.NoError(t, err)
 	assert.Equal(t, "1", msgID)
@@ -138,7 +138,7 @@ func TestSendMessageWithID_LongMessage_SingleCall(t *testing.T) {
 
 	longContent := strings.Repeat("a", 4000)
 
-	msgID, err := ch.SendMessageWithID(context.Background(), "12345", longContent)
+	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: longContent})
 
 	assert.NoError(t, err)
 	assert.Equal(t, "1", msgID)
@@ -158,7 +158,7 @@ func TestSendMessageWithID_HTMLFallback_PerChunk(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	msgID, err := ch.SendMessageWithID(context.Background(), "12345", "Hello **world**")
+	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: "Hello **world**"})
 
 	assert.NoError(t, err)
 	assert.Equal(t, "1", msgID)
@@ -173,7 +173,7 @@ func TestSendMessageWithID_HTMLFallback_BothFail(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	msgID, err := ch.SendMessageWithID(context.Background(), "12345", "Hello")
+	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: "Hello"})
 
 	assert.Error(t, err)
 	assert.Empty(t, msgID)
@@ -191,7 +191,7 @@ func TestSendMessageWithID_LongMessage_HTMLFallback_StopsOnError(t *testing.T) {
 
 	longContent := strings.Repeat("x", 4001)
 
-	msgID, err := ch.SendMessageWithID(context.Background(), "12345", longContent)
+	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: longContent})
 
 	assert.Error(t, err)
 	assert.Empty(t, msgID)
@@ -209,7 +209,7 @@ func TestSendMessageWithID_MarkdownShortButHTMLLong_MultipleCalls(t *testing.T) 
 	markdownContent := strings.Repeat("**a** ", 600)
 	assert.LessOrEqual(t, len([]rune(markdownContent)), 4000)
 
-	msgID, err := ch.SendMessageWithID(context.Background(), "12345", markdownContent)
+	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: markdownContent})
 
 	assert.NoError(t, err)
 	assert.Equal(t, "1", msgID)
@@ -226,7 +226,7 @@ func TestSendMessageWithID_NotRunning(t *testing.T) {
 	ch := newTestChannel(t, caller)
 	ch.SetRunning(false)
 
-	msgID, err := ch.SendMessageWithID(context.Background(), "12345", "Hello")
+	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{ChatID: "12345", Content: "Hello"})
 
 	assert.ErrorIs(t, err, channels.ErrNotRunning)
 	assert.Empty(t, msgID)
@@ -242,7 +242,7 @@ func TestSendMessageWithID_InvalidChatID(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	msgID, err := ch.SendMessageWithID(context.Background(), "not-a-number", "Hello")
+	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{ChatID: "not-a-number", Content: "Hello"})
 
 	assert.Error(t, err)
 	assert.Empty(t, msgID)
