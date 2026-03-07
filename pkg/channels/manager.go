@@ -851,8 +851,14 @@ func (m *Manager) SendMessageWithID(ctx context.Context, channelName, chatID, co
 		return "", fmt.Errorf("channel %s not found", channelName)
 	}
 
+	msg := bus.OutboundMessage{
+		Channel: channelName,
+		ChatID:  chatID,
+		Content: content,
+	}
+
 	if syncSender, ok := ch.(SyncSender); ok {
-		msgID, err := syncSender.SendMessageWithID(ctx, chatID, content)
+		msgID, err := syncSender.SendMessageWithID(ctx, msg)
 		if err == nil && msgID != "" {
 			return msgID, nil
 		}
@@ -862,11 +868,7 @@ func (m *Manager) SendMessageWithID(ctx context.Context, channelName, chatID, co
 	}
 
 	logger.WarnCF("manager", "falling back to bus publish", nil)
-	m.bus.PublishOutbound(ctx, bus.OutboundMessage{
-		Channel: channelName,
-		ChatID:  chatID,
-		Content: content,
-	})
+	m.bus.PublishOutbound(ctx, msg)
 
 	return "", fmt.Errorf("channel does not support returning message ID")
 }
