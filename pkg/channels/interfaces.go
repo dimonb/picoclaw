@@ -3,6 +3,7 @@ package channels
 import (
 	"context"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/commands"
 )
 
@@ -55,5 +56,5 @@ type CommandRegistrarCapable interface {
 // This is typically used by internal tools (like TaskTool) that must immediately
 // receive the generated message ID in order to edit it later.
 type SyncSender interface {
-	SendMessageWithID(ctx context.Context, chatID, content string) (string, error)
+	SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (string, error)
 }
