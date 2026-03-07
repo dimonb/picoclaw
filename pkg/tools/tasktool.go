@@ -159,20 +159,23 @@ func (t *TaskTool) handleCreatePlan(ctx context.Context, sessionKey, channel, ch
 	st := t.taskManager.CreatePlan(sessionKey, parsedTasks)
 
 	content := t.formatPlanMessage(st.Tasks)
+	summary := fmt.Sprintf("Plan created with %d tasks.\nTasks: %s", len(parsedTasks), mustMarshalJSON(parsedTasks))
 
-	// Send message through callback if available
+	delivered := false
+	var deliveryErr error
 	if t.sendPlaceholder != nil {
 		msgID, err := t.sendPlaceholder(ctx, channel, chatID, content)
-		if err == nil && msgID != "" {
-			t.taskManager.SetMessageID(sessionKey, msgID)
+		if err == nil {
+			delivered = true
+			if msgID != "" {
+				t.taskManager.SetMessageID(sessionKey, msgID)
+			}
+		} else {
+			deliveryErr = err
 		}
 	}
 
-	tasksJSON, _ := json.Marshal(parsedTasks)
-	return &ToolResult{
-		ForLLM: fmt.Sprintf("Plan created with %d tasks.\nTasks: %s", len(parsedTasks), string(tasksJSON)),
-		Silent: true, // We already sent the message via callback
-	}
+	return t.newPlanResult(summary, content, delivered, deliveryErr)
 }
 
 func (t *TaskTool) handleListPlan(sessionKey string) *ToolResult {
@@ -185,11 +188,14 @@ func (t *TaskTool) handleListPlan(sessionKey string) *ToolResult {
 	}
 
 	content := t.formatPlanMessage(st.Tasks)
-	tasksJSON, _ := json.Marshal(st.Tasks)
+	summary := fmt.Sprintf("Current plan state:\n%s\n\nRaw JSON:\n%s", content, mustMarshalJSON(st.Tasks))
 
+	// list_plan does not send anything on its own, so always expose the plan to
+	// direct callers through ForUser as well.
 	return &ToolResult{
-		ForLLM: fmt.Sprintf("Current plan state:\n%s\n\nRaw JSON:\n%s", content, string(tasksJSON)),
-		Silent: true,
+		ForLLM:  summary,
+		ForUser: content,
+		Silent:  false,
 	}
 }
 
@@ -204,26 +210,26 @@ func (t *TaskTool) handleResendPlan(ctx context.Context, sessionKey, channel, ch
 
 	content := t.formatPlanMessage(st.Tasks)
 
+	delivered := false
+	var deliveryErr error
 	if t.sendPlaceholder != nil {
 		msgID, err := t.sendPlaceholder(ctx, channel, chatID, content)
 		if err == nil {
+			delivered = true
 			if msgID != "" {
 				t.taskManager.SetMessageID(sessionKey, msgID)
 			}
-			// If err == nil but msgID == "", the channel delivered the message
-			// (or is async) but doesn't support returning IDs. We consider this a success.
 		} else {
-			return &ToolResult{ForLLM: fmt.Sprintf("Failed to resend message: %v", err), IsError: true}
+			deliveryErr = err
 		}
-	} else {
-		return &ToolResult{ForLLM: "tasktool: channel sending callbacks are not configured", IsError: true}
 	}
 
-	tasksJSON, _ := json.Marshal(st.Tasks)
-	return &ToolResult{
-		ForLLM: fmt.Sprintf("Plan successfully resent as a new message.\nTasks: %s", string(tasksJSON)),
-		Silent: true,
+	summary := fmt.Sprintf("Plan content prepared for resend.\nTasks: %s", mustMarshalJSON(st.Tasks))
+	if delivered {
+		summary = fmt.Sprintf("Plan successfully resent as a new message.\nTasks: %s", mustMarshalJSON(st.Tasks))
 	}
+
+	return t.newPlanResult(summary, content, delivered, deliveryErr)
 }
 
 func (t *TaskTool) handleUpdateTask(ctx context.Context, sessionKey, channel, chatID string, args map[string]any) *ToolResult {
@@ -245,8 +251,10 @@ func (t *TaskTool) handleUpdateTask(ctx context.Context, sessionKey, channel, ch
 	}
 
 	content := t.formatPlanMessage(st.Tasks)
+	summary := fmt.Sprintf("Task '%s' updated to '%s'. Current plan:\n%s", taskID, statusStr, mustMarshalJSON(st.Tasks))
 
-	// Edit message through callback if available
+	delivered := false
+	var deliveryErr error
 	if t.editMessage != nil && st.MessageID != "" {
 		if err := t.editMessage(ctx, channel, chatID, st.MessageID, content); err != nil {
 			logger.WarnCF("tasktool", "Failed to edit task message", map[string]any{
@@ -255,20 +263,27 @@ func (t *TaskTool) handleUpdateTask(ctx context.Context, sessionKey, channel, ch
 				"message_id": st.MessageID,
 				"error":      err.Error(),
 			})
-		}
-	} else if t.sendPlaceholder != nil && st.MessageID == "" {
-		// Fallback: send new progress message if we didn't have one
-		msgID, err := t.sendPlaceholder(ctx, channel, chatID, content)
-		if err == nil && msgID != "" {
-			t.taskManager.SetMessageID(sessionKey, msgID)
+			deliveryErr = err
+		} else {
+			delivered = true
 		}
 	}
 
-	tasksJSON, _ := json.Marshal(st.Tasks)
-	return &ToolResult{
-		ForLLM: fmt.Sprintf("Task '%s' updated to '%s'. Current plan:\n%s", taskID, statusStr, string(tasksJSON)),
-		Silent: true,
+	if !delivered && t.sendPlaceholder != nil {
+		// Fallback: send new progress message if we didn't have one
+		msgID, err := t.sendPlaceholder(ctx, channel, chatID, content)
+		if err == nil {
+			delivered = true
+			deliveryErr = nil
+			if msgID != "" {
+				t.taskManager.SetMessageID(sessionKey, msgID)
+			}
+		} else if deliveryErr == nil {
+			deliveryErr = err
+		}
 	}
+
+	return t.newPlanResult(summary, content, delivered, deliveryErr)
 }
 
 func (t *TaskTool) formatPlanMessage(tasks []session.Task) string {
@@ -302,4 +317,34 @@ func (t *TaskTool) formatPlanMessage(tasks []session.Task) string {
 	}
 
 	return sb.String()
+}
+
+func (t *TaskTool) newPlanResult(summary, content string, delivered bool, deliveryErr error) *ToolResult {
+	if delivered {
+		return &ToolResult{
+			ForLLM: summary,
+			Silent: true,
+		}
+	}
+
+	forLLM := summary
+	if deliveryErr != nil {
+		forLLM = fmt.Sprintf("%s\nAutomatic delivery failed (%v). Respond to the user with the following plan content:\n\n%s", summary, deliveryErr, content)
+	} else {
+		forLLM = fmt.Sprintf("%s\nAutomatic delivery is unavailable in this context. Respond to the user with the following plan content:\n\n%s", summary, content)
+	}
+
+	return &ToolResult{
+		ForLLM:  forLLM,
+		ForUser: content,
+		Silent:  false,
+	}
+}
+
+func mustMarshalJSON(v any) string {
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
 }
