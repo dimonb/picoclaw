@@ -138,7 +138,7 @@ func (p *Provider) Chat(
 
 		fallbackOut, fallbackErr := p.chatCompletions(ctx, messages, tools, normalizedModel, options)
 		if fallbackErr != nil {
-			return nil, fmt.Errorf("responses request failed: %w; fallback chat/completions failed: %v", err, fallbackErr)
+			return nil, fmt.Errorf("responses request failed; fallback chat/completions failed: %w", errors.Join(err, fallbackErr))
 		}
 		return fallbackOut, nil
 	}
