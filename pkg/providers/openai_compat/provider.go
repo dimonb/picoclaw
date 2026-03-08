@@ -768,8 +768,6 @@ func parseResponsesResponse(body io.Reader) (*LLMResponse, error) {
 		if apiResponse.IncompleteDetails != nil && apiResponse.IncompleteDetails.Reason != "" && apiResponse.IncompleteDetails.Reason != "max_output_tokens" {
 			finishReason = apiResponse.IncompleteDetails.Reason
 		}
-	} else if apiResponse.Status == "failed" {
-		finishReason = "error"
 	}
 
 	var usage *UsageInfo
