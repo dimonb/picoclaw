@@ -684,8 +684,15 @@ func parseResponsesResponse(body io.Reader) (*LLMResponse, error) {
 	if err := json.NewDecoder(body).Decode(&apiResponse); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-	if strings.TrimSpace(apiResponse.Status) == "" && len(apiResponse.Output) == 0 {
-		return nil, errors.New("openai responses returned unexpected response shape")
+
+	status := strings.TrimSpace(apiResponse.Status)
+	switch status {
+	case "completed", "incomplete":
+		if len(apiResponse.Output) == 0 {
+			return nil, errors.New("openai responses returned terminal status with empty output")
+		}
+	default:
+		return nil, fmt.Errorf("openai responses returned unexpected or non-terminal status: %q", status)
 	}
 
 	var content strings.Builder
