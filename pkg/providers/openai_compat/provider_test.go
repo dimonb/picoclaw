@@ -16,7 +16,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
-func TestProviderChat_PrefersResponsesForOpenAIPrefixedModel(t *testing.T) {
+func TestProviderChat_PrefersResponsesWhenConfigured(t *testing.T) {
 	var paths []string
 	var responsesBody map[string]any
 
@@ -63,12 +63,12 @@ func TestProviderChat_PrefersResponsesForOpenAIPrefixedModel(t *testing.T) {
 	}))
 	defer server.Close()
 
-	p := NewProvider("key", server.URL, "")
+	p := NewProvider("key", server.URL, "", WithResponsesPreferred())
 	out, err := p.Chat(
 		t.Context(),
 		[]Message{{Role: "user", Content: "hi"}},
 		nil,
-		"openai/gpt-4o",
+		"gpt-4o",
 		map[string]any{"max_tokens": 256},
 	)
 	if err != nil {
@@ -81,8 +81,8 @@ func TestProviderChat_PrefersResponsesForOpenAIPrefixedModel(t *testing.T) {
 	if !reflect.DeepEqual(paths, []string{"/responses"}) {
 		t.Fatalf("paths = %v, want [/responses]", paths)
 	}
-	if responsesBody["model"] != "openai/gpt-4o" {
-		t.Fatalf("model = %v, want openai/gpt-4o", responsesBody["model"])
+	if responsesBody["model"] != "gpt-4o" {
+		t.Fatalf("model = %v, want gpt-4o", responsesBody["model"])
 	}
 	if _, ok := responsesBody["input"]; !ok {
 		t.Fatalf("expected responses request body to contain input")
@@ -496,7 +496,7 @@ func TestProviderChat_DoesNotPreferResponsesForNestedOpenAINamespace(t *testing.
 		t.Context(),
 		[]Message{{Role: "user", Content: "hi"}},
 		nil,
-		"groq/openai/gpt-oss-120b",
+		"openai/gpt-oss-120b",
 		nil,
 	)
 	if err != nil {

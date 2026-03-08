@@ -423,12 +423,12 @@ func requestTemperature(model string, options map[string]any) (float64, bool) {
 
 // shouldPreferResponses centralizes the opt-in rule so OpenAI-native configs
 // and gpt-5 models can try /responses first while other compat backends keep
-// their existing chat/completions behavior.
+// their existing chat/completions behavior even when model IDs are namespaced.
 func shouldPreferResponses(rawModel, normalizedModel string, preferOpenAIModels bool) bool {
 	rawModel = strings.ToLower(strings.TrimSpace(rawModel))
 	normalizedModel = strings.ToLower(strings.TrimSpace(normalizedModel))
 
-	return preferOpenAIModels || strings.HasPrefix(rawModel, "openai/") ||
+	return preferOpenAIModels ||
 		strings.HasPrefix(rawModel, "gpt-5") ||
 		strings.HasPrefix(normalizedModel, "gpt-5")
 }
