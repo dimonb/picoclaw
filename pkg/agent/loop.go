@@ -523,7 +523,7 @@ func (al *AgentLoop) agentTurnHandledByDirectToolAction(agent *AgentInstance) bo
 		}
 	}
 	if tool, ok := agent.Tools.Get("reaction"); ok {
-		if rt, ok := tool.(*tools.ReactionTool); ok && rt.HasHandledInRound() {
+		if rt, ok := tool.(*tools.ReactionTool); ok && rt.HasHandledInRound() && rt.SuppressesReply() {
 			return true
 		}
 	}
