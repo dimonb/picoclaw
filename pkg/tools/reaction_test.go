@@ -71,6 +71,32 @@ func TestReactionTool_Execute_CurrentMessage(t *testing.T) {
 	if !tool.HasHandledInRound() {
 		t.Fatal("expected handledInRound to be true")
 	}
+	if !tool.SuppressesReply() {
+		t.Fatal("expected SuppressesReply=true when also_reply not set")
+	}
+}
+
+func TestReactionTool_Execute_AlsoReply(t *testing.T) {
+	tool := NewReactionTool([]string{"❤️"})
+	tool.SetReactionCallback(func(_ context.Context, _, _, _, _ string) error { return nil })
+
+	ctx := WithToolReplyContext(
+		WithToolContext(context.Background(), "telegram", "chat-1"),
+		"910", "905",
+	)
+	tool.Execute(ctx, map[string]any{"emoji": "❤️", "also_reply": true})
+
+	if !tool.HasHandledInRound() {
+		t.Fatal("expected handledInRound to be true")
+	}
+	if tool.SuppressesReply() {
+		t.Fatal("expected SuppressesReply=false when also_reply=true")
+	}
+
+	tool.ResetHandledInRound()
+	if tool.SuppressesReply() {
+		t.Fatal("expected SuppressesReply=false after reset")
+	}
 }
 
 func TestReactionTool_Execute_ParentMessage(t *testing.T) {
