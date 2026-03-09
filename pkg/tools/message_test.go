@@ -4,16 +4,16 @@ import (
 	"context"
 	"errors"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
 )
 
 func TestMessageTool_Execute_Success(t *testing.T) {
 	tool := NewMessageTool()
 
-	var sentChannel, sentChatID, sentContent string
-	tool.SetSendCallback(func(channel, chatID, content string) error {
-		sentChannel = channel
-		sentChatID = chatID
-		sentContent = content
+	var sent bus.OutboundMessage
+	tool.SetSendCallback(func(msg bus.OutboundMessage) error {
+		sent = msg
 		return nil
 	})
 
@@ -25,14 +25,17 @@ func TestMessageTool_Execute_Success(t *testing.T) {
 	result := tool.Execute(ctx, args)
 
 	// Verify message was sent with correct parameters
-	if sentChannel != "test-channel" {
-		t.Errorf("Expected channel 'test-channel', got '%s'", sentChannel)
+	if sent.Channel != "test-channel" {
+		t.Errorf("Expected channel 'test-channel', got '%s'", sent.Channel)
 	}
-	if sentChatID != "test-chat-id" {
-		t.Errorf("Expected chatID 'test-chat-id', got '%s'", sentChatID)
+	if sent.ChatID != "test-chat-id" {
+		t.Errorf("Expected chatID 'test-chat-id', got '%s'", sent.ChatID)
 	}
-	if sentContent != "Hello, world!" {
-		t.Errorf("Expected content 'Hello, world!', got '%s'", sentContent)
+	if sent.Content != "Hello, world!" {
+		t.Errorf("Expected content 'Hello, world!', got '%s'", sent.Content)
+	}
+	if sent.ReplyToMessageID != "" {
+		t.Errorf("Expected no reply target, got '%s'", sent.ReplyToMessageID)
 	}
 
 	// Verify ToolResult meets US-011 criteria:
@@ -60,10 +63,9 @@ func TestMessageTool_Execute_Success(t *testing.T) {
 func TestMessageTool_Execute_WithCustomChannel(t *testing.T) {
 	tool := NewMessageTool()
 
-	var sentChannel, sentChatID string
-	tool.SetSendCallback(func(channel, chatID, content string) error {
-		sentChannel = channel
-		sentChatID = chatID
+	var sent bus.OutboundMessage
+	tool.SetSendCallback(func(msg bus.OutboundMessage) error {
+		sent = msg
 		return nil
 	})
 
@@ -77,11 +79,11 @@ func TestMessageTool_Execute_WithCustomChannel(t *testing.T) {
 	result := tool.Execute(ctx, args)
 
 	// Verify custom channel/chatID were used instead of defaults
-	if sentChannel != "custom-channel" {
-		t.Errorf("Expected channel 'custom-channel', got '%s'", sentChannel)
+	if sent.Channel != "custom-channel" {
+		t.Errorf("Expected channel 'custom-channel', got '%s'", sent.Channel)
 	}
-	if sentChatID != "custom-chat-id" {
-		t.Errorf("Expected chatID 'custom-chat-id', got '%s'", sentChatID)
+	if sent.ChatID != "custom-chat-id" {
+		t.Errorf("Expected chatID 'custom-chat-id', got '%s'", sent.ChatID)
 	}
 
 	if !result.Silent {
@@ -96,7 +98,7 @@ func TestMessageTool_Execute_SendFailure(t *testing.T) {
 	tool := NewMessageTool()
 
 	sendErr := errors.New("network error")
-	tool.SetSendCallback(func(channel, chatID, content string) error {
+	tool.SetSendCallback(func(msg bus.OutboundMessage) error {
 		return sendErr
 	})
 
@@ -149,7 +151,7 @@ func TestMessageTool_Execute_NoTargetChannel(t *testing.T) {
 	tool := NewMessageTool()
 	// No WithToolContext — channel/chatID are empty
 
-	tool.SetSendCallback(func(channel, chatID, content string) error {
+	tool.SetSendCallback(func(msg bus.OutboundMessage) error {
 		return nil
 	})
 
@@ -186,6 +188,86 @@ func TestMessageTool_Execute_NotConfigured(t *testing.T) {
 	}
 	if result.ForLLM != "Message sending not configured" {
 		t.Errorf("Expected ForLLM 'Message sending not configured', got '%s'", result.ForLLM)
+	}
+}
+
+func TestMessageTool_Execute_ReplyToCurrent(t *testing.T) {
+	tool := NewMessageTool()
+
+	var sent bus.OutboundMessage
+	tool.SetSendCallback(func(msg bus.OutboundMessage) error {
+		sent = msg
+		return nil
+	})
+
+	ctx := WithToolReplyContext(
+		WithToolContext(context.Background(), "telegram", "chat-1"),
+		"910",
+		"905",
+	)
+	result := tool.Execute(ctx, map[string]any{
+		"content":    "Threaded answer",
+		"reply_mode": "current",
+	})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error %q", result.ForLLM)
+	}
+	if sent.ReplyToMessageID != "910" {
+		t.Fatalf("reply_to_message_id=%q, want %q", sent.ReplyToMessageID, "910")
+	}
+	if result.ForLLM != "Message sent to telegram:chat-1 in reply to 910" {
+		t.Fatalf("ForLLM=%q", result.ForLLM)
+	}
+}
+
+func TestMessageTool_Execute_ReplyToParentRequiresParentID(t *testing.T) {
+	tool := NewMessageTool()
+	tool.SetSendCallback(func(msg bus.OutboundMessage) error { return nil })
+
+	ctx := WithToolReplyContext(
+		WithToolContext(context.Background(), "telegram", "chat-1"),
+		"910",
+		"",
+	)
+	result := tool.Execute(ctx, map[string]any{
+		"content":    "Reply upward",
+		"reply_mode": "parent",
+	})
+
+	if !result.IsError {
+		t.Fatal("expected error when parent message id is unavailable")
+	}
+	if result.ForLLM != "reply_mode=parent requested but parent message id is unavailable" {
+		t.Fatalf("ForLLM=%q", result.ForLLM)
+	}
+}
+
+func TestMessageTool_Execute_ExplicitReplyTargetOverridesMode(t *testing.T) {
+	tool := NewMessageTool()
+
+	var sent bus.OutboundMessage
+	tool.SetSendCallback(func(msg bus.OutboundMessage) error {
+		sent = msg
+		return nil
+	})
+
+	ctx := WithToolReplyContext(
+		WithToolContext(context.Background(), "telegram", "chat-1"),
+		"910",
+		"905",
+	)
+	result := tool.Execute(ctx, map[string]any{
+		"content":             "Specific reply",
+		"reply_mode":          "chat",
+		"reply_to_message_id": "777",
+	})
+
+	if result.IsError {
+		t.Fatalf("expected success, got error %q", result.ForLLM)
+	}
+	if sent.ReplyToMessageID != "777" {
+		t.Fatalf("reply_to_message_id=%q, want %q", sent.ReplyToMessageID, "777")
 	}
 }
 
@@ -250,5 +332,21 @@ func TestMessageTool_Parameters(t *testing.T) {
 	}
 	if chatIDProp["type"] != "string" {
 		t.Error("Expected chat_id type to be 'string'")
+	}
+
+	replyModeProp, ok := props["reply_mode"].(map[string]any)
+	if !ok {
+		t.Error("Expected 'reply_mode' property")
+	}
+	if replyModeProp["type"] != "string" {
+		t.Error("Expected reply_mode type to be 'string'")
+	}
+
+	replyToProp, ok := props["reply_to_message_id"].(map[string]any)
+	if !ok {
+		t.Error("Expected 'reply_to_message_id' property")
+	}
+	if replyToProp["type"] != "string" {
+		t.Error("Expected reply_to_message_id type to be 'string'")
 	}
 }
