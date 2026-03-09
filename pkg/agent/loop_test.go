@@ -1014,7 +1014,13 @@ func TestReactionTool_SuppressesDefaultFinalResponse(t *testing.T) {
 	rt.SetReactionCallback(func(ctx context.Context, channel, chatID, messageID, emoji string) error {
 		calls++
 		if channel != "telegram" || chatID != "chat1" || messageID != "910" || emoji != "❤️" {
-			t.Fatalf("unexpected callback args channel=%q chatID=%q messageID=%q emoji=%q", channel, chatID, messageID, emoji)
+			t.Fatalf(
+				"unexpected callback args channel=%q chatID=%q messageID=%q emoji=%q",
+				channel,
+				chatID,
+				messageID,
+				emoji,
+			)
 		}
 		return nil
 	})

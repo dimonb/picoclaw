@@ -56,7 +56,10 @@ func (t *ReactionTool) Name() string {
 func (t *ReactionTool) Description() string {
 	emojiPart := ""
 	if len(t.allowedEmoji) > 0 {
-		emojiPart = fmt.Sprintf(" You MUST choose one of these configured emojis: %s.", strings.Join(t.allowedEmoji, " "))
+		emojiPart = fmt.Sprintf(
+			" You MUST choose one of these configured emojis: %s.",
+			strings.Join(t.allowedEmoji, " "),
+		)
 	}
 	return fmt.Sprintf(
 		"Add an emoji reaction to a Telegram message.%s Set also_reply=true to additionally send a text reply; omit or set false to react only (no text reply).",
@@ -136,7 +139,9 @@ func (t *ReactionTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 			}
 		}
 		if !allowed {
-			return ErrorResult(fmt.Sprintf("emoji %q is not allowed; use one of: %s", emoji, strings.Join(t.allowedEmoji, " ")))
+			return ErrorResult(
+				fmt.Sprintf("emoji %q is not allowed; use one of: %s", emoji, strings.Join(t.allowedEmoji, " ")),
+			)
 		}
 	}
 

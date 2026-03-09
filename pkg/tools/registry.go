@@ -280,7 +280,10 @@ func (r *ToolRegistry) ToProviderDefs() []providers.ToolDefinition {
 	return r.ToProviderDefsWithContext(context.Background(), "", "")
 }
 
-func (r *ToolRegistry) ToProviderDefsWithContext(ctx context.Context, channel, chatID string) []providers.ToolDefinition {
+func (r *ToolRegistry) ToProviderDefsWithContext(
+	ctx context.Context,
+	channel, chatID string,
+) []providers.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
