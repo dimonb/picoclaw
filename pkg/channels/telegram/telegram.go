@@ -174,7 +174,7 @@ func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.Outboun
 		return "", channels.ErrNotRunning
 	}
 
-	target, err := parseTelegramTarget(msg.ChatID)
+	chatID, threadID, err := parseTelegramChatID(msg.ChatID)
 	if err != nil {
 		return "", fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed)
 	}
@@ -188,7 +188,8 @@ func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.Outboun
 	for _, chunk := range chunks {
 		msgID, err := c.sendHTMLChunk(
 			ctx,
-			target,
+			chatID,
+			threadID,
 			msg.ReplyToMessageID,
 			chunk.HTML,
 			chunk.Markdown,
@@ -209,15 +210,14 @@ func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.Outboun
 // markdown as plain text on parse failure so users never see raw HTML tags.
 func (c *TelegramChannel) sendHTMLChunk(
 	ctx context.Context,
-	target telegramTarget,
+	chatID int64,
+	threadID int,
 	replyToMessageID string,
 	htmlContent, mdFallback string,
 ) (int, error) {
-	tgMsg := tu.Message(tu.ID(target.ChatID), htmlContent)
+	tgMsg := tu.Message(tu.ID(chatID), htmlContent)
 	tgMsg.ParseMode = telego.ModeHTML
-	if threadID, ok := target.messageThreadIDForSend(); ok {
-		tgMsg.MessageThreadID = threadID
-	}
+	tgMsg.MessageThreadID = threadID
 	if replyParams, ok := telegramReplyParameters(replyToMessageID); ok {
 		tgMsg.ReplyParameters = replyParams
 	}
@@ -259,24 +259,16 @@ func telegramReplyParameters(replyToMessageID string) (*telego.ReplyParameters, 
 // (Telegram's typing indicator expires after ~5s) in a background goroutine.
 // The returned stop function is idempotent and cancels the goroutine.
 func (c *TelegramChannel) StartTyping(ctx context.Context, chatID string) (func(), error) {
-	target, err := parseTelegramTarget(chatID)
+	cid, threadID, err := parseTelegramChatID(chatID)
 	if err != nil {
 		return func() {}, err
 	}
 
-	sendTyping := func(callCtx context.Context) {
-		params := &telego.SendChatActionParams{
-			ChatID: tu.ID(target.ChatID),
-			Action: telego.ChatActionTyping,
-		}
-		if threadID, ok := target.messageThreadIDForTyping(); ok {
-			params.MessageThreadID = threadID
-		}
-		_ = c.bot.SendChatAction(callCtx, params)
-	}
+	action := tu.ChatAction(tu.ID(cid), telego.ChatActionTyping)
+	action.MessageThreadID = threadID
 
 	// Send the first typing action immediately
-	sendTyping(ctx)
+	_ = c.bot.SendChatAction(ctx, action)
 
 	typingCtx, cancel := context.WithCancel(ctx)
 	go func() {
@@ -287,7 +279,9 @@ func (c *TelegramChannel) StartTyping(ctx context.Context, chatID string) (func(
 			case <-typingCtx.Done():
 				return
 			case <-ticker.C:
-				sendTyping(typingCtx)
+				a := tu.ChatAction(tu.ID(cid), telego.ChatActionTyping)
+				a.MessageThreadID = threadID
+				_ = c.bot.SendChatAction(typingCtx, a)
 			}
 		}
 	}()
@@ -297,7 +291,7 @@ func (c *TelegramChannel) StartTyping(ctx context.Context, chatID string) (func(
 
 // EditMessage implements channels.MessageEditor.
 func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messageID string, content string) error {
-	target, err := parseTelegramTarget(chatID)
+	cid, _, err := parseTelegramChatID(chatID)
 	if err != nil {
 		return err
 	}
@@ -311,7 +305,7 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 	}
 
 	for i, mid := range messageIDs {
-		if err := c.editHTMLChunk(ctx, target.ChatID, mid, chunks[i].HTML, chunks[i].Markdown); err != nil {
+		if err := c.editHTMLChunk(ctx, cid, mid, chunks[i].HTML, chunks[i].Markdown); err != nil {
 			return err
 		}
 	}
@@ -321,7 +315,7 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 
 // DeleteMessage implements channels.MessageDeleter.
 func (c *TelegramChannel) DeleteMessage(ctx context.Context, chatID string, messageID string) error {
-	target, err := parseTelegramTarget(chatID)
+	cid, _, err := parseTelegramChatID(chatID)
 	if err != nil {
 		return err
 	}
@@ -331,7 +325,7 @@ func (c *TelegramChannel) DeleteMessage(ctx context.Context, chatID string, mess
 	}
 
 	for _, mid := range messageIDs {
-		if err := c.bot.DeleteMessage(ctx, tu.Delete(tu.ID(target.ChatID), mid)); err != nil {
+		if err := c.bot.DeleteMessage(ctx, tu.Delete(tu.ID(cid), mid)); err != nil {
 			return fmt.Errorf("telegram delete: %w", channels.ErrTemporary)
 		}
 	}
@@ -345,7 +339,7 @@ func (c *TelegramChannel) SetMessageReaction(ctx context.Context, chatID, messag
 		return channels.ErrNotRunning
 	}
 
-	target, err := parseTelegramTarget(chatID)
+	cid, _, err := parseTelegramChatID(chatID)
 	if err != nil {
 		return fmt.Errorf("invalid chat ID %s: %w", chatID, channels.ErrSendFailed)
 	}
@@ -358,7 +352,7 @@ func (c *TelegramChannel) SetMessageReaction(ctx context.Context, chatID, messag
 	}
 
 	if err := c.bot.SetMessageReaction(ctx, (&telego.SetMessageReactionParams{}).
-		WithChatID(tu.ID(target.ChatID)).
+		WithChatID(tu.ID(cid)).
 		WithMessageID(messageIDs[0]).
 		WithReaction(tu.ReactionEmoji(emoji))); err != nil {
 		return fmt.Errorf("telegram react: %w", channels.ErrTemporary)
@@ -379,11 +373,11 @@ func (c *TelegramChannel) SendPlaceholder(ctx context.Context, chatID string) (s
 		return "", nil
 	}
 
-	target, err := parseTelegramTarget(chatID)
+	cid, threadID, err := parseTelegramChatID(chatID)
 	if err != nil {
 		return "", err
 	}
-	if target.ChatID < 0 {
+	if cid < 0 {
 		return "", nil
 	}
 
@@ -392,11 +386,9 @@ func (c *TelegramChannel) SendPlaceholder(ctx context.Context, chatID string) (s
 		text = "Thinking... 💭"
 	}
 
-	params := tu.Message(tu.ID(target.ChatID), text)
-	if threadID, ok := target.messageThreadIDForSend(); ok {
-		params.MessageThreadID = threadID
-	}
-	pMsg, err := c.bot.SendMessage(ctx, params)
+	phMsg := tu.Message(tu.ID(cid), text)
+	phMsg.MessageThreadID = threadID
+	pMsg, err := c.bot.SendMessage(ctx, phMsg)
 	if err != nil {
 		return "", err
 	}
@@ -410,7 +402,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 		return channels.ErrNotRunning
 	}
 
-	target, err := parseTelegramTarget(msg.ChatID)
+	chatID, threadID, err := parseTelegramChatID(msg.ChatID)
 	if err != nil {
 		return fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed)
 	}
@@ -442,12 +434,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 		switch part.Type {
 		case "image":
 			params := &telego.SendPhotoParams{
-				ChatID:  tu.ID(target.ChatID),
-				Photo:   telego.InputFile{File: file},
-				Caption: part.Caption,
-			}
-			if threadID, ok := target.messageThreadIDForSend(); ok {
-				params.MessageThreadID = threadID
+				ChatID:          tu.ID(chatID),
+				MessageThreadID: threadID,
+				Photo:           telego.InputFile{File: file},
+				Caption:         part.Caption,
 			}
 			if replyParams, ok := telegramReplyParameters(msg.ReplyToMessageID); ok {
 				params.ReplyParameters = replyParams
@@ -455,12 +445,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			_, err = c.bot.SendPhoto(ctx, params)
 		case "audio":
 			params := &telego.SendAudioParams{
-				ChatID:  tu.ID(target.ChatID),
-				Audio:   telego.InputFile{File: file},
-				Caption: part.Caption,
-			}
-			if threadID, ok := target.messageThreadIDForSend(); ok {
-				params.MessageThreadID = threadID
+				ChatID:          tu.ID(chatID),
+				MessageThreadID: threadID,
+				Audio:           telego.InputFile{File: file},
+				Caption:         part.Caption,
 			}
 			if replyParams, ok := telegramReplyParameters(msg.ReplyToMessageID); ok {
 				params.ReplyParameters = replyParams
@@ -468,12 +456,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			_, err = c.bot.SendAudio(ctx, params)
 		case "video":
 			params := &telego.SendVideoParams{
-				ChatID:  tu.ID(target.ChatID),
-				Video:   telego.InputFile{File: file},
-				Caption: part.Caption,
-			}
-			if threadID, ok := target.messageThreadIDForSend(); ok {
-				params.MessageThreadID = threadID
+				ChatID:          tu.ID(chatID),
+				MessageThreadID: threadID,
+				Video:           telego.InputFile{File: file},
+				Caption:         part.Caption,
 			}
 			if replyParams, ok := telegramReplyParameters(msg.ReplyToMessageID); ok {
 				params.ReplyParameters = replyParams
@@ -481,12 +467,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			_, err = c.bot.SendVideo(ctx, params)
 		default: // "file" or unknown types
 			params := &telego.SendDocumentParams{
-				ChatID:   tu.ID(target.ChatID),
-				Document: telego.InputFile{File: file},
-				Caption:  part.Caption,
-			}
-			if threadID, ok := target.messageThreadIDForSend(); ok {
-				params.MessageThreadID = threadID
+				ChatID:          tu.ID(chatID),
+				MessageThreadID: threadID,
+				Document:        telego.InputFile{File: file},
+				Caption:         part.Caption,
 			}
 			if replyParams, ok := telegramReplyParameters(msg.ReplyToMessageID); ok {
 				params.ReplyParameters = replyParams
@@ -537,17 +521,22 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 
 	chatID := message.Chat.ID
 	c.chatIDs[platformID] = chatID
-	threadID, hasTopic := resolveTelegramForumThreadID(message.Chat.IsForum, message.MessageThreadID)
 
 	content := ""
 	mediaPaths := []string{}
 
-	chatIDStr := buildTelegramTopicChatID(chatID, threadID)
-	if !hasTopic {
-		chatIDStr = fmt.Sprintf("%d", chatID)
+	// For forum topics, embed the thread ID as "chatID/threadID" so replies
+	// route to the correct topic and each topic gets its own session.
+	// Only forum groups (IsForum) are handled; regular group reply threads
+	// must share one session per group.
+	compositeChatID := fmt.Sprintf("%d", chatID)
+	threadID := message.MessageThreadID
+	if message.Chat.IsForum && threadID != 0 {
+		compositeChatID = fmt.Sprintf("%d/%d", chatID, threadID)
 	}
+
 	messageIDStr := fmt.Sprintf("%d", message.MessageID)
-	scope := channels.BuildMediaScope("telegram", chatIDStr, messageIDStr)
+	scope := channels.BuildMediaScope("telegram", compositeChatID, messageIDStr)
 
 	// Helper to register a local file with the media store
 	storeMedia := func(localPath, filename string) string {
@@ -639,19 +628,17 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 
 	logger.DebugCF("telegram", "Received message", map[string]any{
 		"sender_id": sender.CanonicalID,
-		"chat_id":   chatIDStr,
+		"chat_id":   compositeChatID,
+		"thread_id": threadID,
 		"preview":   utils.Truncate(content, 50),
 		"is_forum":  message.Chat.IsForum,
-		"thread_id": threadID,
 	})
-
-	// Placeholder is now auto-triggered by BaseChannel.HandleMessage via PlaceholderCapable
 
 	peerKind := "direct"
 	peerID := fmt.Sprintf("%d", user.ID)
 	if message.Chat.Type != "private" {
 		peerKind = "group"
-		peerID = chatIDStr
+		peerID = compositeChatID
 	}
 
 	peer := bus.Peer{Kind: peerKind, ID: peerID}
@@ -668,10 +655,12 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	if message.ReplyToMessage != nil {
 		metadata["reply_to_message_id"] = strconv.Itoa(message.ReplyToMessage.MessageID)
 	}
-	if hasTopic {
+
+	// Set parent_peer metadata for per-topic agent binding.
+	if message.Chat.IsForum && threadID != 0 {
 		metadata["thread_id"] = strconv.Itoa(threadID)
-		metadata["parent_peer_kind"] = "group"
-		metadata["parent_peer_id"] = fmt.Sprintf("%d", chatID)
+		metadata["parent_peer_kind"] = "topic"
+		metadata["parent_peer_id"] = fmt.Sprintf("%d", threadID)
 		if agentID := c.topicAgentID(chatID, threadID); agentID != "" {
 			metadata["route_agent_id"] = agentID
 			metadata["route_matched_by"] = "telegram.topic"
@@ -682,7 +671,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 		peer,
 		messageID,
 		platformID,
-		chatIDStr,
+		compositeChatID,
 		content,
 		mediaPaths,
 		metadata,
@@ -730,8 +719,23 @@ func (c *TelegramChannel) downloadFile(ctx context.Context, fileID, ext string) 
 	return c.downloadFileWithInfo(file, ext)
 }
 
-func parseChatID(chatIDStr string) (int64, error) {
-	return strconv.ParseInt(strings.TrimSpace(chatIDStr), 10, 64)
+// parseTelegramChatID splits "chatID/threadID" into its components.
+// Returns threadID=0 when no "/" is present (non-forum messages).
+func parseTelegramChatID(chatID string) (int64, int, error) {
+	idx := strings.Index(chatID, "/")
+	if idx == -1 {
+		cid, err := strconv.ParseInt(chatID, 10, 64)
+		return cid, 0, err
+	}
+	cid, err := strconv.ParseInt(chatID[:idx], 10, 64)
+	if err != nil {
+		return 0, 0, err
+	}
+	tid, err := strconv.Atoi(chatID[idx+1:])
+	if err != nil {
+		return 0, 0, fmt.Errorf("invalid thread ID in chat ID %q: %w", chatID, err)
+	}
+	return cid, tid, nil
 }
 
 func (c *TelegramChannel) topicAgentID(chatID int64, threadID int) string {

@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mymmrac/telego"
 	ta "github.com/mymmrac/telego/telegoapi"
@@ -175,7 +176,7 @@ func TestSendMessageWithID_ForumTopic_UsesThreadID(t *testing.T) {
 	ch := newTestChannel(t, caller)
 
 	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{
-		ChatID:  "-1001234567890:topic:42",
+		ChatID:  "-1001234567890/42",
 		Content: "Hello, topic!",
 	})
 
@@ -210,7 +211,7 @@ func TestSendMessageWithID_ReplyToMessage_UsesReplyParameters(t *testing.T) {
 	assert.Equal(t, true, replyParams["allow_sending_without_reply"])
 }
 
-func TestSendMessageWithID_GeneralTopic_OmitsThreadID(t *testing.T) {
+func TestSendMessageWithID_GeneralTopic_UsesThreadID(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
 			return successResponse(t), nil
@@ -219,7 +220,7 @@ func TestSendMessageWithID_GeneralTopic_OmitsThreadID(t *testing.T) {
 	ch := newTestChannel(t, caller)
 
 	msgID, err := ch.SendMessageWithID(context.Background(), bus.OutboundMessage{
-		ChatID:  "-1001234567890:topic:1",
+		ChatID:  "-1001234567890/1",
 		Content: "Hello, general!",
 	})
 
@@ -227,8 +228,7 @@ func TestSendMessageWithID_GeneralTopic_OmitsThreadID(t *testing.T) {
 	assert.Equal(t, "1", msgID)
 	require.Len(t, caller.calls, 1)
 	body := decodeCallBody(t, caller.calls[0])
-	_, hasThreadID := body["message_thread_id"]
-	assert.False(t, hasThreadID)
+	assert.Equal(t, float64(1), body["message_thread_id"])
 }
 
 func TestSendMessageWithID_LongMessage_SingleCall(t *testing.T) {
@@ -379,7 +379,7 @@ func TestStartTyping_ForumTopic_UsesThreadID(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	stop, err := ch.StartTyping(context.Background(), "-1001234567890:topic:42")
+	stop, err := ch.StartTyping(context.Background(), "-1001234567890/42")
 	require.NoError(t, err)
 	stop()
 
@@ -388,7 +388,7 @@ func TestStartTyping_ForumTopic_UsesThreadID(t *testing.T) {
 	assert.Equal(t, float64(42), body["message_thread_id"])
 }
 
-func TestStartTyping_GeneralTopic_KeepsThreadID(t *testing.T) {
+func TestStartTyping_GeneralTopic_UsesThreadID(t *testing.T) {
 	caller := &stubCaller{
 		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
 			return successResponse(t), nil
@@ -396,7 +396,7 @@ func TestStartTyping_GeneralTopic_KeepsThreadID(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	stop, err := ch.StartTyping(context.Background(), "-1001234567890:topic:1")
+	stop, err := ch.StartTyping(context.Background(), "-1001234567890/1")
 	require.NoError(t, err)
 	stop()
 
@@ -416,7 +416,7 @@ func TestSendPlaceholder_GroupSkipsPlaceholder(t *testing.T) {
 	ch.config.Channels.Telegram.Placeholder.Enabled = true
 	ch.config.Channels.Telegram.Placeholder.Text = "Thinking"
 
-	msgID, err := ch.SendPlaceholder(context.Background(), "-1001234567890:topic:42")
+	msgID, err := ch.SendPlaceholder(context.Background(), "-1001234567890/42")
 	require.NoError(t, err)
 	assert.Empty(t, msgID)
 	assert.Empty(t, caller.calls)
@@ -462,7 +462,7 @@ func TestSendMedia_ForumTopic_UsesThreadID(t *testing.T) {
 	require.NoError(t, err)
 
 	err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
-		ChatID: "-1001234567890:topic:42",
+		ChatID: "-1001234567890/42",
 		Parts: []bus.MediaPart{{
 			Type: "image",
 			Ref:  ref,
@@ -511,36 +511,190 @@ func TestSendMessageWithID_InvalidChatID(t *testing.T) {
 	assert.Empty(t, caller.calls)
 }
 
-func TestParseTelegramTarget(t *testing.T) {
-	tests := []struct {
-		name       string
-		input      string
-		wantChatID int64
-		wantThread int
-		wantErr    bool
-	}{
-		{name: "base chat", input: "12345", wantChatID: 12345},
-		{name: "forum topic", input: "-100123:topic:42", wantChatID: -100123, wantThread: 42},
-		{name: "invalid topic", input: "-100123:topic:abc", wantErr: true},
-		{name: "invalid chat", input: "abc", wantErr: true},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			target, err := parseTelegramTarget(tt.input)
-			if tt.wantErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.wantChatID, target.ChatID)
-			assert.Equal(t, tt.wantThread, target.MessageThreadID)
-		})
-	}
+func TestParseTelegramChatID_Plain(t *testing.T) {
+	cid, tid, err := parseTelegramChatID("12345")
+	assert.NoError(t, err)
+	assert.Equal(t, int64(12345), cid)
+	assert.Equal(t, 0, tid)
 }
 
-func TestResolveTelegramForumThreadID_GeneralTopicDefaultsToOne(t *testing.T) {
-	threadID, ok := resolveTelegramForumThreadID(true, 0)
+func TestParseTelegramChatID_NegativeGroup(t *testing.T) {
+	cid, tid, err := parseTelegramChatID("-1001234567890")
+	assert.NoError(t, err)
+	assert.Equal(t, int64(-1001234567890), cid)
+	assert.Equal(t, 0, tid)
+}
+
+func TestParseTelegramChatID_WithThreadID(t *testing.T) {
+	cid, tid, err := parseTelegramChatID("-1001234567890/42")
+	assert.NoError(t, err)
+	assert.Equal(t, int64(-1001234567890), cid)
+	assert.Equal(t, 42, tid)
+}
+
+func TestParseTelegramChatID_GeneralTopic(t *testing.T) {
+	cid, tid, err := parseTelegramChatID("-100123/1")
+	assert.NoError(t, err)
+	assert.Equal(t, int64(-100123), cid)
+	assert.Equal(t, 1, tid)
+}
+
+func TestParseTelegramChatID_Invalid(t *testing.T) {
+	_, _, err := parseTelegramChatID("not-a-number")
+	assert.Error(t, err)
+}
+
+func TestParseTelegramChatID_InvalidThreadID(t *testing.T) {
+	_, _, err := parseTelegramChatID("-100123/not-a-thread")
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid thread ID")
+}
+
+func TestSend_WithForumThreadID(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "-1001234567890/42",
+		Content: "Hello from topic",
+	})
+
+	assert.NoError(t, err)
+	assert.Len(t, caller.calls, 1)
+}
+
+func TestHandleMessage_ForumTopic_SetsMetadata(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		chatIDs:     make(map[string]int64),
+		ctx:         context.Background(),
+	}
+
+	msg := &telego.Message{
+		Text:            "hello from topic",
+		MessageID:       10,
+		MessageThreadID: 42,
+		Chat: telego.Chat{
+			ID:      -1001234567890,
+			Type:    "supergroup",
+			IsForum: true,
+		},
+		From: &telego.User{
+			ID:        7,
+			FirstName: "Alice",
+		},
+	}
+
+	err := ch.handleMessage(context.Background(), msg)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	inbound, ok := messageBus.ConsumeInbound(ctx)
+	require.True(t, ok, "expected inbound message")
+
+	// Composite chatID should include thread ID
+	assert.Equal(t, "-1001234567890/42", inbound.ChatID)
+
+	// Peer ID should include thread ID for session key isolation
+	assert.Equal(t, "group", inbound.Peer.Kind)
+	assert.Equal(t, "-1001234567890/42", inbound.Peer.ID)
+
+	// Parent peer metadata should be set for agent binding
+	assert.Equal(t, "topic", inbound.Metadata["parent_peer_kind"])
+	assert.Equal(t, "42", inbound.Metadata["parent_peer_id"])
+}
+
+func TestHandleMessage_NoForum_NoThreadMetadata(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		chatIDs:     make(map[string]int64),
+		ctx:         context.Background(),
+	}
+
+	msg := &telego.Message{
+		Text:      "regular group message",
+		MessageID: 11,
+		Chat: telego.Chat{
+			ID:   -100999,
+			Type: "group",
+		},
+		From: &telego.User{
+			ID:        8,
+			FirstName: "Bob",
+		},
+	}
+
+	err := ch.handleMessage(context.Background(), msg)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	inbound, ok := messageBus.ConsumeInbound(ctx)
 	require.True(t, ok)
-	assert.Equal(t, telegramGeneralTopicID, threadID)
+
+	// Plain chatID without thread suffix
+	assert.Equal(t, "-100999", inbound.ChatID)
+
+	// Peer ID should be raw chat ID (no thread suffix)
+	assert.Equal(t, "group", inbound.Peer.Kind)
+	assert.Equal(t, "-100999", inbound.Peer.ID)
+
+	// No parent peer metadata
+	assert.Empty(t, inbound.Metadata["parent_peer_kind"])
+	assert.Empty(t, inbound.Metadata["parent_peer_id"])
+}
+
+func TestHandleMessage_ReplyThread_NonForum_NoIsolation(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		chatIDs:     make(map[string]int64),
+		ctx:         context.Background(),
+	}
+
+	// In regular groups, reply threads set MessageThreadID to the original
+	// message ID. This should NOT trigger per-thread session isolation.
+	msg := &telego.Message{
+		Text:            "reply in thread",
+		MessageID:       20,
+		MessageThreadID: 15,
+		Chat: telego.Chat{
+			ID:      -100999,
+			Type:    "supergroup",
+			IsForum: false,
+		},
+		From: &telego.User{
+			ID:        9,
+			FirstName: "Carol",
+		},
+	}
+
+	err := ch.handleMessage(context.Background(), msg)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	inbound, ok := messageBus.ConsumeInbound(ctx)
+	require.True(t, ok)
+
+	// chatID should NOT include thread suffix for non-forum groups
+	assert.Equal(t, "-100999", inbound.ChatID)
+
+	// Peer ID should be raw chat ID (shared session for whole group)
+	assert.Equal(t, "group", inbound.Peer.Kind)
+	assert.Equal(t, "-100999", inbound.Peer.ID)
+
+	// No parent peer metadata
+	assert.Empty(t, inbound.Metadata["parent_peer_kind"])
+	assert.Empty(t, inbound.Metadata["parent_peer_id"])
 }

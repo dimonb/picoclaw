@@ -99,16 +99,16 @@ func TestHandleMessage_ForumTopic_IsolatesChatAndAddsRoutingMetadata(t *testing.
 	if !ok {
 		t.Fatal("expected inbound message to be forwarded")
 	}
-	if inbound.ChatID != "-1001234567890:topic:42" {
+	if inbound.ChatID != "-1001234567890/42" {
 		t.Fatalf("chat_id=%q", inbound.ChatID)
 	}
-	if inbound.Peer.ID != "-1001234567890:topic:42" {
+	if inbound.Peer.ID != "-1001234567890/42" {
 		t.Fatalf("peer_id=%q", inbound.Peer.ID)
 	}
-	if inbound.Metadata["parent_peer_kind"] != "group" {
+	if inbound.Metadata["parent_peer_kind"] != "topic" {
 		t.Fatalf("parent_peer_kind=%q", inbound.Metadata["parent_peer_kind"])
 	}
-	if inbound.Metadata["parent_peer_id"] != "-1001234567890" {
+	if inbound.Metadata["parent_peer_id"] != "42" {
 		t.Fatalf("parent_peer_id=%q", inbound.Metadata["parent_peer_id"])
 	}
 	if inbound.Metadata["route_agent_id"] != "coder" {
