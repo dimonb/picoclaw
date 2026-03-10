@@ -62,16 +62,22 @@ type ContentBlock struct {
 	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
+type MessageReaction struct {
+	TargetMessageID string `json:"target_message_id,omitempty"`
+	Emoji           string `json:"emoji,omitempty"`
+}
+
 type Message struct {
-	Role             string         `json:"role"`
-	Content          string         `json:"content"`
-	Media            []string       `json:"media,omitempty"`
-	ReasoningContent string         `json:"reasoning_content,omitempty"`
-	SystemParts      []ContentBlock `json:"system_parts,omitempty"` // structured system blocks for cache-aware adapters
-	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
-	ToolCallID       string         `json:"tool_call_id,omitempty"`
-	MessageID        string         `json:"message_id,omitempty"`         // Platform message ID
-	ReplyToMessageID string         `json:"reply_to_message_id,omitempty"` // Parent message ID (for threading)
+	Role             string            `json:"role"`
+	Content          string            `json:"content"`
+	Media            []string          `json:"media,omitempty"`
+	ReasoningContent string            `json:"reasoning_content,omitempty"`
+	SystemParts      []ContentBlock    `json:"system_parts,omitempty"` // structured system blocks for cache-aware adapters
+	ToolCalls        []ToolCall        `json:"tool_calls,omitempty"`
+	ToolCallID       string            `json:"tool_call_id,omitempty"`
+	MessageID        string            `json:"message_id,omitempty"`          // Platform message ID
+	ReplyToMessageID string            `json:"reply_to_message_id,omitempty"` // Parent message ID (for threading)
+	Reactions        []MessageReaction `json:"reactions,omitempty"`
 }
 
 type ToolDefinition struct {

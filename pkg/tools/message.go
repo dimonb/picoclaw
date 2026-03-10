@@ -35,6 +35,10 @@ func (t *MessageTool) Description() string {
 	return "Send an out-of-band message to a chat channel. Do not use this for the normal final reply in the current conversation."
 }
 
+func (t *MessageTool) Available(ctx context.Context) bool {
+	return strings.TrimSpace(ToolChannel(ctx)) != "telegram"
+}
+
 func (t *MessageTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",

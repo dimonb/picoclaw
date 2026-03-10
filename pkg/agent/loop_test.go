@@ -429,7 +429,7 @@ func (m *taskToolRaceMockProvider) Chat(
 	}
 
 	return &providers.LLMResponse{
-		Content:   "",
+		Content:   "done",
 		ToolCalls: []providers.ToolCall{},
 	}, nil
 }
@@ -465,7 +465,7 @@ func (m *reactionToolMockProvider) Chat(
 	}
 
 	return &providers.LLMResponse{
-		Content:   "",
+		Content:   "done",
 		ToolCalls: []providers.ToolCall{},
 	}, nil
 }
@@ -635,7 +635,7 @@ func TestParseFinalReplyDirective(t *testing.T) {
 			CurrentMessageID: "910",
 			ParentMessageID:  "905",
 		},
-		"[[reply:parent]]\n\nThreaded answer",
+		"[[reply_to:parent;react_to:current:❤️;react_to:905:🔥;text_reply=true]]\n\nThreaded answer",
 	)
 
 	if content != "Threaded answer" {
@@ -643,6 +643,57 @@ func TestParseFinalReplyDirective(t *testing.T) {
 	}
 	if replyTo != "905" {
 		t.Fatalf("replyTo=%q", replyTo)
+	}
+}
+
+func TestResolveFinalResponse_TelegramDeliveryDirectiveSupportsSilentMultiReaction(t *testing.T) {
+	response := resolveFinalResponse(
+		"telegram",
+		&ReplyContextInfo{
+			CurrentMessageID: "910",
+			ParentMessageID:  "905",
+		},
+		"[[reply_to:parent;react_to:current:❤️;react_to:905:🔥;text_reply=false]]\n",
+	)
+
+	if response.ReplyToMessageID != "905" {
+		t.Fatalf("reply_to_message_id=%q", response.ReplyToMessageID)
+	}
+	if !response.SuppressTextReply {
+		t.Fatal("expected SuppressTextReply=true")
+	}
+	if len(response.Reactions) != 2 {
+		t.Fatalf("reaction len=%d", len(response.Reactions))
+	}
+	if response.Reactions[0].TargetMessageID != "910" || response.Reactions[0].Emoji != "❤️" {
+		t.Fatalf("unexpected reaction[0]=%+v", response.Reactions[0])
+	}
+	if response.Reactions[1].TargetMessageID != "905" || response.Reactions[1].Emoji != "🔥" {
+		t.Fatalf("unexpected reaction[1]=%+v", response.Reactions[1])
+	}
+}
+
+func TestResolveFinalResponse_InvalidTelegramDeliveryDirectiveDoesNotPartiallyApply(t *testing.T) {
+	response := resolveFinalResponse(
+		"telegram",
+		&ReplyContextInfo{
+			CurrentMessageID: "910",
+			ParentMessageID:  "905",
+		},
+		"[[reply_to:parent;react_to:current:❤️;unknown=true;text_reply=false]]\n\nVisible answer",
+	)
+
+	if response.ReplyToMessageID != "" {
+		t.Fatalf("reply_to_message_id=%q", response.ReplyToMessageID)
+	}
+	if response.SuppressTextReply {
+		t.Fatal("expected invalid directive to leave text reply enabled")
+	}
+	if len(response.Reactions) != 0 {
+		t.Fatalf("expected no reactions on invalid directive, got %+v", response.Reactions)
+	}
+	if response.Content != "Visible answer" {
+		t.Fatalf("content=%q", response.Content)
 	}
 }
 
@@ -665,7 +716,7 @@ func TestProcessMessage_TelegramFinalDirectiveSetsReplyTarget(t *testing.T) {
 	}
 
 	msgBus := bus.NewMessageBus()
-	provider := &simpleMockProvider{response: "[[reply:parent]]\n\nThreaded answer"}
+	provider := &simpleMockProvider{response: "[[reply_to:parent;text_reply=true]]\n\nThreaded answer"}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
 	msg := bus.InboundMessage{
@@ -714,7 +765,7 @@ func TestRun_PublishesTelegramReplyTargetFromFinalDirective(t *testing.T) {
 	}
 
 	msgBus := bus.NewMessageBus()
-	provider := &simpleMockProvider{response: "[[reply:parent]]\n\nThreaded answer"}
+	provider := &simpleMockProvider{response: "[[reply_to:parent;text_reply=true]]\n\nThreaded answer"}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -987,7 +1038,7 @@ func TestToolResult_UserFacingToolDoesSendMessage(t *testing.T) {
 	}
 }
 
-func TestReactionTool_SuppressesDefaultFinalResponse(t *testing.T) {
+func TestReactionTool_DoesNotSuppressFinalResponse(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -1041,8 +1092,8 @@ func TestReactionTool_SuppressesDefaultFinalResponse(t *testing.T) {
 	if calls != 1 {
 		t.Fatalf("reaction callback calls = %d, want 1", calls)
 	}
-	if response != "" {
-		t.Fatalf("expected empty final response after reaction tool, got %q", response)
+	if response != "done" {
+		t.Fatalf("expected final response to remain visible after reaction tool, got %q", response)
 	}
 }
 
@@ -1066,6 +1117,24 @@ func TestReactionTool_BecomesAvailableForTelegramAfterChannelManagerBinding(t *t
 	after := defaultAgent.Tools.ToProviderDefsWithContext(context.Background(), "telegram", "chat1")
 	if !slices.ContainsFunc(after, func(def providers.ToolDefinition) bool { return def.Function.Name == "reaction" }) {
 		t.Fatal("reaction tool should be available for telegram after channel manager binding")
+	}
+}
+
+func TestMessageTool_IsUnavailableForTelegramContext(t *testing.T) {
+	al := NewAgentLoop(config.DefaultConfig(), bus.NewMessageBus(), nil)
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	telegramDefs := defaultAgent.Tools.ToProviderDefsWithContext(context.Background(), "telegram", "chat1")
+	if slices.ContainsFunc(telegramDefs, func(def providers.ToolDefinition) bool { return def.Function.Name == "message" }) {
+		t.Fatal("message tool should not be available in telegram context")
+	}
+
+	cliDefs := defaultAgent.Tools.ToProviderDefsWithContext(context.Background(), "cli", "direct")
+	if !slices.ContainsFunc(cliDefs, func(def providers.ToolDefinition) bool { return def.Function.Name == "message" }) {
+		t.Fatal("message tool should remain available outside telegram context")
 	}
 }
 

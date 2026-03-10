@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync/atomic"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 )
@@ -18,10 +17,8 @@ const (
 )
 
 type ReactionTool struct {
-	allowedEmoji    []string
-	reactCallback   ReactionCallback
-	handledInRound  atomic.Bool
-	suppressesReply atomic.Bool
+	allowedEmoji  []string
+	reactCallback ReactionCallback
 }
 
 func NewReactionTool(allowedEmoji []string) *ReactionTool {
@@ -62,7 +59,7 @@ func (t *ReactionTool) Description() string {
 		)
 	}
 	return fmt.Sprintf(
-		"Add an emoji reaction to a Telegram message.%s Set also_reply=true to additionally send a text reply; omit or set false to react only (no text reply).",
+		"Add an emoji reaction to a Telegram message.%s This tool only adds the reaction and does not control the final text reply.",
 		emojiPart,
 	)
 }
@@ -93,10 +90,6 @@ func (t *ReactionTool) Parameters() map[string]any {
 				"type":        "string",
 				"description": "Explicit Telegram message ID when target=message_id",
 			},
-			"also_reply": map[string]any{
-				"type":        "boolean",
-				"description": "If true, also send a text reply in addition to the reaction. Default false (reaction only).",
-			},
 		},
 		"required": []string{"emoji"},
 	}
@@ -108,20 +101,6 @@ func (t *ReactionTool) ExecuteSequentially() bool {
 
 func (t *ReactionTool) SetReactionCallback(callback ReactionCallback) {
 	t.reactCallback = callback
-}
-
-func (t *ReactionTool) ResetHandledInRound() {
-	t.handledInRound.Store(false)
-	t.suppressesReply.Store(false)
-}
-
-func (t *ReactionTool) HasHandledInRound() bool {
-	return t.handledInRound.Load()
-}
-
-// SuppressesReply reports whether the reaction should suppress the final text reply.
-func (t *ReactionTool) SuppressesReply() bool {
-	return t.suppressesReply.Load()
 }
 
 func (t *ReactionTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
@@ -166,9 +145,6 @@ func (t *ReactionTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		return ErrorResult(fmt.Sprintf("adding reaction: %v", err)).WithError(err)
 	}
 
-	alsoReply, _ := args["also_reply"].(bool)
-	t.handledInRound.Store(true)
-	t.suppressesReply.Store(!alsoReply)
 	return SilentResult(fmt.Sprintf("Reaction %s added to telegram:%s message %s", emoji, chatID, messageID))
 }
 

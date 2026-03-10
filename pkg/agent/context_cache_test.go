@@ -147,17 +147,17 @@ func TestBuildMessages_TelegramReplyRoutingContext(t *testing.T) {
 	)
 
 	sys := msgs[0].Content
-	if !strings.Contains(sys, "## Reply Routing") {
-		t.Fatal("system prompt missing reply routing section")
+	if !strings.Contains(sys, "## Telegram Delivery") {
+		t.Fatal("system prompt missing Telegram delivery section")
 	}
 	if !strings.Contains(sys, "Current inbound message ID: 910") {
 		t.Fatal("system prompt missing current message ID")
 	}
-	if !strings.Contains(sys, "[[reply:current]]") {
-		t.Fatal("system prompt missing final reply directive guidance")
+	if !strings.Contains(sys, "[[reply_to:<message_id|current|parent|chat>;react_to:<message_id|current|parent>:<emoji>;react_to:<message_id|current|parent>:<emoji>;text_reply=<true|false>]]") {
+		t.Fatal("system prompt missing final delivery block guidance")
 	}
-	if !strings.Contains(sys, "Do not use the `message` tool for the normal reply in this chat") {
-		t.Fatal("system prompt missing guidance to avoid message tool for normal replies")
+	if !strings.Contains(sys, "the `message` tool is unavailable in this chat; use the hidden delivery block for normal replies") {
+		t.Fatal("system prompt missing guidance about hidden-block delivery")
 	}
 }
 

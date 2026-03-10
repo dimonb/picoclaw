@@ -16,19 +16,26 @@ type compactionNoteMetadata struct {
 	OmittedMessages bool
 }
 
-// messageThreadAnnotation returns the thread annotation prefix for a message,
-// e.g. "[msg:#5, reply_to:#3] " or "" if the message has no threading IDs.
+// messageThreadAnnotation returns the delivery/thread annotation prefix for a
+// message, e.g. "[msg:#5, reply_to:#3, react_to:#5=❤️] " or "" if absent.
 func messageThreadAnnotation(msg providers.Message) string {
-	switch {
-	case msg.MessageID != "" && msg.ReplyToMessageID != "":
-		return fmt.Sprintf("[msg:#%s, reply_to:#%s] ", msg.MessageID, msg.ReplyToMessageID)
-	case msg.MessageID != "":
-		return fmt.Sprintf("[msg:#%s] ", msg.MessageID)
-	case msg.ReplyToMessageID != "":
-		return fmt.Sprintf("[reply_to:#%s] ", msg.ReplyToMessageID)
-	default:
+	parts := make([]string, 0, 2+len(msg.Reactions))
+	if msg.MessageID != "" {
+		parts = append(parts, fmt.Sprintf("msg:#%s", msg.MessageID))
+	}
+	if msg.ReplyToMessageID != "" {
+		parts = append(parts, fmt.Sprintf("reply_to:#%s", msg.ReplyToMessageID))
+	}
+	for _, reaction := range msg.Reactions {
+		if reaction.TargetMessageID == "" || reaction.Emoji == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("react_to:#%s=%s", reaction.TargetMessageID, reaction.Emoji))
+	}
+	if len(parts) == 0 {
 		return ""
 	}
+	return fmt.Sprintf("[%s] ", strings.Join(parts, ", "))
 }
 
 func formatConversationMessages(batch []providers.Message) string {
@@ -68,7 +75,7 @@ Prioritize:
 
 Omit small talk, repetition, exploratory dead ends, and wording that does not change future behavior.
 If newer statements conflict with older ones, prefer the newer statement and note the change briefly.
-Messages may carry [msg:#ID] and [reply_to:#PARENT] annotations showing thread structure. If a reply
+Messages may carry [msg:#ID], [reply_to:#PARENT], and [react_to:#ID=EMOJI] annotations showing thread structure and silent acknowledgements. If a reply
 thread is active or unresolved, note it briefly as "thread rooted at #ID about <topic>" in Open Loops.
 Do not invent facts.
 Write in the dominant language of the conversation.

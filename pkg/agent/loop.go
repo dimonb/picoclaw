@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,8 +70,11 @@ type processOptions struct {
 type agentResponse struct {
 	Content           string
 	ReplyToMessageID  string
+	Reactions         []providers.MessageReaction
+	SuppressTextReply bool
 	HandledExternally bool
 	OnDelivered       func(msgID string) // called after confirmed delivery
+	OnSilentDelivered func(reactions []providers.MessageReaction)
 }
 
 func (r agentResponse) outboundMessage(channel, chatID string) bus.OutboundMessage {
@@ -81,6 +85,10 @@ func (r agentResponse) outboundMessage(channel, chatID string) bus.OutboundMessa
 		ReplyToMessageID: r.ReplyToMessageID,
 		OnDelivered:      r.OnDelivered,
 	}
+}
+
+func (r agentResponse) hasTextReply() bool {
+	return !r.SuppressTextReply && strings.TrimSpace(r.Content) != ""
 }
 
 const (
@@ -413,35 +421,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				if err != nil {
 					response = agentResponse{Content: fmt.Sprintf("Error processing message: %v", err)}
 				}
-
-				if response.HandledExternally {
-					// A direct tool action (message or reaction) already sent user-facing output.
-					// Stop typing and delete placeholder since no outbound message will trigger preSend.
-					if al.channelManager != nil {
-						al.channelManager.CleanupState(ctx, msg.Channel, msg.ChatID)
-					}
-					if response.Content != "" {
-						logger.DebugCF(
-							"agent",
-							"Skipped outbound (message tool already sent)",
-							map[string]any{
-								"channel":             msg.Channel,
-								"chat_id":             msg.ChatID,
-								"content_len":         len(response.Content),
-								"reply_to_message_id": response.ReplyToMessageID,
-							},
-						)
-					}
-				} else if response.Content != "" {
-					al.bus.PublishOutbound(ctx, response.outboundMessage(msg.Channel, msg.ChatID))
-					logger.InfoCF("agent", "Published outbound response",
-						map[string]any{
-							"channel":             msg.Channel,
-							"chat_id":             msg.ChatID,
-							"content_len":         len(response.Content),
-							"reply_to_message_id": response.ReplyToMessageID,
-						})
-				}
+				al.deliverAgentResponse(ctx, msg.Channel, msg.ChatID, response)
 			}()
 		}
 	}
@@ -531,11 +511,6 @@ func (al *AgentLoop) agentTurnHandledByDirectToolAction(agent *AgentInstance) bo
 			return true
 		}
 	}
-	if tool, ok := agent.Tools.Get("reaction"); ok {
-		if rt, ok := tool.(*tools.ReactionTool); ok && rt.HasHandledInRound() && rt.SuppressesReply() {
-			return true
-		}
-	}
 	return false
 }
 
@@ -548,11 +523,158 @@ func (al *AgentLoop) resetRoundActionTools(agent *AgentInstance) {
 			resetter.ResetSentInRound()
 		}
 	}
-	if tool, ok := agent.Tools.Get("reaction"); ok {
-		if resetter, ok := tool.(interface{ ResetHandledInRound() }); ok {
-			resetter.ResetHandledInRound()
+}
+
+func (al *AgentLoop) deliverAgentResponse(ctx context.Context, channel, chatID string, response agentResponse) {
+	if response.HandledExternally {
+		if al.channelManager != nil {
+			al.channelManager.CleanupState(ctx, channel, chatID)
 		}
+		if response.Content != "" {
+			logger.DebugCF(
+				"agent",
+				"Skipped outbound (message tool already sent)",
+				map[string]any{
+					"channel":             channel,
+					"chat_id":             chatID,
+					"content_len":         len(response.Content),
+					"reply_to_message_id": response.ReplyToMessageID,
+				},
+			)
+		}
+		return
 	}
+
+	if response.hasTextReply() {
+		al.bus.PublishOutbound(ctx, response.outboundMessage(channel, chatID))
+		logger.InfoCF("agent", "Published outbound response",
+			map[string]any{
+				"channel":             channel,
+				"chat_id":             chatID,
+				"content_len":         len(response.Content),
+				"reply_to_message_id": response.ReplyToMessageID,
+				"reaction_count":      len(response.Reactions),
+			})
+		return
+	}
+
+	if len(response.Reactions) == 0 {
+		return
+	}
+
+	if al.channelManager != nil {
+		al.channelManager.CleanupState(ctx, channel, chatID)
+	}
+
+	delivered := al.applyFinalReactions(ctx, channel, chatID, response.Reactions)
+	if len(delivered) == 0 {
+		return
+	}
+	if response.OnSilentDelivered != nil {
+		response.OnSilentDelivered(delivered)
+	}
+
+	logger.InfoCF("agent", "Applied silent delivery reactions",
+		map[string]any{
+			"channel":        channel,
+			"chat_id":        chatID,
+			"reaction_count": len(delivered),
+		})
+}
+
+func (al *AgentLoop) normalizeFinalReactions(
+	channel string,
+	reactions []providers.MessageReaction,
+) []providers.MessageReaction {
+	if channel != "telegram" || len(reactions) == 0 {
+		return nil
+	}
+
+	allowed := make(map[string]struct{})
+	allowedEmoji := normalizeAllowedEmoji([]string(al.cfg.Channels.Telegram.AllowedReactionEmoji))
+	if len(allowedEmoji) == 0 {
+		allowedEmoji = normalizeAllowedEmoji([]string(config.DefaultTelegramReactionEmoji()))
+	}
+	for _, emoji := range allowedEmoji {
+		allowed[emoji] = struct{}{}
+	}
+
+	seen := make(map[string]struct{}, len(reactions))
+	out := make([]providers.MessageReaction, 0, len(reactions))
+	for _, reaction := range reactions {
+		target := strings.TrimSpace(reaction.TargetMessageID)
+		emoji := strings.TrimSpace(reaction.Emoji)
+		if target == "" || emoji == "" {
+			continue
+		}
+		if _, ok := allowed[emoji]; !ok {
+			logger.WarnCF("agent", "Ignoring final delivery reaction outside allowlist", map[string]any{
+				"channel":           channel,
+				"target_message_id": target,
+				"emoji":             emoji,
+			})
+			continue
+		}
+		key := target + "\x00" + emoji
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, providers.MessageReaction{
+			TargetMessageID: target,
+			Emoji:           emoji,
+		})
+	}
+	return out
+}
+
+func normalizeAllowedEmoji(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func (al *AgentLoop) applyFinalReactions(
+	ctx context.Context,
+	channel, chatID string,
+	reactions []providers.MessageReaction,
+) []providers.MessageReaction {
+	if len(reactions) == 0 || al.channelManager == nil {
+		return nil
+	}
+
+	delivered := make([]providers.MessageReaction, 0, len(reactions))
+	for _, reaction := range reactions {
+		if err := al.channelManager.SetMessageReaction(
+			ctx,
+			channel,
+			chatID,
+			reaction.TargetMessageID,
+			reaction.Emoji,
+		); err != nil {
+			logger.WarnCF("agent", "Failed to apply final delivery reaction", map[string]any{
+				"channel":           channel,
+				"chat_id":           chatID,
+				"target_message_id": reaction.TargetMessageID,
+				"emoji":             reaction.Emoji,
+				"error":             err.Error(),
+			})
+			continue
+		}
+		delivered = append(delivered, reaction)
+	}
+	return delivered
 }
 
 var audioAnnotationRe = regexp.MustCompile(`\[(voice|audio)(?::[^\]]*)?\]`)
@@ -871,7 +993,7 @@ func (al *AgentLoop) processSystemMessage(
 		UserMessage:     fmt.Sprintf("[System: %s] %s", msg.SenderID, msg.Content),
 		DefaultResponse: "Background task completed.",
 		EnableSummary:   false,
-		SendResponse:    true,
+		SendResponse:    false,
 	})
 }
 
@@ -947,32 +1069,83 @@ func (al *AgentLoop) runAgentLoop(
 
 	// 4. Handle empty response
 	directActionHandled := al.agentTurnHandledByDirectToolAction(agent)
-	if finalContent == "" && !directActionHandled {
-		finalContent = opts.DefaultResponse
-	}
 	response := resolveFinalResponse(opts.Channel, opts.ReplyContext, finalContent)
-	if response.Content == "" && !directActionHandled {
+	response.Reactions = al.normalizeFinalReactions(opts.Channel, response.Reactions)
+	if response.SuppressTextReply && len(response.Reactions) > 0 && al.channelManager == nil {
+		logger.WarnCF("agent", "Ignoring text_reply=false without channel manager for reaction delivery", map[string]any{
+			"channel":        opts.Channel,
+			"chat_id":        opts.ChatID,
+			"session_key":    opts.SessionKey,
+			"reaction_count": len(response.Reactions),
+		})
+		response.SuppressTextReply = false
+	}
+	if response.SuppressTextReply && len(response.Reactions) == 0 {
+		logger.WarnCF("agent", "Ignoring text_reply=false with no deliverable reactions", map[string]any{
+			"channel":        opts.Channel,
+			"chat_id":        opts.ChatID,
+			"session_key":    opts.SessionKey,
+			"raw_content":    utils.Truncate(finalContent, 160),
+			"content_len":    len(response.Content),
+			"reaction_count": 0,
+		})
+		response.SuppressTextReply = false
+	}
+	if response.hasTextReply() == false {
+		response.Content = ""
+	}
+	if !response.SuppressTextReply && response.Content == "" && !directActionHandled {
 		response.Content = opts.DefaultResponse
 	}
 
 	// 5. Register OnDelivered callback: write assistant message to session only
 	// after confirmed delivery so the journal stays consistent with what the
 	// user actually received. The callback also captures the platform message ID.
-	if response.Content != "" {
+	if response.hasTextReply() {
 		sessionKey := opts.SessionKey
 		agentSessions := agent.Sessions
 		content := response.Content
 		replyTo := response.ReplyToMessageID
+		reactions := append([]providers.MessageReaction(nil), response.Reactions...)
 		enableSummary := opts.EnableSummary
 		channel := opts.Channel
 		chatID := opts.ChatID
 
 		response.OnDelivered = func(msgID string) {
+			deliveredReactions := reactions
+			if len(reactions) > 0 {
+				reactCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				deliveredReactions = al.applyFinalReactions(reactCtx, channel, chatID, reactions)
+				cancel()
+			}
 			assistantMsg := providers.Message{
 				Role:             "assistant",
 				Content:          content,
 				ReplyToMessageID: replyTo,
 				MessageID:        msgID,
+				Reactions:        deliveredReactions,
+			}
+			agentSessions.AddFullMessage(sessionKey, assistantMsg)
+			agentSessions.Save(sessionKey)
+			if enableSummary {
+				al.maybeSummarize(agent, sessionKey, channel, chatID)
+			}
+		}
+	} else if len(response.Reactions) > 0 {
+		sessionKey := opts.SessionKey
+		agentSessions := agent.Sessions
+		replyTo := response.ReplyToMessageID
+		enableSummary := opts.EnableSummary
+		channel := opts.Channel
+		chatID := opts.ChatID
+		response.OnSilentDelivered = func(deliveredReactions []providers.MessageReaction) {
+			if len(deliveredReactions) == 0 {
+				return
+			}
+			assistantMsg := providers.Message{
+				Role:             "assistant",
+				ReplyToMessageID: replyTo,
+				Reactions:        deliveredReactions,
 			}
 			agentSessions.AddFullMessage(sessionKey, assistantMsg)
 			agentSessions.Save(sessionKey)
@@ -983,7 +1156,7 @@ func (al *AgentLoop) runAgentLoop(
 	}
 
 	// 6. Optional: send response via bus (OnDelivered fires after send)
-	if opts.SendResponse && response.Content != "" {
+	if opts.SendResponse && response.hasTextReply() {
 		al.bus.PublishOutbound(ctx, response.outboundMessage(opts.Channel, opts.ChatID))
 	}
 
@@ -991,14 +1164,24 @@ func (al *AgentLoop) runAgentLoop(
 	responsePreview := utils.Truncate(response.Content, 120)
 	logger.InfoCF("agent", fmt.Sprintf("Response: %s", responsePreview),
 		map[string]any{
-			"agent_id":     agent.ID,
-			"session_key":  opts.SessionKey,
-			"iterations":   iteration,
-			"final_length": len(response.Content),
+			"agent_id":       agent.ID,
+			"session_key":    opts.SessionKey,
+			"iterations":     iteration,
+			"final_length":   len(response.Content),
+			"reaction_count": len(response.Reactions),
+			"text_reply":     !response.SuppressTextReply,
 		})
 
 	response.HandledExternally = directActionHandled
 	return response, nil
+}
+
+type telegramDeliveryDirective struct {
+	HasDirective      bool
+	Directive         string
+	ReplyToMessageID  string
+	Reactions         []providers.MessageReaction
+	SuppressTextReply bool
 }
 
 func resolveFinalResponse(
@@ -1006,46 +1189,201 @@ func resolveFinalResponse(
 	replyCtx *ReplyContextInfo,
 	rawContent string,
 ) agentResponse {
-	content, replyToMessageID := parseFinalReplyDirective(channel, replyCtx, rawContent)
-	if channel == "telegram" {
-		firstLine, _, _ := strings.Cut(rawContent, "\n")
-		directive := strings.TrimSpace(firstLine)
-		hasDirective := strings.HasPrefix(directive, "[[reply:") && strings.HasSuffix(directive, "]]")
-		directiveMode := ""
-		if hasDirective {
-			directiveMode = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(directive, "[[reply:"), "]]"))
+	if channel != "telegram" {
+		return agentResponse{Content: rawContent}
+	}
+
+	directive, content, err := parseTelegramDeliveryDirective(replyCtx, rawContent)
+	if err != nil {
+		logger.WarnCF("agent", "Ignoring invalid Telegram delivery directive", map[string]any{
+			"channel":   channel,
+			"directive": directive.Directive,
+			"error":     err.Error(),
+		})
+		directive.ReplyToMessageID = ""
+		directive.Reactions = nil
+		directive.SuppressTextReply = false
+	}
+
+	fields := map[string]any{
+		"directive_status":    "none",
+		"reply_to_message_id": directive.ReplyToMessageID,
+		"reaction_count":      len(directive.Reactions),
+		"raw_content_len":     len(rawContent),
+		"final_content_len":   len(content),
+		"text_reply":          !directive.SuppressTextReply,
+	}
+	if directive.HasDirective {
+		fields["directive"] = directive.Directive
+		if err == nil {
+			fields["directive_status"] = "applied"
+		} else {
+			fields["directive_status"] = "dropped"
 		}
-		var directiveStatus string
-		switch {
-		case !hasDirective:
-			directiveStatus = "none"
-		case directiveMode == "chat":
-			directiveStatus = "applied_chat"
-		case replyToMessageID != "":
-			directiveStatus = "applied_reply"
-		default:
-			directiveStatus = "dropped"
+	}
+	if replyCtx != nil {
+		fields["current_message_id"] = strings.TrimSpace(replyCtx.CurrentMessageID)
+		fields["parent_message_id"] = strings.TrimSpace(replyCtx.ParentMessageID)
+	}
+	logger.DebugCF("agent", "Resolved Telegram final delivery", fields)
+
+	return agentResponse{
+		Content:           content,
+		ReplyToMessageID:  directive.ReplyToMessageID,
+		Reactions:         directive.Reactions,
+		SuppressTextReply: directive.SuppressTextReply,
+	}
+}
+
+func parseTelegramDeliveryDirective(
+	replyCtx *ReplyContextInfo,
+	rawContent string,
+) (directive telegramDeliveryDirective, body string, err error) {
+	body = rawContent
+	firstLine, rest, hasRest := strings.Cut(rawContent, "\n")
+	header := strings.TrimSpace(firstLine)
+	if !strings.HasPrefix(header, "[[") || !strings.HasSuffix(header, "]]") {
+		return directive, body, nil
+	}
+
+	directive = telegramDeliveryDirective{
+		HasDirective: true,
+		Directive:    header,
+	}
+	body = ""
+	if hasRest {
+		body = strings.TrimLeft(rest, "\n")
+	}
+
+	legacyBody, legacyReplyTo, legacyMatched, legacyErr := parseLegacyFinalReplyDirective(replyCtx, header, body)
+	if legacyMatched {
+		directive.ReplyToMessageID = legacyReplyTo
+		return directive, legacyBody, legacyErr
+	}
+
+	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(header, "[["), "]]"))
+	if inner == "" {
+		return directive, body, fmt.Errorf("empty delivery directive")
+	}
+
+	parts := strings.Split(inner, ";")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
 		}
 
-		fields := map[string]any{
-			"directive_status":    directiveStatus,
-			"reply_to_message_id": replyToMessageID,
-			"raw_content_len":     len(rawContent),
-			"final_content_len":   len(content),
+		switch {
+		case strings.HasPrefix(part, "reply_to:"):
+			target := strings.TrimSpace(strings.TrimPrefix(part, "reply_to:"))
+			resolved, ok := resolveTelegramDeliveryTarget(target, replyCtx, true)
+			if !ok {
+				return directive, body, fmt.Errorf("invalid reply_to target %q", target)
+			}
+			directive.ReplyToMessageID = resolved
+		case strings.HasPrefix(part, "reply_to="):
+			target := strings.TrimSpace(strings.TrimPrefix(part, "reply_to="))
+			resolved, ok := resolveTelegramDeliveryTarget(target, replyCtx, true)
+			if !ok {
+				return directive, body, fmt.Errorf("invalid reply_to target %q", target)
+			}
+			directive.ReplyToMessageID = resolved
+		case strings.HasPrefix(part, "react_to:"):
+			payload := strings.TrimSpace(strings.TrimPrefix(part, "react_to:"))
+			target, emoji, ok := strings.Cut(payload, ":")
+			if !ok {
+				return directive, body, fmt.Errorf("invalid react_to payload %q", payload)
+			}
+			resolved, ok := resolveTelegramDeliveryTarget(strings.TrimSpace(target), replyCtx, false)
+			if !ok || resolved == "" {
+				return directive, body, fmt.Errorf("invalid react_to target %q", target)
+			}
+			emoji = strings.TrimSpace(emoji)
+			if emoji == "" {
+				return directive, body, fmt.Errorf("empty reaction emoji")
+			}
+			directive.Reactions = append(directive.Reactions, providers.MessageReaction{
+				TargetMessageID: resolved,
+				Emoji:           emoji,
+			})
+		case strings.HasPrefix(part, "text_reply="):
+			value := strings.TrimSpace(strings.TrimPrefix(part, "text_reply="))
+			parsed, parseErr := strconv.ParseBool(value)
+			if parseErr != nil {
+				return directive, body, fmt.Errorf("invalid text_reply value %q", value)
+			}
+			directive.SuppressTextReply = !parsed
+		case strings.HasPrefix(part, "text_reply:"):
+			value := strings.TrimSpace(strings.TrimPrefix(part, "text_reply:"))
+			parsed, parseErr := strconv.ParseBool(value)
+			if parseErr != nil {
+				return directive, body, fmt.Errorf("invalid text_reply value %q", value)
+			}
+			directive.SuppressTextReply = !parsed
+		default:
+			return directive, body, fmt.Errorf("unknown delivery directive part %q", part)
 		}
-		if hasDirective {
-			fields["directive"] = directive
-			fields["directive_mode"] = directiveMode
-		}
-		if replyCtx != nil {
-			fields["current_message_id"] = strings.TrimSpace(replyCtx.CurrentMessageID)
-			fields["parent_message_id"] = strings.TrimSpace(replyCtx.ParentMessageID)
-		}
-		logger.DebugCF("agent", "Resolved final reply routing", fields)
 	}
-	return agentResponse{
-		Content:          content,
-		ReplyToMessageID: replyToMessageID,
+
+	return directive, body, nil
+}
+
+func parseLegacyFinalReplyDirective(
+	replyCtx *ReplyContextInfo,
+	header string,
+	body string,
+) (content, replyToMessageID string, matched bool, err error) {
+	if !strings.HasPrefix(header, "[[reply:") || !strings.HasSuffix(header, "]]") {
+		return body, "", false, nil
+	}
+
+	mode := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(header, "[[reply:"), "]]"))
+	switch {
+	case mode == "chat":
+		return body, "", true, nil
+	case mode == "current":
+		if replyCtx != nil && strings.TrimSpace(replyCtx.CurrentMessageID) != "" {
+			return body, strings.TrimSpace(replyCtx.CurrentMessageID), true, nil
+		}
+	case mode == "parent":
+		if replyCtx != nil && strings.TrimSpace(replyCtx.ParentMessageID) != "" {
+			return body, strings.TrimSpace(replyCtx.ParentMessageID), true, nil
+		}
+	case strings.HasPrefix(mode, "message_id="):
+		id := strings.TrimSpace(strings.TrimPrefix(mode, "message_id="))
+		if id != "" {
+			return body, id, true, nil
+		}
+	}
+
+	return body, "", true, fmt.Errorf("invalid legacy reply directive %q", header)
+}
+
+func resolveTelegramDeliveryTarget(
+	raw string,
+	replyCtx *ReplyContextInfo,
+	allowChat bool,
+) (string, bool) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return "", false
+	}
+
+	switch strings.ToLower(value) {
+	case "chat", "none":
+		return "", allowChat
+	case "current":
+		if replyCtx != nil && strings.TrimSpace(replyCtx.CurrentMessageID) != "" {
+			return strings.TrimSpace(replyCtx.CurrentMessageID), true
+		}
+		return "", false
+	case "parent":
+		if replyCtx != nil && strings.TrimSpace(replyCtx.ParentMessageID) != "" {
+			return strings.TrimSpace(replyCtx.ParentMessageID), true
+		}
+		return "", false
+	default:
+		return value, true
 	}
 }
 
@@ -1054,46 +1392,8 @@ func parseFinalReplyDirective(
 	replyCtx *ReplyContextInfo,
 	rawContent string,
 ) (content, replyToMessageID string) {
-	content = rawContent
-	if channel != "telegram" {
-		return content, ""
-	}
-
-	firstLine, rest, hasRest := strings.Cut(rawContent, "\n")
-	directive := strings.TrimSpace(firstLine)
-	if !strings.HasPrefix(directive, "[[reply:") || !strings.HasSuffix(directive, "]]") {
-		return content, ""
-	}
-
-	body := ""
-	if hasRest {
-		body = strings.TrimLeft(rest, "\n")
-	}
-
-	mode := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(directive, "[[reply:"), "]]"))
-	switch {
-	case mode == "chat":
-		return body, ""
-	case mode == "current":
-		if replyCtx != nil && strings.TrimSpace(replyCtx.CurrentMessageID) != "" {
-			return body, strings.TrimSpace(replyCtx.CurrentMessageID)
-		}
-	case mode == "parent":
-		if replyCtx != nil && strings.TrimSpace(replyCtx.ParentMessageID) != "" {
-			return body, strings.TrimSpace(replyCtx.ParentMessageID)
-		}
-	case strings.HasPrefix(mode, "message_id="):
-		id := strings.TrimSpace(strings.TrimPrefix(mode, "message_id="))
-		if id != "" {
-			return body, id
-		}
-	}
-
-	logger.WarnCF("agent", "Ignoring invalid final reply directive", map[string]any{
-		"channel":   channel,
-		"directive": directive,
-	})
-	return body, ""
+	response := resolveFinalResponse(channel, replyCtx, rawContent)
+	return response.Content, response.ReplyToMessageID
 }
 
 func (al *AgentLoop) targetReasoningChannelID(channelName string) (chatID string) {
