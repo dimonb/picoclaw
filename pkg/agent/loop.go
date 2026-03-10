@@ -70,6 +70,7 @@ type agentResponse struct {
 	Content           string
 	ReplyToMessageID  string
 	HandledExternally bool
+	OnDelivered       func(msgID string) // called after confirmed delivery
 }
 
 func (r agentResponse) outboundMessage(channel, chatID string) bus.OutboundMessage {
@@ -78,6 +79,7 @@ func (r agentResponse) outboundMessage(channel, chatID string) bus.OutboundMessa
 		ChatID:           chatID,
 		Content:          r.Content,
 		ReplyToMessageID: r.ReplyToMessageID,
+		OnDelivered:      r.OnDelivered,
 	}
 }
 
@@ -953,23 +955,34 @@ func (al *AgentLoop) runAgentLoop(
 		response.Content = opts.DefaultResponse
 	}
 
-	// 5. Save final assistant message to session
+	// 5. Register OnDelivered callback: write assistant message to session only
+	// after confirmed delivery so the journal stays consistent with what the
+	// user actually received. The callback also captures the platform message ID.
 	if response.Content != "" {
-		assistantMsg := providers.Message{
-			Role:             "assistant",
-			Content:          response.Content,
-			ReplyToMessageID: response.ReplyToMessageID,
+		sessionKey := opts.SessionKey
+		agentSessions := agent.Sessions
+		content := response.Content
+		replyTo := response.ReplyToMessageID
+		enableSummary := opts.EnableSummary
+		channel := opts.Channel
+		chatID := opts.ChatID
+
+		response.OnDelivered = func(msgID string) {
+			assistantMsg := providers.Message{
+				Role:             "assistant",
+				Content:          content,
+				ReplyToMessageID: replyTo,
+				MessageID:        msgID,
+			}
+			agentSessions.AddFullMessage(sessionKey, assistantMsg)
+			agentSessions.Save(sessionKey)
+			if enableSummary {
+				al.maybeSummarize(agent, sessionKey, channel, chatID)
+			}
 		}
-		agent.Sessions.AddFullMessage(opts.SessionKey, assistantMsg)
-	}
-	agent.Sessions.Save(opts.SessionKey)
-
-	// 6. Optional: summarization
-	if opts.EnableSummary {
-		al.maybeSummarize(agent, opts.SessionKey, opts.Channel, opts.ChatID)
 	}
 
-	// 7. Optional: send response via bus
+	// 6. Optional: send response via bus (OnDelivered fires after send)
 	if opts.SendResponse && response.Content != "" {
 		al.bus.PublishOutbound(ctx, response.outboundMessage(opts.Channel, opts.ChatID))
 	}
