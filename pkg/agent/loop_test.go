@@ -562,6 +562,11 @@ func (h testHelper) executeAndGetResponse(tb testing.TB, ctx context.Context, ms
 	if err != nil {
 		tb.Fatalf("processMessage failed: %v", err)
 	}
+	// Simulate delivery: in production Run() publishes to bus and the channel
+	// calls OnDelivered after sending. In tests we call it directly.
+	if response.OnDelivered != nil {
+		response.OnDelivered("")
+	}
 	return response.Content
 }
 

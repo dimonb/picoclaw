@@ -70,6 +70,7 @@ type agentResponse struct {
 	Content           string
 	ReplyToMessageID  string
 	HandledExternally bool
+	OnDelivered       func(msgID string) // called after confirmed delivery
 }
 
 func (r agentResponse) outboundMessage(channel, chatID string) bus.OutboundMessage {
@@ -78,6 +79,7 @@ func (r agentResponse) outboundMessage(channel, chatID string) bus.OutboundMessa
 		ChatID:           chatID,
 		Content:          r.Content,
 		ReplyToMessageID: r.ReplyToMessageID,
+		OnDelivered:      r.OnDelivered,
 	}
 }
 
@@ -915,7 +917,15 @@ func (al *AgentLoop) runAgentLoop(
 	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 
 	// 2. Save user message to session
-	agent.Sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
+	userMsg := providers.Message{
+		Role:    "user",
+		Content: opts.UserMessage,
+	}
+	if opts.ReplyContext != nil {
+		userMsg.MessageID = opts.ReplyContext.CurrentMessageID
+		userMsg.ReplyToMessageID = opts.ReplyContext.ParentMessageID
+	}
+	agent.Sessions.AddFullMessage(opts.SessionKey, userMsg)
 
 	// 3. Run LLM iteration loop
 	// Inject session key so tools (e.g. tasktool) can look it up from context.
@@ -945,18 +955,34 @@ func (al *AgentLoop) runAgentLoop(
 		response.Content = opts.DefaultResponse
 	}
 
-	// 5. Save final assistant message to session
+	// 5. Register OnDelivered callback: write assistant message to session only
+	// after confirmed delivery so the journal stays consistent with what the
+	// user actually received. The callback also captures the platform message ID.
 	if response.Content != "" {
-		agent.Sessions.AddMessage(opts.SessionKey, "assistant", response.Content)
-	}
-	agent.Sessions.Save(opts.SessionKey)
+		sessionKey := opts.SessionKey
+		agentSessions := agent.Sessions
+		content := response.Content
+		replyTo := response.ReplyToMessageID
+		enableSummary := opts.EnableSummary
+		channel := opts.Channel
+		chatID := opts.ChatID
 
-	// 6. Optional: summarization
-	if opts.EnableSummary {
-		al.maybeSummarize(agent, opts.SessionKey, opts.Channel, opts.ChatID)
+		response.OnDelivered = func(msgID string) {
+			assistantMsg := providers.Message{
+				Role:             "assistant",
+				Content:          content,
+				ReplyToMessageID: replyTo,
+				MessageID:        msgID,
+			}
+			agentSessions.AddFullMessage(sessionKey, assistantMsg)
+			agentSessions.Save(sessionKey)
+			if enableSummary {
+				al.maybeSummarize(agent, sessionKey, channel, chatID)
+			}
+		}
 	}
 
-	// 7. Optional: send response via bus
+	// 6. Optional: send response via bus (OnDelivered fires after send)
 	if opts.SendResponse && response.Content != "" {
 		al.bus.PublishOutbound(ctx, response.outboundMessage(opts.Channel, opts.ChatID))
 	}
@@ -1818,12 +1844,13 @@ func (al *AgentLoop) summarizeSession(
 	history := agent.Sessions.GetHistory(sessionKey)
 	summary := agent.Sessions.GetSummary(sessionKey)
 
-	// Keep last 4 messages for continuity
-	if len(history) <= 4 {
+	// Keep last N messages for continuity, extended to thread root if needed.
+	keepCount := threadAwareKeepCount(history, 4)
+	if len(history) <= keepCount {
 		return
 	}
 
-	toSummarize := history[:len(history)-4]
+	toSummarize := history[:len(history)-keepCount]
 
 	// Oversized Message Guard
 	maxMessageTokens := agent.ContextWindow / 2
@@ -1963,6 +1990,63 @@ func (al *AgentLoop) findNearestUserMessage(messages []providers.Message, mid in
 	}
 
 	return originalMid
+}
+
+// threadAwareKeepCount returns how many trailing messages to keep out of
+// summarization. It starts with minKeep and walks backwards to include any
+// message whose ReplyToMessageID points to a message that would otherwise be
+// summarized away — i.e. it finds the root of an active reply thread and keeps
+// everything from that root to the end.
+func threadAwareKeepCount(history []providers.Message, minKeep int) int {
+	if len(history) <= minKeep {
+		return len(history)
+	}
+	keep := minKeep
+
+	// Collect IDs of all messages that will be kept initially.
+	// Walk the tail and check whether any message is a reply whose parent
+	// lives in the to-be-summarized portion.
+	for {
+		cutoff := len(history) - keep
+		// Build a set of message IDs in the keep window.
+		keptIDs := make(map[string]bool, keep)
+		for _, m := range history[cutoff:] {
+			if m.MessageID != "" {
+				keptIDs[m.MessageID] = true
+			}
+		}
+
+		// Check if any kept message replies to something outside the window.
+		extended := false
+		for _, m := range history[cutoff:] {
+			if m.ReplyToMessageID == "" {
+				continue
+			}
+			if keptIDs[m.ReplyToMessageID] {
+				continue // parent is already kept
+			}
+			// Parent is in the summarized portion — find it and pull everything
+			// from that point forward into the keep window.
+			for i := cutoff - 1; i >= 0; i-- {
+				if history[i].MessageID == m.ReplyToMessageID {
+					keep = len(history) - i
+					extended = true
+					break
+				}
+			}
+			if extended {
+				break
+			}
+		}
+		if !extended {
+			break
+		}
+		// Safety cap: never keep more than half the history.
+		if keep >= len(history)/2 {
+			break
+		}
+	}
+	return keep
 }
 
 // retryLLMCall calls the LLM with retry logic.

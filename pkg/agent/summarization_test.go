@@ -188,3 +188,83 @@ func TestBuildRunningSummaryMergePromptIncludesConflictRules(t *testing.T) {
 		t.Fatalf("prompt missing indexed summary block: %q", prompt)
 	}
 }
+
+func TestThreadAwareKeepCount_NoThreads(t *testing.T) {
+	t.Parallel()
+	history := []providers.Message{
+		{Role: "user", Content: "a", MessageID: "1"},
+		{Role: "assistant", Content: "b", MessageID: "2"},
+		{Role: "user", Content: "c", MessageID: "3"},
+		{Role: "assistant", Content: "d", MessageID: "4"},
+		{Role: "user", Content: "e", MessageID: "5"},
+		{Role: "assistant", Content: "f", MessageID: "6"},
+	}
+	// No reply threads — should keep exactly minKeep.
+	if got := threadAwareKeepCount(history, 4); got != 4 {
+		t.Fatalf("expected 4, got %d", got)
+	}
+}
+
+func TestThreadAwareKeepCount_ActiveThreadExtendsWindow(t *testing.T) {
+	t.Parallel()
+	// History: root at index 0 (#1), reply thread continues into kept window.
+	history := []providers.Message{
+		{Role: "user", Content: "root question", MessageID: "1"},
+		{Role: "assistant", Content: "answer", MessageID: "2"},
+		{Role: "user", Content: "unrelated", MessageID: "3"},
+		{Role: "assistant", Content: "reply", MessageID: "4"},
+		// Kept window starts here (last 4):
+		{Role: "user", Content: "follow-up on root", MessageID: "5", ReplyToMessageID: "1"},
+		{Role: "assistant", Content: "ok", MessageID: "6"},
+		{Role: "user", Content: "more", MessageID: "7"},
+		{Role: "assistant", Content: "done", MessageID: "8"},
+	}
+	// msg #5 replies to #1 which is at index 0 — keep must extend to include #1.
+	got := threadAwareKeepCount(history, 4)
+	if got != len(history) {
+		t.Fatalf("expected %d (all messages kept), got %d", len(history), got)
+	}
+}
+
+func TestThreadAwareKeepCount_ThreadRootInKeepWindow(t *testing.T) {
+	t.Parallel()
+	history := []providers.Message{
+		{Role: "user", Content: "old stuff", MessageID: "1"},
+		{Role: "assistant", Content: "old reply", MessageID: "2"},
+		{Role: "user", Content: "old stuff", MessageID: "3"},
+		{Role: "assistant", Content: "old reply", MessageID: "4"},
+		// Root is already inside the keep window:
+		{Role: "user", Content: "root", MessageID: "5"},
+		{Role: "assistant", Content: "ok", MessageID: "6"},
+		{Role: "user", Content: "reply to root", MessageID: "7", ReplyToMessageID: "5"},
+		{Role: "assistant", Content: "done", MessageID: "8"},
+	}
+	// Parent #5 is already kept — no extension needed.
+	if got := threadAwareKeepCount(history, 4); got != 4 {
+		t.Fatalf("expected 4, got %d", got)
+	}
+}
+
+func TestFormatConversationMessages_ThreadAnnotations(t *testing.T) {
+	t.Parallel()
+	batch := []providers.Message{
+		{Role: "user", Content: "hello", MessageID: "10"},
+		{Role: "assistant", Content: "hi", MessageID: "11"},
+		{Role: "user", Content: "follow-up", MessageID: "12", ReplyToMessageID: "10"},
+		{Role: "assistant", Content: "sure", ReplyToMessageID: "10"},
+		{Role: "user", Content: "plain"},
+	}
+	out := formatConversationMessages(batch)
+	if !strings.Contains(out, "[msg:#10]") {
+		t.Fatalf("missing msg annotation: %q", out)
+	}
+	if !strings.Contains(out, "[msg:#12, reply_to:#10]") {
+		t.Fatalf("missing combined annotation: %q", out)
+	}
+	if !strings.Contains(out, "[reply_to:#10]") {
+		t.Fatalf("missing reply_to-only annotation: %q", out)
+	}
+	if !strings.Contains(out, "user: plain") {
+		t.Fatalf("plain message lost: %q", out)
+	}
+}

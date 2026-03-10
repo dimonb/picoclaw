@@ -490,6 +490,7 @@ func buildReplyRoutingContext(channel string, replyCtx *ReplyContextInfo) string
 		"## Reply Routing\n"+
 			"Current inbound message ID: %s\n"+
 			"Parent message ID: %s\n\n"+
+			"Historical messages in the conversation show `[msg:#ID]` and `[reply_to:#PARENT]` annotations so you can navigate thread structure and reference specific messages by their IDs.\n\n"+
 			"To control Telegram reply threading through the final answer, you may put exactly one hidden directive on the first line of your final response:\n"+
 			"- `[[reply:chat]]` posts a normal chat message\n"+
 			"- `[[reply:current]]` replies to the current inbound message\n"+
@@ -598,8 +599,15 @@ func (cb *ContextBuilder) BuildMessages(
 		SystemParts: contentBlocks,
 	})
 
-	// Add conversation history
-	messages = append(messages, history...)
+	// Add conversation history, annotating messages that have threading IDs
+	// so the LLM can navigate thread structure from persisted sessions.
+	for _, msg := range history {
+		annotated := msg
+		if prefix := messageThreadAnnotation(msg); prefix != "" {
+			annotated.Content = prefix + msg.Content
+		}
+		messages = append(messages, annotated)
+	}
 
 	// Add current user message
 	if strings.TrimSpace(currentMessage) != "" {

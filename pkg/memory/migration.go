@@ -52,6 +52,10 @@ func MigrateFromJSON(
 		if strings.HasSuffix(name, ".migrated") {
 			continue
 		}
+		// Skip metadata sidecar files — they end in .json but are not session files.
+		if strings.HasSuffix(name, ".meta.json") {
+			continue
+		}
 
 		srcPath := filepath.Join(sessionsDir, name)
 

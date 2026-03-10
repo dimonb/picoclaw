@@ -370,6 +370,56 @@ func TestMigrateFromJSON_RetryAfterCrash(t *testing.T) {
 	}
 }
 
+func TestMigrateFromJSON_SkipsMetaJSON(t *testing.T) {
+	// Regression test: .meta.json sidecar files must not be treated as session
+	// files, which would clear the corresponding .jsonl file to 0 bytes.
+	sessionsDir := t.TempDir()
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	// Write a real session file.
+	writeJSONSession(t, sessionsDir, "session1.json", jsonSession{
+		Key:      "session1",
+		Messages: []providers.Message{{Role: "user", Content: "hello"}},
+		Created:  time.Now(),
+		Updated:  time.Now(),
+	})
+
+	// Write a .meta.json sidecar that would parse as jsonSession (has key field)
+	// but has no messages — simulates the JSONL store's metadata file.
+	metaData := []byte(`{"key":"session1"}`)
+	if err := os.WriteFile(
+		filepath.Join(sessionsDir, "session1.meta.json"),
+		metaData, 0o644,
+	); err != nil {
+		t.Fatalf("write meta file: %v", err)
+	}
+
+	count, err := MigrateFromJSON(ctx, sessionsDir, store)
+	if err != nil {
+		t.Fatalf("MigrateFromJSON: %v", err)
+	}
+	// Only the real session file should count; .meta.json skipped.
+	if count != 1 {
+		t.Errorf("expected 1, got %d", count)
+	}
+
+	// History must have 1 message, not 0 (which would happen if .meta.json was processed).
+	history, err := store.GetHistory(ctx, "session1")
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if len(history) != 1 {
+		t.Errorf("expected 1 message, got %d (meta.json may have cleared history)", len(history))
+	}
+
+	// .meta.json must not have been renamed to .migrated.
+	_, statErr := os.Stat(filepath.Join(sessionsDir, "session1.meta.json"))
+	if statErr != nil {
+		t.Errorf("session1.meta.json should still exist (not renamed): %v", statErr)
+	}
+}
+
 func TestMigrateFromJSON_NonexistentDir(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

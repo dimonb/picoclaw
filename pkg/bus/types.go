@@ -34,6 +34,11 @@ type OutboundMessage struct {
 	ChatID           string `json:"chat_id"`
 	Content          string `json:"content"`
 	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
+	// OnDelivered is called after the message is successfully sent.
+	// msgID is the platform message ID returned by the channel (empty if unavailable).
+	// Used to write the assistant message to the session journal only after
+	// confirmed delivery, so the journal stays consistent with what was received.
+	OnDelivered func(msgID string) `json:"-"`
 }
 
 // MediaPart describes a single media attachment to send.

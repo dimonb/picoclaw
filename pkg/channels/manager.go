@@ -571,11 +571,29 @@ func (m *Manager) sendWithRetry(ctx context.Context, name string, w *channelWork
 		return // placeholder was edited successfully, skip Send
 	}
 
+	// Use SendMessageWithID when available so we can capture the platform
+	// message ID and deliver it to the OnDelivered callback.
+	sender, hasSyncSender := w.ch.(SyncSender)
+
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		lastErr = w.ch.Send(ctx, msg)
-		if lastErr == nil {
-			return
+		if hasSyncSender {
+			var msgID string
+			msgID, lastErr = sender.SendMessageWithID(ctx, msg)
+			if lastErr == nil {
+				if msg.OnDelivered != nil {
+					msg.OnDelivered(msgID)
+				}
+				return
+			}
+		} else {
+			lastErr = w.ch.Send(ctx, msg)
+			if lastErr == nil {
+				if msg.OnDelivered != nil {
+					msg.OnDelivered("")
+				}
+				return
+			}
 		}
 
 		// Permanent failures — don't retry

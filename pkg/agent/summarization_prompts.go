@@ -16,10 +16,30 @@ type compactionNoteMetadata struct {
 	OmittedMessages bool
 }
 
+// messageThreadAnnotation returns the thread annotation prefix for a message,
+// e.g. "[msg:#5, reply_to:#3] " or "" if the message has no threading IDs.
+func messageThreadAnnotation(msg providers.Message) string {
+	switch {
+	case msg.MessageID != "" && msg.ReplyToMessageID != "":
+		return fmt.Sprintf("[msg:#%s, reply_to:#%s] ", msg.MessageID, msg.ReplyToMessageID)
+	case msg.MessageID != "":
+		return fmt.Sprintf("[msg:#%s] ", msg.MessageID)
+	case msg.ReplyToMessageID != "":
+		return fmt.Sprintf("[reply_to:#%s] ", msg.ReplyToMessageID)
+	default:
+		return ""
+	}
+}
+
 func formatConversationMessages(batch []providers.Message) string {
 	var sb strings.Builder
 	for _, m := range batch {
-		fmt.Fprintf(&sb, "%s: %s\n", m.Role, m.Content)
+		annotation := messageThreadAnnotation(m)
+		if annotation != "" {
+			fmt.Fprintf(&sb, "%s %s: %s\n", m.Role, strings.TrimSpace(annotation), m.Content)
+		} else {
+			fmt.Fprintf(&sb, "%s: %s\n", m.Role, m.Content)
+		}
 	}
 	return strings.TrimSpace(sb.String())
 }
@@ -48,6 +68,8 @@ Prioritize:
 
 Omit small talk, repetition, exploratory dead ends, and wording that does not change future behavior.
 If newer statements conflict with older ones, prefer the newer statement and note the change briefly.
+Messages may carry [msg:#ID] and [reply_to:#PARENT] annotations showing thread structure. If a reply
+thread is active or unresolved, note it briefly as "thread rooted at #ID about <topic>" in Open Loops.
 Do not invent facts.
 Write in the dominant language of the conversation.
 Keep the result under 180 words.
