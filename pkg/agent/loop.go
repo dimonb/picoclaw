@@ -915,7 +915,15 @@ func (al *AgentLoop) runAgentLoop(
 	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 
 	// 2. Save user message to session
-	agent.Sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
+	userMsg := providers.Message{
+		Role:    "user",
+		Content: opts.UserMessage,
+	}
+	if opts.ReplyContext != nil {
+		userMsg.MessageID = opts.ReplyContext.CurrentMessageID
+		userMsg.ReplyToMessageID = opts.ReplyContext.ParentMessageID
+	}
+	agent.Sessions.AddFullMessage(opts.SessionKey, userMsg)
 
 	// 3. Run LLM iteration loop
 	// Inject session key so tools (e.g. tasktool) can look it up from context.
@@ -947,7 +955,12 @@ func (al *AgentLoop) runAgentLoop(
 
 	// 5. Save final assistant message to session
 	if response.Content != "" {
-		agent.Sessions.AddMessage(opts.SessionKey, "assistant", response.Content)
+		assistantMsg := providers.Message{
+			Role:             "assistant",
+			Content:          response.Content,
+			ReplyToMessageID: response.ReplyToMessageID,
+		}
+		agent.Sessions.AddFullMessage(opts.SessionKey, assistantMsg)
 	}
 	agent.Sessions.Save(opts.SessionKey)
 
