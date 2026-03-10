@@ -16,17 +16,28 @@ type compactionNoteMetadata struct {
 	OmittedMessages bool
 }
 
+// messageThreadAnnotation returns the thread annotation prefix for a message,
+// e.g. "[msg:#5, reply_to:#3] " or "" if the message has no threading IDs.
+func messageThreadAnnotation(msg providers.Message) string {
+	switch {
+	case msg.MessageID != "" && msg.ReplyToMessageID != "":
+		return fmt.Sprintf("[msg:#%s, reply_to:#%s] ", msg.MessageID, msg.ReplyToMessageID)
+	case msg.MessageID != "":
+		return fmt.Sprintf("[msg:#%s] ", msg.MessageID)
+	case msg.ReplyToMessageID != "":
+		return fmt.Sprintf("[reply_to:#%s] ", msg.ReplyToMessageID)
+	default:
+		return ""
+	}
+}
+
 func formatConversationMessages(batch []providers.Message) string {
 	var sb strings.Builder
 	for _, m := range batch {
-		switch {
-		case m.MessageID != "" && m.ReplyToMessageID != "":
-			fmt.Fprintf(&sb, "%s [msg:#%s, reply_to:#%s]: %s\n", m.Role, m.MessageID, m.ReplyToMessageID, m.Content)
-		case m.MessageID != "":
-			fmt.Fprintf(&sb, "%s [msg:#%s]: %s\n", m.Role, m.MessageID, m.Content)
-		case m.ReplyToMessageID != "":
-			fmt.Fprintf(&sb, "%s [reply_to:#%s]: %s\n", m.Role, m.ReplyToMessageID, m.Content)
-		default:
+		annotation := messageThreadAnnotation(m)
+		if annotation != "" {
+			fmt.Fprintf(&sb, "%s %s: %s\n", m.Role, strings.TrimSpace(annotation), m.Content)
+		} else {
 			fmt.Fprintf(&sb, "%s: %s\n", m.Role, m.Content)
 		}
 	}

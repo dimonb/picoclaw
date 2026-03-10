@@ -603,16 +603,7 @@ func (cb *ContextBuilder) BuildMessages(
 	// so the LLM can navigate thread structure from persisted sessions.
 	for _, msg := range history {
 		annotated := msg
-		if msg.MessageID != "" || msg.ReplyToMessageID != "" {
-			var prefix string
-			switch {
-			case msg.MessageID != "" && msg.ReplyToMessageID != "":
-				prefix = fmt.Sprintf("[msg:#%s, reply_to:#%s] ", msg.MessageID, msg.ReplyToMessageID)
-			case msg.MessageID != "":
-				prefix = fmt.Sprintf("[msg:#%s] ", msg.MessageID)
-			default:
-				prefix = fmt.Sprintf("[reply_to:#%s] ", msg.ReplyToMessageID)
-			}
+		if prefix := messageThreadAnnotation(msg); prefix != "" {
 			annotated.Content = prefix + msg.Content
 		}
 		messages = append(messages, annotated)
