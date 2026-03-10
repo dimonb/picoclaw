@@ -1831,12 +1831,13 @@ func (al *AgentLoop) summarizeSession(
 	history := agent.Sessions.GetHistory(sessionKey)
 	summary := agent.Sessions.GetSummary(sessionKey)
 
-	// Keep last 4 messages for continuity
-	if len(history) <= 4 {
+	// Keep last N messages for continuity, extended to thread root if needed.
+	keepCount := threadAwareKeepCount(history, 4)
+	if len(history) <= keepCount {
 		return
 	}
 
-	toSummarize := history[:len(history)-4]
+	toSummarize := history[:len(history)-keepCount]
 
 	// Oversized Message Guard
 	maxMessageTokens := agent.ContextWindow / 2
@@ -1976,6 +1977,63 @@ func (al *AgentLoop) findNearestUserMessage(messages []providers.Message, mid in
 	}
 
 	return originalMid
+}
+
+// threadAwareKeepCount returns how many trailing messages to keep out of
+// summarization. It starts with minKeep and walks backwards to include any
+// message whose ReplyToMessageID points to a message that would otherwise be
+// summarized away — i.e. it finds the root of an active reply thread and keeps
+// everything from that root to the end.
+func threadAwareKeepCount(history []providers.Message, minKeep int) int {
+	if len(history) <= minKeep {
+		return len(history)
+	}
+	keep := minKeep
+
+	// Collect IDs of all messages that will be kept initially.
+	// Walk the tail and check whether any message is a reply whose parent
+	// lives in the to-be-summarized portion.
+	for {
+		cutoff := len(history) - keep
+		// Build a set of message IDs in the keep window.
+		keptIDs := make(map[string]bool, keep)
+		for _, m := range history[cutoff:] {
+			if m.MessageID != "" {
+				keptIDs[m.MessageID] = true
+			}
+		}
+
+		// Check if any kept message replies to something outside the window.
+		extended := false
+		for _, m := range history[cutoff:] {
+			if m.ReplyToMessageID == "" {
+				continue
+			}
+			if keptIDs[m.ReplyToMessageID] {
+				continue // parent is already kept
+			}
+			// Parent is in the summarized portion — find it and pull everything
+			// from that point forward into the keep window.
+			for i := cutoff - 1; i >= 0; i-- {
+				if history[i].MessageID == m.ReplyToMessageID {
+					keep = len(history) - i
+					extended = true
+					break
+				}
+			}
+			if extended {
+				break
+			}
+		}
+		if !extended {
+			break
+		}
+		// Safety cap: never keep more than half the history.
+		if keep >= len(history)/2 {
+			break
+		}
+	}
+	return keep
 }
 
 // retryLLMCall calls the LLM with retry logic.
