@@ -93,7 +93,9 @@ func (s *JSONLStore) metaPath(key string) string {
 // and a bidirectional encoding (like URL-encoding) would complicate
 // file listings and debugging.
 func sanitizeKey(key string) string {
-	return strings.ReplaceAll(key, ":", "_")
+	key = strings.ReplaceAll(key, ":", "_")
+	key = strings.ReplaceAll(key, "/", "_")
+	return key
 }
 
 // readMeta loads the metadata file for a session.
