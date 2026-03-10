@@ -567,7 +567,11 @@ func TestParseResponsesResponse_FailedStatusUsesServerMessage(t *testing.T) {
 }
 
 func TestParseResponsesResponse_UsesNormalizedIncompleteStatus(t *testing.T) {
-	out, err := parseResponsesResponse(strings.NewReader(`{"status":" incomplete ","output":[{"type":"message","content":[{"type":"output_text","text":"partial answer"}]}],"incomplete_details":{"reason":"content_filter"}}`))
+	out, err := parseResponsesResponse(
+		strings.NewReader(
+			`{"status":" incomplete ","output":[{"type":"message","content":[{"type":"output_text","text":"partial answer"}]}],"incomplete_details":{"reason":"content_filter"}}`,
+		),
+	)
 	if err != nil {
 		t.Fatalf("parseResponsesResponse() error = %v", err)
 	}

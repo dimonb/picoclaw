@@ -109,10 +109,16 @@ func TestCreateProviderFromConfig_OpenAIUsesResponsesFirst(t *testing.T) {
 		switch r.URL.Path {
 		case "/responses":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"from responses"}]}]}`))
+			_, _ = w.Write(
+				[]byte(
+					`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"from responses"}]}]}`,
+				),
+			)
 		case "/chat/completions":
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"from chat completions"},"finish_reason":"stop"}]}`))
+			_, _ = w.Write(
+				[]byte(`{"choices":[{"message":{"content":"from chat completions"},"finish_reason":"stop"}]}`),
+			)
 		default:
 			http.Error(w, "not found", http.StatusNotFound)
 		}

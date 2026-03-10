@@ -134,11 +134,18 @@ func (p *Provider) Chat(
 		if ctx.Err() != nil {
 			return nil, err
 		}
-		log.Printf("openai_compat: /responses failed for %q, falling back to /chat/completions: %v", normalizedModel, err)
+		log.Printf(
+			"openai_compat: /responses failed for %q, falling back to /chat/completions: %v",
+			normalizedModel,
+			err,
+		)
 
 		fallbackOut, fallbackErr := p.chatCompletions(ctx, messages, tools, normalizedModel, options)
 		if fallbackErr != nil {
-			return nil, fmt.Errorf("responses request failed; fallback chat/completions failed: %w", errors.Join(err, fallbackErr))
+			return nil, fmt.Errorf(
+				"responses request failed; fallback chat/completions failed: %w",
+				errors.Join(err, fallbackErr),
+			)
 		}
 		return fallbackOut, nil
 	}
@@ -282,7 +289,8 @@ func buildResponsesInput(messages []Message) ([]any, error) {
 				"content": serializeResponsesMessageContent(m),
 			})
 		case "assistant":
-			if strings.TrimSpace(m.Content) != "" || strings.TrimSpace(m.ReasoningContent) != "" || len(m.Media) > 0 || len(m.ToolCalls) == 0 {
+			if strings.TrimSpace(m.Content) != "" || strings.TrimSpace(m.ReasoningContent) != "" || len(m.Media) > 0 ||
+				len(m.ToolCalls) == 0 {
 				input = append(input, map[string]any{
 					"type":    "message",
 					"role":    m.Role,
@@ -754,7 +762,11 @@ func parseResponsesResponse(body io.Reader) (*LLMResponse, error) {
 			arguments := make(map[string]any)
 			if item.Arguments != "" {
 				if err := json.Unmarshal([]byte(item.Arguments), &arguments); err != nil {
-					log.Printf("openai_compat: failed to decode responses tool call arguments for %q: %v", item.Name, err)
+					log.Printf(
+						"openai_compat: failed to decode responses tool call arguments for %q: %v",
+						item.Name,
+						err,
+					)
 					arguments["raw"] = item.Arguments
 				}
 			}
@@ -772,7 +784,8 @@ func parseResponsesResponse(body io.Reader) (*LLMResponse, error) {
 		finishReason = "tool_calls"
 	} else if status == "incomplete" {
 		finishReason = "length"
-		if apiResponse.IncompleteDetails != nil && apiResponse.IncompleteDetails.Reason != "" && apiResponse.IncompleteDetails.Reason != "max_output_tokens" {
+		if apiResponse.IncompleteDetails != nil && apiResponse.IncompleteDetails.Reason != "" &&
+			apiResponse.IncompleteDetails.Reason != "max_output_tokens" {
 			finishReason = apiResponse.IncompleteDetails.Reason
 		}
 	}

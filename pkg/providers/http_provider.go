@@ -36,10 +36,11 @@ func NewHTTPProviderWithMaxTokensFieldAndRequestTimeout(
 ) *HTTPProvider {
 	// Apply the legacy defaults first, then append any protocol-specific
 	// behavior switches such as OpenAI's /responses preference.
-	providerOpts := []openai_compat.Option{
+	providerOpts := make([]openai_compat.Option, 0, 2+len(opts))
+	providerOpts = append(providerOpts,
 		openai_compat.WithMaxTokensField(maxTokensField),
-		openai_compat.WithRequestTimeout(time.Duration(requestTimeoutSeconds) * time.Second),
-	}
+		openai_compat.WithRequestTimeout(time.Duration(requestTimeoutSeconds)*time.Second),
+	)
 	providerOpts = append(providerOpts, opts...)
 
 	return &HTTPProvider{
