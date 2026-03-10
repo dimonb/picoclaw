@@ -2145,7 +2145,7 @@ func (al *AgentLoop) summarizeSession(
 	summary := agent.Sessions.GetSummary(sessionKey)
 
 	// Keep last N messages for continuity, extended to thread root if needed.
-	keepCount := threadAwareKeepCount(history, 4)
+	keepCount := threadAwareKeepCount(history, agent.SummarizeKeepMessages)
 	if len(history) <= keepCount {
 		return
 	}
@@ -2262,7 +2262,7 @@ func (al *AgentLoop) summarizeSession(
 		}
 
 		agent.Sessions.SetSummary(sessionKey, finalSummary)
-		agent.Sessions.TruncateHistory(sessionKey, 4)
+		agent.Sessions.TruncateHistory(sessionKey, keepCount)
 		agent.Sessions.Save(sessionKey)
 	}
 }

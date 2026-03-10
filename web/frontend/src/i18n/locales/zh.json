@@ -336,6 +336,8 @@
       "max_tool_iterations_hint": "单个任务中允许的工具调用循环上限。",
       "summarize_threshold": "触发摘要的消息阈值",
       "summarize_threshold_hint": "消息数量达到该值后开始触发摘要。",
+      "summarize_keep_messages": "摘要后保留消息数",
+      "summarize_keep_messages_hint": "压缩后仍保留为原始消息而不写入摘要的最近消息数量。",
       "summarize_token_percent": "摘要目标 Token 百分比",
       "summarize_token_percent_hint": "在触发会话摘要时使用。",
       "session_scope": "会话隔离范围",

@@ -164,6 +164,11 @@ export function ConfigPage() {
           "Summarize message threshold",
           { min: 1 },
         )
+        const summarizeKeepMessages = parseIntField(
+          form.summarizeKeepMessages,
+          "Summarize keep messages",
+          { min: 1 },
+        )
         const summarizeTokenPercent = parseIntField(
           form.summarizeTokenPercent,
           "Summarize token percent",
@@ -183,6 +188,7 @@ export function ConfigPage() {
               max_tokens: maxTokens,
               max_tool_iterations: maxToolIterations,
               summarize_message_threshold: summarizeMessageThreshold,
+              summarize_keep_messages: summarizeKeepMessages,
               summarize_token_percent: summarizeTokenPercent,
             },
           },

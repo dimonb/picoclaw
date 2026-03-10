@@ -34,6 +34,7 @@ func DefaultConfig() *Config {
 				Temperature:               nil, // nil means use provider default
 				MaxToolIterations:         50,
 				SummarizeMessageThreshold: 20,
+				SummarizeKeepMessages:     4,
 				SummarizeTokenPercent:     75,
 			},
 		},

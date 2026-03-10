@@ -336,6 +336,8 @@
       "max_tool_iterations_hint": "Maximum tool-call loops in a single task.",
       "summarize_threshold": "Summarize Message Threshold",
       "summarize_threshold_hint": "Start summarization after this many messages.",
+      "summarize_keep_messages": "Summarize Keep Messages",
+      "summarize_keep_messages_hint": "How many recent messages stay unsummarized after compaction.",
       "summarize_token_percent": "Summarize Token Percent",
       "summarize_token_percent_hint": "Used when conversation summary is triggered.",
       "session_scope": "Session Scope",

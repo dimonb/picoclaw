@@ -480,6 +480,9 @@ func TestDefaultConfig_SummarizationThresholds(t *testing.T) {
 	if cfg.Agents.Defaults.SummarizeMessageThreshold != 20 {
 		t.Errorf("SummarizeMessageThreshold = %d, want 20", cfg.Agents.Defaults.SummarizeMessageThreshold)
 	}
+	if cfg.Agents.Defaults.SummarizeKeepMessages != 4 {
+		t.Errorf("SummarizeKeepMessages = %d, want 4", cfg.Agents.Defaults.SummarizeKeepMessages)
+	}
 	if cfg.Agents.Defaults.SummarizeTokenPercent != 75 {
 		t.Errorf("SummarizeTokenPercent = %d, want 75", cfg.Agents.Defaults.SummarizeTokenPercent)
 	}

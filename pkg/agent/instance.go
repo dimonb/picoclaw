@@ -31,6 +31,7 @@ type AgentInstance struct {
 	ThinkingLevel             ThinkingLevel // Default from model config at creation (main compatibility).
 	ContextWindow             int
 	SummarizeMessageThreshold int
+	SummarizeKeepMessages     int
 	SummarizeTokenPercent     int
 	Provider                  providers.LLMProvider
 	Sessions                  session.SessionStore
@@ -143,6 +144,11 @@ func NewAgentInstance(
 		summarizeMessageThreshold = 20
 	}
 
+	summarizeKeepMessages := defaults.SummarizeKeepMessages
+	if summarizeKeepMessages <= 0 {
+		summarizeKeepMessages = 4
+	}
+
 	summarizeTokenPercent := defaults.SummarizeTokenPercent
 	if summarizeTokenPercent == 0 {
 		summarizeTokenPercent = 75
@@ -226,6 +232,7 @@ func NewAgentInstance(
 		ThinkingLevel:             thinkingLevel,
 		ContextWindow:             maxTokens,
 		SummarizeMessageThreshold: summarizeMessageThreshold,
+		SummarizeKeepMessages:     summarizeKeepMessages,
 		SummarizeTokenPercent:     summarizeTokenPercent,
 		Provider:                  provider,
 		Sessions:                  sessions,

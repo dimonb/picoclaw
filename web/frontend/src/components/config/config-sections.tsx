@@ -102,6 +102,20 @@ export function AgentDefaultsSection({
         </Field>
 
         <Field
+          label={t("pages.config.summarize_keep_messages")}
+          hint={t("pages.config.summarize_keep_messages_hint")}
+        >
+          <Input
+            type="number"
+            min={1}
+            value={form.summarizeKeepMessages}
+            onChange={(e) =>
+              onFieldChange("summarizeKeepMessages", e.target.value)
+            }
+          />
+        </Field>
+
+        <Field
           label={t("pages.config.summarize_token_percent")}
           hint={t("pages.config.summarize_token_percent_hint")}
         >

@@ -6,6 +6,7 @@ export interface CoreConfigForm {
   maxTokens: string
   maxToolIterations: string
   summarizeMessageThreshold: string
+  summarizeKeepMessages: string
   summarizeTokenPercent: string
   dmScope: string
   heartbeatEnabled: boolean
@@ -57,6 +58,7 @@ export const EMPTY_FORM: CoreConfigForm = {
   maxTokens: "32768",
   maxToolIterations: "50",
   summarizeMessageThreshold: "20",
+  summarizeKeepMessages: "4",
   summarizeTokenPercent: "75",
   dmScope: "per-channel-peer",
   heartbeatEnabled: true,
@@ -118,6 +120,10 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
     summarizeMessageThreshold: asNumberString(
       defaults.summarize_message_threshold,
       EMPTY_FORM.summarizeMessageThreshold,
+    ),
+    summarizeKeepMessages: asNumberString(
+      defaults.summarize_keep_messages,
+      EMPTY_FORM.summarizeKeepMessages,
     ),
     summarizeTokenPercent: asNumberString(
       defaults.summarize_token_percent,
