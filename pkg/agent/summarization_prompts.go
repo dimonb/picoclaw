@@ -19,7 +19,16 @@ type compactionNoteMetadata struct {
 func formatConversationMessages(batch []providers.Message) string {
 	var sb strings.Builder
 	for _, m := range batch {
-		fmt.Fprintf(&sb, "%s: %s\n", m.Role, m.Content)
+		switch {
+		case m.MessageID != "" && m.ReplyToMessageID != "":
+			fmt.Fprintf(&sb, "%s [msg:#%s, reply_to:#%s]: %s\n", m.Role, m.MessageID, m.ReplyToMessageID, m.Content)
+		case m.MessageID != "":
+			fmt.Fprintf(&sb, "%s [msg:#%s]: %s\n", m.Role, m.MessageID, m.Content)
+		case m.ReplyToMessageID != "":
+			fmt.Fprintf(&sb, "%s [reply_to:#%s]: %s\n", m.Role, m.ReplyToMessageID, m.Content)
+		default:
+			fmt.Fprintf(&sb, "%s: %s\n", m.Role, m.Content)
+		}
 	}
 	return strings.TrimSpace(sb.String())
 }
@@ -48,6 +57,8 @@ Prioritize:
 
 Omit small talk, repetition, exploratory dead ends, and wording that does not change future behavior.
 If newer statements conflict with older ones, prefer the newer statement and note the change briefly.
+Messages may carry [msg:#ID] and [reply_to:#PARENT] annotations showing thread structure. If a reply
+thread is active or unresolved, note it briefly as "thread rooted at #ID about <topic>" in Open Loops.
 Do not invent facts.
 Write in the dominant language of the conversation.
 Keep the result under 180 words.
