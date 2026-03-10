@@ -3214,9 +3214,6 @@ func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string, t
 		})
 	}
 
-	agent.Sessions.SetSummary(sessionKey, finalSummary)
-	agent.Sessions.TruncateHistory(sessionKey, keepCount)
-	agent.Sessions.Save(sessionKey)
 	al.emitEvent(
 		EventKindSessionSummarize,
 		turnScope.meta(0, "summarizeSession", "turn.session.summarize"),
@@ -3228,7 +3225,6 @@ func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string, t
 		},
 	)
 }
-
 // findNearestUserMessage finds the nearest user message to the given index.
 // It searches backward first, then forward if no user message is found.
 func (al *AgentLoop) findNearestUserMessage(messages []providers.Message, mid int) int {

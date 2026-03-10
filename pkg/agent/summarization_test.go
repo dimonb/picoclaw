@@ -170,6 +170,55 @@ func TestSummarizeSessionWritesDetailedCompactionFile(t *testing.T) {
 	}
 }
 
+func TestSummarizeSession_UsesConfiguredKeepMessages(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:             workspace,
+				ModelName:             "test-model",
+				MaxTokens:             4096,
+				MaxToolIterations:     10,
+				SummarizeKeepMessages: 6,
+			},
+		},
+	}
+
+	provider := &compactionSummaryMockProvider{}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	sessionKey := "session-keep-6"
+	history := []providers.Message{
+		{Role: "user", Content: "m1"},
+		{Role: "assistant", Content: "m2"},
+		{Role: "user", Content: "m3"},
+		{Role: "assistant", Content: "m4"},
+		{Role: "user", Content: "m5"},
+		{Role: "assistant", Content: "m6"},
+		{Role: "user", Content: "m7"},
+		{Role: "assistant", Content: "m8"},
+	}
+	for _, msg := range history {
+		agent.Sessions.AddFullMessage(sessionKey, msg)
+	}
+
+	al.summarizeSession(agent, sessionKey, al.newTurnEventScope(agent.ID, sessionKey))
+
+	finalHistory := agent.Sessions.GetHistory(sessionKey)
+	if len(finalHistory) != 6 {
+		t.Fatalf("history len = %d, want 6", len(finalHistory))
+	}
+	if finalHistory[0].Content != "m3" {
+		t.Fatalf("expected kept window to start at m3, got %q", finalHistory[0].Content)
+	}
+}
+
 func TestBuildRunningSummaryMergePromptIncludesConflictRules(t *testing.T) {
 	t.Parallel()
 

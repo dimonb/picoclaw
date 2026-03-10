@@ -32,8 +32,8 @@ type AgentInstance struct {
 	ThinkingLevel             ThinkingLevel
 	ContextWindow             int
 	SummarizeMessageThreshold int
-	SummarizeTokenPercent     int
 	SummarizeKeepMessages     int
+	SummarizeTokenPercent     int
 	Provider                  providers.LLMProvider
 	Sessions                  session.SessionStore
 	ContextBuilder            *ContextBuilder
@@ -158,14 +158,14 @@ func NewAgentInstance(
 		summarizeMessageThreshold = 20
 	}
 
+	summarizeKeepMessages := defaults.SummarizeKeepMessages
+	if summarizeKeepMessages <= 0 {
+		summarizeKeepMessages = 4
+	}
+
 	summarizeTokenPercent := defaults.SummarizeTokenPercent
 	if summarizeTokenPercent == 0 {
 		summarizeTokenPercent = 75
-	}
-
-	summarizeKeepMessages := defaults.SummarizeKeepMessages
-	if summarizeKeepMessages == 0 {
-		summarizeKeepMessages = 4
 	}
 
 	// Resolve fallback candidates
@@ -201,8 +201,8 @@ func NewAgentInstance(
 		ThinkingLevel:             thinkingLevel,
 		ContextWindow:             contextWindow,
 		SummarizeMessageThreshold: summarizeMessageThreshold,
-		SummarizeTokenPercent:     summarizeTokenPercent,
 		SummarizeKeepMessages:     summarizeKeepMessages,
+		SummarizeTokenPercent:     summarizeTokenPercent,
 		Provider:                  provider,
 		Sessions:                  sessions,
 		ContextBuilder:            contextBuilder,
