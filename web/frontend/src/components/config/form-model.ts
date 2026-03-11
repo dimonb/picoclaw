@@ -3,6 +3,7 @@ export type JsonRecord = Record<string, unknown>
 export interface CoreConfigForm {
   workspace: string
   restrictToWorkspace: boolean
+  allowRemote: boolean
   maxTokens: string
   maxToolIterations: string
   summarizeMessageThreshold: string
@@ -55,6 +56,7 @@ export const DM_SCOPE_OPTIONS = [
 export const EMPTY_FORM: CoreConfigForm = {
   workspace: "",
   restrictToWorkspace: true,
+  allowRemote: true,
   maxTokens: "32768",
   maxToolIterations: "50",
   summarizeMessageThreshold: "20",
@@ -105,6 +107,8 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
   const session = asRecord(root.session)
   const heartbeat = asRecord(root.heartbeat)
   const devices = asRecord(root.devices)
+  const tools = asRecord(root.tools)
+  const exec = asRecord(tools.exec)
 
   return {
     workspace: asString(defaults.workspace) || EMPTY_FORM.workspace,
@@ -112,6 +116,10 @@ export function buildFormFromConfig(config: unknown): CoreConfigForm {
       defaults.restrict_to_workspace === undefined
         ? EMPTY_FORM.restrictToWorkspace
         : asBool(defaults.restrict_to_workspace),
+    allowRemote:
+      exec.allow_remote === undefined
+        ? EMPTY_FORM.allowRemote
+        : asBool(exec.allow_remote),
     maxTokens: asNumberString(defaults.max_tokens, EMPTY_FORM.maxTokens),
     maxToolIterations: asNumberString(
       defaults.max_tool_iterations,

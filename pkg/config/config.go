@@ -17,6 +17,8 @@ var rrCounter atomic.Uint64
 
 // FlexibleStringSlice is a []string that also accepts JSON numbers,
 // so allow_from can contain both "123" and 123.
+// It also supports parsing comma-separated strings from environment variables,
+// including both English (,) and Chinese (，) commas.
 type FlexibleStringSlice []string
 
 func (f *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
@@ -48,6 +50,30 @@ func (f *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// UnmarshalText implements encoding.TextUnmarshaler to support env variable parsing.
+// It handles comma-separated values with both English (,) and Chinese (，) commas.
+func (f *FlexibleStringSlice) UnmarshalText(text []byte) error {
+	if len(text) == 0 {
+		*f = nil
+		return nil
+	}
+
+	s := string(text)
+	// Replace Chinese comma with English comma, then split
+	s = strings.ReplaceAll(s, "，", ",")
+	parts := strings.Split(s, ",")
+
+	result := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			result = append(result, part)
+		}
+	}
+	*f = result
+	return nil
+}
+
 type Config struct {
 	Agents    AgentsConfig    `json:"agents"`
 	Bindings  []AgentBinding  `json:"bindings,omitempty"`
@@ -59,6 +85,7 @@ type Config struct {
 	Tools     ToolsConfig     `json:"tools"`
 	Heartbeat HeartbeatConfig `json:"heartbeat"`
 	Devices   DevicesConfig   `json:"devices"`
+	Voice     VoiceConfig     `json:"voice"`
 	// BuildInfo contains build-time version information
 	BuildInfo BuildInfo `json:"build_info,omitempty"`
 }
@@ -385,16 +412,17 @@ type SlackConfig struct {
 }
 
 type MatrixConfig struct {
-	Enabled            bool                `json:"enabled"                 env:"PICOCLAW_CHANNELS_MATRIX_ENABLED"`
-	Homeserver         string              `json:"homeserver"              env:"PICOCLAW_CHANNELS_MATRIX_HOMESERVER"`
-	UserID             string              `json:"user_id"                 env:"PICOCLAW_CHANNELS_MATRIX_USER_ID"`
-	AccessToken        string              `json:"access_token"            env:"PICOCLAW_CHANNELS_MATRIX_ACCESS_TOKEN"`
-	DeviceID           string              `json:"device_id,omitempty"     env:"PICOCLAW_CHANNELS_MATRIX_DEVICE_ID"`
-	JoinOnInvite       bool                `json:"join_on_invite"          env:"PICOCLAW_CHANNELS_MATRIX_JOIN_ON_INVITE"`
-	AllowFrom          FlexibleStringSlice `json:"allow_from"              env:"PICOCLAW_CHANNELS_MATRIX_ALLOW_FROM"`
+	Enabled            bool                `json:"enabled"                  env:"PICOCLAW_CHANNELS_MATRIX_ENABLED"`
+	Homeserver         string              `json:"homeserver"               env:"PICOCLAW_CHANNELS_MATRIX_HOMESERVER"`
+	UserID             string              `json:"user_id"                  env:"PICOCLAW_CHANNELS_MATRIX_USER_ID"`
+	AccessToken        string              `json:"access_token"             env:"PICOCLAW_CHANNELS_MATRIX_ACCESS_TOKEN"`
+	DeviceID           string              `json:"device_id,omitempty"      env:"PICOCLAW_CHANNELS_MATRIX_DEVICE_ID"`
+	JoinOnInvite       bool                `json:"join_on_invite"           env:"PICOCLAW_CHANNELS_MATRIX_JOIN_ON_INVITE"`
+	MessageFormat      string              `json:"message_format,omitempty" env:"PICOCLAW_CHANNELS_MATRIX_MESSAGE_FORMAT"`
+	AllowFrom          FlexibleStringSlice `json:"allow_from"               env:"PICOCLAW_CHANNELS_MATRIX_ALLOW_FROM"`
 	GroupTrigger       GroupTriggerConfig  `json:"group_trigger,omitempty"`
 	Placeholder        PlaceholderConfig   `json:"placeholder,omitempty"`
-	ReasoningChannelID string              `json:"reasoning_channel_id"    env:"PICOCLAW_CHANNELS_MATRIX_REASONING_CHANNEL_ID"`
+	ReasoningChannelID string              `json:"reasoning_channel_id"     env:"PICOCLAW_CHANNELS_MATRIX_REASONING_CHANNEL_ID"`
 }
 
 type LINEConfig struct {
@@ -508,6 +536,10 @@ type DevicesConfig struct {
 	MonitorUSB bool `json:"monitor_usb" env:"PICOCLAW_DEVICES_MONITOR_USB"`
 }
 
+type VoiceConfig struct {
+	EchoTranscription bool `json:"echo_transcription" env:"PICOCLAW_VOICE_ECHO_TRANSCRIPTION"`
+}
+
 type ProvidersConfig struct {
 	Anthropic     ProviderConfig       `json:"anthropic"`
 	OpenAI        OpenAIProviderConfig `json:"openai"`
@@ -531,6 +563,7 @@ type ProvidersConfig struct {
 	Mistral       ProviderConfig       `json:"mistral"`
 	Avian         ProviderConfig       `json:"avian"`
 	Minimax       ProviderConfig       `json:"minimax"`
+	LongCat       ProviderConfig       `json:"longcat"`
 }
 
 // IsEmpty checks if all provider configs are empty (no API keys or API bases set)
@@ -557,7 +590,8 @@ func (p ProvidersConfig) IsEmpty() bool {
 		p.Qwen.APIKey == "" && p.Qwen.APIBase == "" &&
 		p.Mistral.APIKey == "" && p.Mistral.APIBase == "" &&
 		p.Avian.APIKey == "" && p.Avian.APIBase == "" &&
-		p.Minimax.APIKey == "" && p.Minimax.APIBase == ""
+		p.Minimax.APIKey == "" && p.Minimax.APIBase == "" &&
+		p.LongCat.APIKey == "" && p.LongCat.APIBase == ""
 }
 
 // MarshalJSON implements custom JSON marshaling for ProvidersConfig
@@ -704,6 +738,7 @@ type CronToolsConfig struct {
 type ExecConfig struct {
 	ToolConfig          `         envPrefix:"PICOCLAW_TOOLS_EXEC_"`
 	EnableDenyPatterns  bool     `                                 env:"PICOCLAW_TOOLS_EXEC_ENABLE_DENY_PATTERNS"  json:"enable_deny_patterns"`
+	AllowRemote         bool     `                                 env:"PICOCLAW_TOOLS_EXEC_ALLOW_REMOTE"          json:"allow_remote"`
 	CustomDenyPatterns  []string `                                 env:"PICOCLAW_TOOLS_EXEC_CUSTOM_DENY_PATTERNS"  json:"custom_deny_patterns"`
 	CustomAllowPatterns []string `                                 env:"PICOCLAW_TOOLS_EXEC_CUSTOM_ALLOW_PATTERNS" json:"custom_allow_patterns"`
 	TimeoutSeconds      int      `                                 env:"PICOCLAW_TOOLS_EXEC_TIMEOUT_SECONDS"       json:"timeout_seconds"` // 0 means use default (60s)

@@ -77,6 +77,7 @@ func NewTelegramChannel(cfg *config.Config, bus *bus.MessageBus) (*TelegramChann
 	if baseURL := strings.TrimRight(strings.TrimSpace(telegramCfg.BaseURL), "/"); baseURL != "" {
 		opts = append(opts, telego.WithAPIServer(baseURL))
 	}
+	opts = append(opts, telego.WithLogger(logger.NewLogger("telego")))
 
 	bot, err := telego.NewBot(telegramCfg.Token, opts...)
 	if err != nil {
@@ -183,27 +184,43 @@ func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.Outboun
 		return "", nil
 	}
 
-	chunks := telegramMessageChunks(msg.Content)
-	ids := make([]string, 0, len(chunks))
-	for _, chunk := range chunks {
-		msgID, err := c.sendHTMLChunk(
-			ctx,
-			chatID,
-			threadID,
-			msg.ReplyToMessageID,
-			chunk.HTML,
-			chunk.Markdown,
-		)
+	// The Manager already splits messages to ≤4000 chars (WithMaxMessageLength),
+	// so msg.Content is guaranteed to be within that limit. We still need to
+	// check if HTML expansion pushes it beyond Telegram's 4096-char API limit.
+	replyToID := msg.ReplyToMessageID
+	queue := []string{msg.Content}
+	firstID := ""
+	for len(queue) > 0 {
+		chunk := queue[0]
+		queue = queue[1:]
+
+		htmlContent := markdownToTelegramHTML(chunk)
+
+		if len([]rune(htmlContent)) > 4096 {
+			ratio := float64(len([]rune(chunk))) / float64(len([]rune(htmlContent)))
+			smallerLen := int(float64(4096) * ratio * 0.95) // 5% safety margin
+			if smallerLen < 100 {
+				smallerLen = 100
+			}
+			// Push sub-chunks back to the front of the queue for
+			// re-validation instead of sending them blindly.
+			subChunks := channels.SplitMessage(chunk, smallerLen)
+			queue = append(subChunks, queue...)
+			continue
+		}
+
+		msgID, err := c.sendHTMLChunk(ctx, chatID, threadID, replyToID, htmlContent, chunk)
 		if err != nil {
 			return "", err
 		}
-		ids = append(ids, strconv.Itoa(msgID))
+		if firstID == "" {
+			firstID = strconv.Itoa(msgID)
+		}
+		// Only the first chunk should be a reply; subsequent chunks are normal messages.
+		replyToID = ""
 	}
 
-	if len(ids) == 0 {
-		return "", nil
-	}
-	return strings.Join(ids, ","), nil
+	return firstID, nil
 }
 
 // sendHTMLChunk sends a single HTML message, falling back to the original

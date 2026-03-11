@@ -100,7 +100,7 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 	case "litellm", "openrouter", "groq", "zhipu", "gemini", "nvidia",
 		"ollama", "moonshot", "shengsuanyun", "deepseek", "cerebras",
 		"vivgrid", "volcengine", "vllm", "qwen", "mistral", "avian",
-		"minimax":
+		"minimax", "longcat":
 		// All other OpenAI-compatible HTTP providers
 		if cfg.APIKey == "" && cfg.APIBase == "" {
 			return nil, "", fmt.Errorf("api_key or api_base is required for HTTP-based protocol %q", protocol)
@@ -220,6 +220,8 @@ func getDefaultAPIBase(protocol string) string {
 		return "https://api.avian.io/v1"
 	case "minimax":
 		return "https://api.minimaxi.com/v1"
+	case "longcat":
+		return "https://api.longcat.chat/openai"
 	default:
 		return ""
 	}
