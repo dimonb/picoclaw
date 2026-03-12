@@ -189,7 +189,7 @@ func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.Outboun
 	// check if HTML expansion pushes it beyond Telegram's 4096-char API limit.
 	replyToID := msg.ReplyToMessageID
 	queue := []string{msg.Content}
-	firstID := ""
+	ids := make([]string, 0)
 	for len(queue) > 0 {
 		chunk := queue[0]
 		queue = queue[1:]
@@ -213,14 +213,12 @@ func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.Outboun
 		if err != nil {
 			return "", err
 		}
-		if firstID == "" {
-			firstID = strconv.Itoa(msgID)
-		}
+		ids = append(ids, strconv.Itoa(msgID))
 		// Only the first chunk should be a reply; subsequent chunks are normal messages.
 		replyToID = ""
 	}
 
-	return firstID, nil
+	return strings.Join(ids, ","), nil
 }
 
 // sendHTMLChunk sends a single HTML message, falling back to the original

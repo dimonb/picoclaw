@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -179,12 +178,6 @@ func (sm *SessionManager) TruncateHistory(key string, keepLast int) {
 func (sm *SessionManager) Save(key string) error {
 	if sm.storage == "" {
 		return nil
-	}
-
-	// Reject keys containing path separators before sanitizing, so that
-	// traversal-like inputs (e.g. "foo/bar") are never silently normalized.
-	if strings.ContainsAny(key, `/\`) {
-		return os.ErrInvalid
 	}
 
 	filename := fileutil.SanitizeFilename(key)
