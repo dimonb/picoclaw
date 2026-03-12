@@ -67,6 +67,14 @@ type MessageReaction struct {
 	Emoji           string `json:"emoji,omitempty"`
 }
 
+// MessageSender carries author identity for a user message.
+// Stored alongside the message in history so the LLM can address
+// participants by name in multi-user conversations.
+type MessageSender struct {
+	Username    string `json:"username,omitempty"`     // e.g. "@alice" (platform handle)
+	DisplayName string `json:"display_name,omitempty"` // human-readable full name
+}
+
 type Message struct {
 	Role             string            `json:"role"`
 	Content          string            `json:"content"`
@@ -78,6 +86,7 @@ type Message struct {
 	MessageID        string            `json:"message_id,omitempty"`          // Platform message ID
 	ReplyToMessageID string            `json:"reply_to_message_id,omitempty"` // Parent message ID (for threading)
 	Reactions        []MessageReaction `json:"reactions,omitempty"`
+	Sender           *MessageSender    `json:"sender,omitempty"` // Author identity (user messages only)
 }
 
 type ToolDefinition struct {

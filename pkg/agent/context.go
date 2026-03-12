@@ -548,6 +548,7 @@ func (cb *ContextBuilder) BuildMessages(
 	media []string,
 	channel, chatID string,
 	replyCtx *ReplyContextInfo,
+	sender *providers.MessageSender,
 ) []providers.Message {
 	messages := []providers.Message{}
 
@@ -643,6 +644,7 @@ func (cb *ContextBuilder) BuildMessages(
 		msg := providers.Message{
 			Role:    "user",
 			Content: currentMessage,
+			Sender:  sender,
 		}
 		if replyCtx != nil {
 			msg.MessageID = strings.TrimSpace(replyCtx.CurrentMessageID)

@@ -17,14 +17,24 @@ type compactionNoteMetadata struct {
 }
 
 // messageThreadAnnotation returns the delivery/thread annotation prefix for a
-// message, e.g. "[msg:#5, reply_to:#3, react_to:#5=❤️] " or "" if absent.
+// message, e.g. "[msg:#5, reply_to:#3, from:@alice, react_to:#5=❤️] " or "" if absent.
 func messageThreadAnnotation(msg providers.Message) string {
-	parts := make([]string, 0, 2+len(msg.Reactions))
+	parts := make([]string, 0, 3+len(msg.Reactions))
 	if msg.MessageID != "" {
 		parts = append(parts, fmt.Sprintf("msg:#%s", msg.MessageID))
 	}
 	if msg.ReplyToMessageID != "" {
 		parts = append(parts, fmt.Sprintf("reply_to:#%s", msg.ReplyToMessageID))
+	}
+	if msg.Sender != nil {
+		switch {
+		case msg.Sender.Username != "" && msg.Sender.DisplayName != "":
+			parts = append(parts, fmt.Sprintf("from:%s (%s)", msg.Sender.Username, msg.Sender.DisplayName))
+		case msg.Sender.Username != "":
+			parts = append(parts, fmt.Sprintf("from:%s", msg.Sender.Username))
+		case msg.Sender.DisplayName != "":
+			parts = append(parts, fmt.Sprintf("from:%s", msg.Sender.DisplayName))
+		}
 	}
 	for _, reaction := range msg.Reactions {
 		if reaction.TargetMessageID == "" || reaction.Emoji == "" {
