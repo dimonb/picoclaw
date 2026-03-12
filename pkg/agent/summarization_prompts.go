@@ -27,13 +27,11 @@ func messageThreadAnnotation(msg providers.Message) string {
 		parts = append(parts, fmt.Sprintf("reply_to:#%s", msg.ReplyToMessageID))
 	}
 	if msg.Sender != nil {
-		switch {
-		case msg.Sender.Username != "" && msg.Sender.DisplayName != "":
-			parts = append(parts, fmt.Sprintf("from:%s (%s)", msg.Sender.Username, msg.Sender.DisplayName))
-		case msg.Sender.Username != "":
-			parts = append(parts, fmt.Sprintf("from:%s", msg.Sender.Username))
-		case msg.Sender.DisplayName != "":
-			parts = append(parts, fmt.Sprintf("from:%s", msg.Sender.DisplayName))
+		if msg.Sender.Username != "" {
+			parts = append(parts, fmt.Sprintf("username:%s", msg.Sender.Username))
+		}
+		if msg.Sender.DisplayName != "" {
+			parts = append(parts, fmt.Sprintf("name:%s", msg.Sender.DisplayName))
 		}
 	}
 	for _, reaction := range msg.Reactions {
