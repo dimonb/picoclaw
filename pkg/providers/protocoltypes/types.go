@@ -71,8 +71,9 @@ type MessageReaction struct {
 // Stored alongside the message in history so the LLM can address
 // participants by name in multi-user conversations.
 type MessageSender struct {
-	Username    string `json:"username,omitempty"`     // e.g. "@alice" (platform handle)
-	DisplayName string `json:"display_name,omitempty"` // human-readable full name
+	Username  string `json:"username,omitempty"`   // e.g. "@alice" (platform handle)
+	FirstName string `json:"first_name,omitempty"` // given name
+	LastName  string `json:"last_name,omitempty"`  // family name
 }
 
 type Message struct {

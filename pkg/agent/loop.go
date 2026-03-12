@@ -2745,12 +2745,18 @@ func extractParentPeer(msg bus.InboundMessage) *routing.RoutePeer {
 // messageSenderFromInbound converts bus.SenderInfo into a MessageSender for storage.
 // Returns nil when neither username nor display name is known (e.g. automated/system messages).
 func messageSenderFromInbound(s bus.SenderInfo) *providers.MessageSender {
-	if s.Username == "" && s.DisplayName == "" {
+	firstName, lastName := s.FirstName, s.LastName
+	// Platforms that don't distinguish first/last name use DisplayName — store it as FirstName.
+	if firstName == "" && lastName == "" && s.DisplayName != "" {
+		firstName = s.DisplayName
+	}
+	if s.Username == "" && firstName == "" && lastName == "" {
 		return nil
 	}
 	return &providers.MessageSender{
-		Username:    s.Username,
-		DisplayName: s.DisplayName,
+		Username:  s.Username,
+		FirstName: firstName,
+		LastName:  lastName,
 	}
 }
 

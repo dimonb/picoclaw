@@ -518,16 +518,13 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	}
 
 	platformID := fmt.Sprintf("%d", user.ID)
-	displayName := user.FirstName
-	if user.LastName != "" {
-		displayName = user.FirstName + " " + user.LastName
-	}
 	sender := bus.SenderInfo{
 		Platform:    "telegram",
 		PlatformID:  platformID,
 		CanonicalID: identity.BuildCanonicalID("telegram", platformID),
 		Username:    user.Username,
-		DisplayName: displayName,
+		FirstName:   user.FirstName,
+		LastName:    user.LastName,
 	}
 
 	// check allowlist to avoid downloading attachments for rejected users

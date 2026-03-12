@@ -30,8 +30,9 @@ func messageThreadAnnotation(msg providers.Message) string {
 		if msg.Sender.Username != "" {
 			parts = append(parts, fmt.Sprintf("username:%s", msg.Sender.Username))
 		}
-		if msg.Sender.DisplayName != "" {
-			parts = append(parts, fmt.Sprintf("name:%s", msg.Sender.DisplayName))
+		fullName := strings.TrimSpace(msg.Sender.FirstName + " " + msg.Sender.LastName)
+		if fullName != "" {
+			parts = append(parts, fmt.Sprintf("name:%s", fullName))
 		}
 	}
 	for _, reaction := range msg.Reactions {
