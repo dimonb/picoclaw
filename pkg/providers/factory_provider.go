@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	anthropicmessages "github.com/sipeed/picoclaw/pkg/providers/anthropic_messages"
 	"github.com/sipeed/picoclaw/pkg/providers/openai_compat"
 )
 
@@ -54,7 +55,8 @@ func ExtractProtocol(model string) (protocol, modelID string) {
 
 // CreateProviderFromConfig creates a provider based on the ModelConfig.
 // It uses the protocol prefix in the Model field to determine which provider to create.
-// Supported protocols: openai, litellm, anthropic, antigravity, claude-cli, codex-cli, github-copilot
+// Supported protocols: openai, litellm, anthropic, anthropic-messages, antigravity,
+// claude-cli, codex-cli, github-copilot
 // Returns the provider, the model ID (without protocol prefix), and any error.
 func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, error) {
 	if cfg == nil {
@@ -100,7 +102,7 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 	case "litellm", "openrouter", "groq", "zhipu", "gemini", "nvidia",
 		"ollama", "moonshot", "shengsuanyun", "deepseek", "cerebras",
 		"vivgrid", "volcengine", "vllm", "qwen", "mistral", "avian",
-		"minimax", "longcat":
+		"minimax", "longcat", "modelscope":
 		// All other OpenAI-compatible HTTP providers
 		if cfg.APIKey == "" && cfg.APIBase == "" {
 			return nil, "", fmt.Errorf("api_key or api_base is required for HTTP-based protocol %q", protocol)
@@ -139,6 +141,21 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 			apiBase,
 			cfg.Proxy,
 			cfg.MaxTokensField,
+			cfg.RequestTimeout,
+		), modelID, nil
+
+	case "anthropic-messages":
+		// Anthropic Messages API with native format (HTTP-based, no SDK)
+		apiBase := cfg.APIBase
+		if apiBase == "" {
+			apiBase = "https://api.anthropic.com/v1"
+		}
+		if cfg.APIKey == "" {
+			return nil, "", fmt.Errorf("api_key is required for anthropic-messages protocol (model: %s)", cfg.Model)
+		}
+		return anthropicmessages.NewProviderWithTimeout(
+			cfg.APIKey,
+			apiBase,
 			cfg.RequestTimeout,
 		), modelID, nil
 
@@ -222,6 +239,8 @@ func getDefaultAPIBase(protocol string) string {
 		return "https://api.minimaxi.com/v1"
 	case "longcat":
 		return "https://api.longcat.chat/openai"
+	case "modelscope":
+		return "https://api-inference.modelscope.cn/v1"
 	default:
 		return ""
 	}
