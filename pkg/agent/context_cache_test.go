@@ -154,10 +154,16 @@ func TestBuildMessages_TelegramReplyRoutingContext(t *testing.T) {
 	if !strings.Contains(sys, "Current inbound message ID: 910") {
 		t.Fatal("system prompt missing current message ID")
 	}
-	if !strings.Contains(sys, "[[reply_to:<message_id|current|parent|chat>;react_to:<message_id|current|parent>:<emoji>;react_to:<message_id|current|parent>:<emoji>;text_reply=<true|false>]]") {
+	if !strings.Contains(
+		sys,
+		"[[reply_to:<message_id|current|parent|chat>;react_to:<message_id|current|parent>:<emoji>;react_to:<message_id|current|parent>:<emoji>;text_reply=<true|false>]]",
+	) {
 		t.Fatal("system prompt missing final delivery block guidance")
 	}
-	if !strings.Contains(sys, "the `message` tool is unavailable in this chat; use the hidden delivery block for normal replies") {
+	if !strings.Contains(
+		sys,
+		"the `message` tool is unavailable in this chat; use the hidden delivery block for normal replies",
+	) {
 		t.Fatal("system prompt missing guidance about hidden-block delivery")
 	}
 }

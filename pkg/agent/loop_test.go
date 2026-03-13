@@ -1128,12 +1128,18 @@ func TestMessageTool_IsUnavailableForTelegramContext(t *testing.T) {
 	}
 
 	telegramDefs := defaultAgent.Tools.ToProviderDefsWithContext(context.Background(), "telegram", "chat1")
-	if slices.ContainsFunc(telegramDefs, func(def providers.ToolDefinition) bool { return def.Function.Name == "message" }) {
+	if slices.ContainsFunc(
+		telegramDefs,
+		func(def providers.ToolDefinition) bool { return def.Function.Name == "message" },
+	) {
 		t.Fatal("message tool should not be available in telegram context")
 	}
 
 	cliDefs := defaultAgent.Tools.ToProviderDefsWithContext(context.Background(), "cli", "direct")
-	if !slices.ContainsFunc(cliDefs, func(def providers.ToolDefinition) bool { return def.Function.Name == "message" }) {
+	if !slices.ContainsFunc(
+		cliDefs,
+		func(def providers.ToolDefinition) bool { return def.Function.Name == "message" },
+	) {
 		t.Fatal("message tool should remain available outside telegram context")
 	}
 }

@@ -58,17 +58,17 @@ type AgentLoop struct {
 
 // processOptions configures how a message is processed
 type processOptions struct {
-	SessionKey      string                    // Session identifier for history/context
-	Channel         string                    // Target channel for tool execution
-	ChatID          string                    // Target chat ID for tool execution
-	UserMessage     string                    // User message content (may include prefix)
-	Media           []string                  // media:// refs from inbound message
-	DefaultResponse string                    // Response when LLM returns empty
-	EnableSummary   bool                      // Whether to trigger summarization
-	SendResponse    bool                      // Whether to send response via bus
-	NoHistory       bool                      // If true, don't load session history (for heartbeat)
+	SessionKey      string   // Session identifier for history/context
+	Channel         string   // Target channel for tool execution
+	ChatID          string   // Target chat ID for tool execution
+	UserMessage     string   // User message content (may include prefix)
+	Media           []string // media:// refs from inbound message
+	DefaultResponse string   // Response when LLM returns empty
+	EnableSummary   bool     // Whether to trigger summarization
+	SendResponse    bool     // Whether to send response via bus
+	NoHistory       bool     // If true, don't load session history (for heartbeat)
 	ReplyContext    *ReplyContextInfo
-	Sender          *providers.MessageSender  // Author identity (nil for system/automated messages)
+	Sender          *providers.MessageSender // Author identity (nil for system/automated messages)
 }
 
 type agentResponse struct {
@@ -1149,12 +1149,16 @@ func (al *AgentLoop) runAgentLoop(
 	response := resolveFinalResponse(opts.Channel, opts.ReplyContext, finalContent)
 	response.Reactions = al.normalizeFinalReactions(opts.Channel, response.Reactions)
 	if response.SuppressTextReply && len(response.Reactions) > 0 && al.channelManager == nil {
-		logger.WarnCF("agent", "Ignoring text_reply=false without channel manager for reaction delivery", map[string]any{
-			"channel":        opts.Channel,
-			"chat_id":        opts.ChatID,
-			"session_key":    opts.SessionKey,
-			"reaction_count": len(response.Reactions),
-		})
+		logger.WarnCF(
+			"agent",
+			"Ignoring text_reply=false without channel manager for reaction delivery",
+			map[string]any{
+				"channel":        opts.Channel,
+				"chat_id":        opts.ChatID,
+				"session_key":    opts.SessionKey,
+				"reaction_count": len(response.Reactions),
+			},
+		)
 		response.SuppressTextReply = false
 	}
 	if response.SuppressTextReply && len(response.Reactions) == 0 {
