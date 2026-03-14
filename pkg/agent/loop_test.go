@@ -697,6 +697,30 @@ func TestResolveFinalResponse_InvalidTelegramDeliveryDirectiveDoesNotPartiallyAp
 	}
 }
 
+func TestResolveFinalResponse_TelegramSingleBracketDirectiveReplyToCurrent(t *testing.T) {
+	response := resolveFinalResponse(
+		"telegram",
+		&ReplyContextInfo{
+			CurrentMessageID: "281",
+			ParentMessageID:  "275",
+		},
+		"[reply_to:current] готово",
+	)
+
+	if response.Content != "готово" {
+		t.Fatalf("content=%q", response.Content)
+	}
+	if response.ReplyToMessageID != "281" {
+		t.Fatalf("reply_to_message_id=%q", response.ReplyToMessageID)
+	}
+	if response.SuppressTextReply {
+		t.Fatal("expected text reply to stay enabled")
+	}
+	if len(response.Reactions) != 0 {
+		t.Fatalf("unexpected reactions: %+v", response.Reactions)
+	}
+}
+
 func TestProcessMessage_TelegramFinalDirectiveSetsReplyTarget(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
