@@ -1323,7 +1323,8 @@ func parseTelegramDeliveryDirective(
 	body = rawContent
 	firstLine, rest, hasRest := strings.Cut(rawContent, "\n")
 	header := strings.TrimSpace(firstLine)
-	if !strings.HasPrefix(header, "[[") || !strings.HasSuffix(header, "]]") {
+	inner, matched := extractTelegramDeliveryHeaderInner(header)
+	if !matched {
 		return directive, body, nil
 	}
 
@@ -1336,13 +1337,12 @@ func parseTelegramDeliveryDirective(
 		body = strings.TrimLeft(rest, "\n")
 	}
 
-	legacyBody, legacyReplyTo, legacyMatched, legacyErr := parseLegacyFinalReplyDirective(replyCtx, header, body)
+	legacyBody, legacyReplyTo, legacyMatched, legacyErr := parseLegacyFinalReplyDirective(replyCtx, header, inner, body)
 	if legacyMatched {
 		directive.ReplyToMessageID = legacyReplyTo
 		return directive, legacyBody, legacyErr
 	}
 
-	inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(header, "[["), "]]"))
 	if inner == "" {
 		return directive, body, fmt.Errorf("empty delivery directive")
 	}
@@ -1409,16 +1409,58 @@ func parseTelegramDeliveryDirective(
 	return directive, body, nil
 }
 
+func extractTelegramDeliveryHeaderInner(header string) (string, bool) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return "", false
+	}
+
+	var inner string
+	switch {
+	case strings.HasPrefix(header, "[[") && strings.HasSuffix(header, "]]"):
+		inner = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(header, "[["), "]]"))
+	case strings.HasPrefix(header, "[") && strings.HasSuffix(header, "]"):
+		candidate := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(header, "["), "]"))
+		if !looksLikeTelegramDeliveryDirective(candidate) {
+			return "", false
+		}
+		inner = candidate
+	default:
+		return "", false
+	}
+
+	if !looksLikeTelegramDeliveryDirective(inner) {
+		return "", false
+	}
+
+	return inner, true
+}
+
+func looksLikeTelegramDeliveryDirective(inner string) bool {
+	if inner == "" {
+		return false
+	}
+
+	for _, keyword := range []string{"reply_to", "react_to", "text_reply", "reply:"} {
+		if strings.Contains(inner, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
 func parseLegacyFinalReplyDirective(
 	replyCtx *ReplyContextInfo,
 	header string,
+	inner string,
 	body string,
 ) (content, replyToMessageID string, matched bool, err error) {
-	if !strings.HasPrefix(header, "[[reply:") || !strings.HasSuffix(header, "]]") {
+	_ = header
+	if !strings.HasPrefix(inner, "reply:") {
 		return body, "", false, nil
 	}
 
-	mode := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(header, "[[reply:"), "]]"))
+	mode := strings.TrimSpace(strings.TrimPrefix(inner, "reply:"))
 	switch {
 	case mode == "chat":
 		return body, "", true, nil
