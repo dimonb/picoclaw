@@ -10,12 +10,15 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/cron"
+	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 // JobExecutor is the interface for executing cron jobs through the agent
 type JobExecutor interface {
 	ProcessDirectWithChannel(ctx context.Context, content, sessionKey, channel, chatID string) (string, error)
+	PublishOutboundWithHistory(ctx context.Context, sessionKey, channel, chatID string, msg providers.Message) error
 }
 
 // CronTool provides scheduling capabilities for the agent
@@ -314,15 +317,38 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 		return "ok"
 	}
 
-	// If deliver=true, send message directly without agent processing
+	// If deliver=true, send message directly without agent processing,
+	// but persist it in the originating chat session after confirmed delivery.
 	if job.Payload.Deliver {
+		if t.executor == nil {
+			pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer pubCancel()
+			t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+				Channel: channel,
+				ChatID:  chatID,
+				Content: job.Payload.Message,
+			})
+			return "ok"
+		}
+
+		sessionKey := routing.BuildAgentPeerSessionKey(routing.SessionKeyParams{
+			AgentID: routing.DefaultAgentID,
+			Channel: channel,
+			Peer: &routing.RoutePeer{
+				Kind: "group",
+				ID:   chatID,
+			},
+		})
+		msg := providers.Message{
+			Role:    "assistant",
+			Content: job.Payload.Message,
+		}
+
 		pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer pubCancel()
-		t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-			Channel: channel,
-			ChatID:  chatID,
-			Content: job.Payload.Message,
-		})
+		if err := t.executor.PublishOutboundWithHistory(pubCtx, sessionKey, channel, chatID, msg); err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
 		return "ok"
 	}
 

@@ -542,6 +542,30 @@ func (al *AgentLoop) resetRoundActionTools(agent *AgentInstance) {
 	}
 }
 
+func (al *AgentLoop) PublishOutboundWithHistory(
+	ctx context.Context,
+	sessionKey, channel, chatID string,
+	msg providers.Message,
+) error {
+	agent := al.GetRegistry().GetDefaultAgent()
+	if agent == nil {
+		return fmt.Errorf("no default agent available")
+	}
+	out := bus.OutboundMessage{
+		Channel:          channel,
+		ChatID:           chatID,
+		Content:          msg.Content,
+		ReplyToMessageID: msg.ReplyToMessageID,
+	}
+	out.OnDelivered = func(msgID string) {
+		delivered := msg
+		delivered.MessageID = msgID
+		agent.Sessions.AddFullMessage(sessionKey, delivered)
+		agent.Sessions.Save(sessionKey)
+	}
+	return al.bus.PublishOutbound(ctx, out)
+}
+
 func (al *AgentLoop) deliverAgentResponse(ctx context.Context, channel, chatID string, response agentResponse) {
 	if response.HandledExternally {
 		if al.channelManager != nil {
@@ -1326,7 +1350,7 @@ func parseTelegramDeliveryDirective(
 	inner, matched := extractTelegramDeliveryHeaderInner(header)
 	if !matched {
 		if strings.HasPrefix(header, "[[") {
-			if idx := strings.Index(firstLine, "]]" ); idx >= 0 {
+			if idx := strings.Index(firstLine, "]]"); idx >= 0 {
 				header = strings.TrimSpace(firstLine[:idx+2])
 				inner, matched = extractTelegramDeliveryHeaderInner(header)
 				if matched {
