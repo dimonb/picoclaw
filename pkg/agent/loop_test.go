@@ -673,6 +673,33 @@ func TestResolveFinalResponse_TelegramDeliveryDirectiveSupportsSilentMultiReacti
 	}
 }
 
+func TestResolveFinalResponse_TelegramDeliveryDirectiveIgnoresMsgKey(t *testing.T) {
+	response := resolveFinalResponse(
+		"telegram",
+		&ReplyContextInfo{
+			CurrentMessageID: "910",
+			ParentMessageID:  "905",
+		},
+		"[[msg:#325;reply_to:parent;react_to:current:❤️;text_reply=true]]\n\nThreaded answer",
+	)
+
+	if response.Content != "Threaded answer" {
+		t.Fatalf("content=%q", response.Content)
+	}
+	if response.ReplyToMessageID != "905" {
+		t.Fatalf("reply_to_message_id=%q", response.ReplyToMessageID)
+	}
+	if response.SuppressTextReply {
+		t.Fatal("expected SuppressTextReply=false")
+	}
+	if len(response.Reactions) != 1 {
+		t.Fatalf("reaction len=%d", len(response.Reactions))
+	}
+	if response.Reactions[0].TargetMessageID != "910" || response.Reactions[0].Emoji != "❤️" {
+		t.Fatalf("unexpected reaction[0]=%+v", response.Reactions[0])
+	}
+}
+
 func TestResolveFinalResponse_InvalidTelegramDeliveryDirectiveDoesNotPartiallyApply(t *testing.T) {
 	response := resolveFinalResponse(
 		"telegram",
