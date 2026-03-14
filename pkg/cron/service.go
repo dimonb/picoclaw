@@ -303,9 +303,23 @@ func (cs *CronService) recomputeNextRuns() {
 	now := time.Now().UnixMilli()
 	for i := range cs.store.Jobs {
 		job := &cs.store.Jobs[i]
-		if job.Enabled {
-			job.State.NextRunAtMS = cs.computeNextRun(&job.Schedule, now)
+		if !job.Enabled {
+			continue
 		}
+
+		// Recovery semantics for overdue one-shot jobs:
+		// if an `at` job was persisted but the process restarts after its target
+		// time and before execution, run it immediately on startup instead of
+		// silently dropping it by setting NextRunAtMS=nil.
+		if job.Schedule.Kind == "at" && job.Schedule.AtMS != nil {
+			if job.State.LastRunAtMS == nil && *job.Schedule.AtMS <= now {
+				overdueNow := now
+				job.State.NextRunAtMS = &overdueNow
+				continue
+			}
+		}
+
+		job.State.NextRunAtMS = cs.computeNextRun(&job.Schedule, now)
 	}
 }
 
