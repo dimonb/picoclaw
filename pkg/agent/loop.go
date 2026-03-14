@@ -1415,6 +1415,10 @@ func parseTelegramDeliveryDirective(
 		}
 
 		switch {
+		case strings.HasPrefix(part, "msg:"):
+			continue
+		case strings.HasPrefix(part, "msg="):
+			continue
 		case strings.HasPrefix(part, "reply_to:"):
 			target := strings.TrimSpace(strings.TrimPrefix(part, "reply_to:"))
 			resolved, ok := resolveTelegramDeliveryTarget(target, replyCtx, true)
