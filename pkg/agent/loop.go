@@ -1325,16 +1325,52 @@ func parseTelegramDeliveryDirective(
 	header := strings.TrimSpace(firstLine)
 	inner, matched := extractTelegramDeliveryHeaderInner(header)
 	if !matched {
-		return directive, body, nil
+		if strings.HasPrefix(header, "[[") {
+			if idx := strings.Index(firstLine, "]]" ); idx >= 0 {
+				header = strings.TrimSpace(firstLine[:idx+2])
+				inner, matched = extractTelegramDeliveryHeaderInner(header)
+				if matched {
+					body = strings.TrimSpace(firstLine[idx+2:])
+					if hasRest {
+						if body != "" {
+							body += "\n" + strings.TrimLeft(rest, "\n")
+						} else {
+							body = strings.TrimLeft(rest, "\n")
+						}
+					}
+				}
+			}
+		} else if strings.HasPrefix(header, "[") {
+			if idx := strings.Index(firstLine, "]"); idx >= 0 {
+				header = strings.TrimSpace(firstLine[:idx+1])
+				inner, matched = extractTelegramDeliveryHeaderInner(header)
+				if matched {
+					body = strings.TrimSpace(firstLine[idx+1:])
+					if hasRest {
+						if body != "" {
+							body += "\n" + strings.TrimLeft(rest, "\n")
+						} else {
+							body = strings.TrimLeft(rest, "\n")
+						}
+					}
+				}
+			}
+		}
+		if !matched {
+			body = rawContent
+			return directive, body, nil
+		}
 	}
 
 	directive = telegramDeliveryDirective{
 		HasDirective: true,
 		Directive:    header,
 	}
-	body = ""
-	if hasRest {
-		body = strings.TrimLeft(rest, "\n")
+	if body == rawContent {
+		body = ""
+		if hasRest {
+			body = strings.TrimLeft(rest, "\n")
+		}
 	}
 
 	legacyBody, legacyReplyTo, legacyMatched, legacyErr := parseLegacyFinalReplyDirective(replyCtx, header, inner, body)
