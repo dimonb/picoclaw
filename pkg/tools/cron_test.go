@@ -9,6 +9,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/cron"
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 func newTestCronTool(t *testing.T) *CronTool {
@@ -112,5 +113,60 @@ func TestCronTool_NonCommandJobAllowedFromRemoteChannel(t *testing.T) {
 
 	if result.IsError {
 		t.Fatalf("expected non-command reminder to succeed from remote channel, got: %s", result.ForLLM)
+	}
+}
+
+type stubJobExecutor struct {
+	called     bool
+	sessionKey string
+	channel    string
+	chatID     string
+	msg        providers.Message
+}
+
+func (s *stubJobExecutor) ProcessDirectWithChannel(ctx context.Context, content, sessionKey, channel, chatID string) (string, error) {
+	return "", nil
+}
+
+func (s *stubJobExecutor) PublishOutboundWithHistory(ctx context.Context, sessionKey, channel, chatID string, msg providers.Message) error {
+	s.called = true
+	s.sessionKey = sessionKey
+	s.channel = channel
+	s.chatID = chatID
+	s.msg = msg
+	return nil
+}
+
+func TestCronTool_ExecuteJobDeliverTruePublishesWithHistory(t *testing.T) {
+	tool := newTestCronTool(t)
+	exec := &stubJobExecutor{}
+	tool.executor = exec
+	job := &cron.CronJob{
+		ID:   "job1",
+		Name: "reminder",
+		Payload: cron.CronPayload{
+			Message: "hello from cron",
+			Deliver: true,
+			Channel: "telegram",
+			To:      "-1003717341079/17",
+		},
+	}
+
+	got := tool.ExecuteJob(context.Background(), job)
+	if got != "ok" {
+		t.Fatalf("ExecuteJob()=%q, want ok", got)
+	}
+	if !exec.called {
+		t.Fatal("expected PublishOutboundWithHistory to be called")
+	}
+	if exec.channel != "telegram" || exec.chatID != "-1003717341079/17" {
+		t.Fatalf("unexpected route: %s %s", exec.channel, exec.chatID)
+	}
+	if exec.msg.Role != "assistant" || exec.msg.Content != "hello from cron" {
+		t.Fatalf("unexpected message: %+v", exec.msg)
+	}
+	wantSession := "agent:main:telegram:group:-1003717341079/17"
+	if exec.sessionKey != wantSession {
+		t.Fatalf("sessionKey=%q, want %q", exec.sessionKey, wantSession)
 	}
 }

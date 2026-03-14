@@ -1910,3 +1910,52 @@ func TestResolveMediaRefs_MixedImageAndFile(t *testing.T) {
 		t.Fatalf("expected content %q, got %q", expectedContent, result[0].Content)
 	}
 }
+
+type syncFakeChannel struct {
+	fakeChannel
+	sent []bus.OutboundMessage
+}
+
+func (f *syncFakeChannel) SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (string, error) {
+	f.sent = append(f.sent, msg)
+	return "mid-123", nil
+}
+
+func TestPublishOutboundWithHistoryPersistsOnDelivered(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+
+	cm, err := channels.NewManager(&config.Config{}, msgBus, nil)
+	if err != nil {
+		t.Fatalf("NewManager error: %v", err)
+	}
+	ch := &syncFakeChannel{fakeChannel: fakeChannel{id: "fake"}}
+	cm.RegisterChannel("telegram", ch)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := cm.StartAll(ctx); err != nil {
+		t.Fatalf("StartAll error: %v", err)
+	}
+	defer cm.StopAll(context.Background())
+	al.SetChannelManager(cm)
+
+	sessionKey := "agent:main:telegram:group:-1003717341079/17"
+	msg := providers.Message{Role: "assistant", Content: "hello from cron"}
+	if err := al.PublishOutboundWithHistory(context.Background(), sessionKey, "telegram", "-1003717341079/17", msg); err != nil {
+		t.Fatalf("PublishOutboundWithHistory error: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	agent := al.GetRegistry().GetDefaultAgent()
+	history := agent.Sessions.GetHistory(sessionKey)
+	if len(history) != 1 {
+		t.Fatalf("history len=%d, want 1", len(history))
+	}
+	if history[0].Role != "assistant" || history[0].Content != "hello from cron" {
+		t.Fatalf("unexpected history message: %+v", history[0])
+	}
+	if history[0].MessageID != "mid-123" {
+		t.Fatalf("message id=%q, want mid-123", history[0].MessageID)
+	}
+}
