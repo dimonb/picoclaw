@@ -77,7 +77,10 @@ func TestCronTool_CommandAllowedFromInternalChannel(t *testing.T) {
 	})
 
 	if result.IsError {
-		t.Fatalf("expected command scheduling to succeed from internal channel, got: %s", result.ForLLM)
+		t.Fatalf(
+			"expected command scheduling to succeed from internal channel, got: %s",
+			result.ForLLM,
+		)
 	}
 	if !strings.Contains(result.ForLLM, "Cron job added") {
 		t.Errorf("expected 'Cron job added', got: %s", result.ForLLM)
@@ -112,7 +115,10 @@ func TestCronTool_NonCommandJobAllowedFromRemoteChannel(t *testing.T) {
 	})
 
 	if result.IsError {
-		t.Fatalf("expected non-command reminder to succeed from remote channel, got: %s", result.ForLLM)
+		t.Fatalf(
+			"expected non-command reminder to succeed from remote channel, got: %s",
+			result.ForLLM,
+		)
 	}
 }
 
@@ -124,11 +130,18 @@ type stubJobExecutor struct {
 	msg        providers.Message
 }
 
-func (s *stubJobExecutor) ProcessDirectWithChannel(ctx context.Context, content, sessionKey, channel, chatID string) (string, error) {
+func (s *stubJobExecutor) ProcessDirectWithChannel(
+	ctx context.Context,
+	content, sessionKey, channel, chatID string,
+) (string, error) {
 	return "", nil
 }
 
-func (s *stubJobExecutor) PublishOutboundWithHistory(ctx context.Context, sessionKey, channel, chatID string, msg providers.Message) error {
+func (s *stubJobExecutor) PublishOutboundWithHistory(
+	ctx context.Context,
+	sessionKey, channel, chatID string,
+	msg providers.Message,
+) error {
 	s.called = true
 	s.sessionKey = sessionKey
 	s.channel = channel

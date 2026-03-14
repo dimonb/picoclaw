@@ -506,7 +506,10 @@ func (t *blockingSequentialTaskTool) ExecuteSequentially() bool {
 	return true
 }
 
-func (t *blockingSequentialTaskTool) Execute(ctx context.Context, args map[string]any) *tools.ToolResult {
+func (t *blockingSequentialTaskTool) Execute(
+	ctx context.Context,
+	args map[string]any,
+) *tools.ToolResult {
 	action, _ := args["action"].(string)
 	switch action {
 	case "create_plan":
@@ -553,7 +556,11 @@ type testHelper struct {
 	al *AgentLoop
 }
 
-func (h testHelper) executeAndGetResponse(tb testing.TB, ctx context.Context, msg bus.InboundMessage) string {
+func (h testHelper) executeAndGetResponse(
+	tb testing.TB,
+	ctx context.Context,
+	msg bus.InboundMessage,
+) string {
 	// Use a short timeout to avoid hanging
 	timeoutCtx, cancel := context.WithTimeout(ctx, responseTimeout)
 	defer cancel()
@@ -767,7 +774,9 @@ func TestProcessMessage_TelegramFinalDirectiveSetsReplyTarget(t *testing.T) {
 	}
 
 	msgBus := bus.NewMessageBus()
-	provider := &simpleMockProvider{response: "[[reply_to:parent;text_reply=true]]\n\nThreaded answer"}
+	provider := &simpleMockProvider{
+		response: "[[reply_to:parent;text_reply=true]]\n\nThreaded answer",
+	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
 	msg := bus.InboundMessage{
@@ -816,7 +825,9 @@ func TestRun_PublishesTelegramReplyTargetFromFinalDirective(t *testing.T) {
 	}
 
 	msgBus := bus.NewMessageBus()
-	provider := &simpleMockProvider{response: "[[reply_to:parent;text_reply=true]]\n\nThreaded answer"}
+	provider := &simpleMockProvider{
+		response: "[[reply_to:parent;text_reply=true]]\n\nThreaded answer",
+	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -930,7 +941,10 @@ func TestProcessMessage_CommandOutcomes(t *testing.T) {
 		t.Fatalf("unexpected /foo reply: %q", fooResp)
 	}
 	if provider.calls != 1 {
-		t.Fatalf("LLM should be called exactly once after /foo passthrough, calls=%d", provider.calls)
+		t.Fatalf(
+			"LLM should be called exactly once after /foo passthrough, calls=%d",
+			provider.calls,
+		)
 	}
 
 	newResp := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
@@ -1118,19 +1132,21 @@ func TestReactionTool_DoesNotSuppressFinalResponse(t *testing.T) {
 	}
 
 	var calls int
-	rt.SetReactionCallback(func(ctx context.Context, channel, chatID, messageID, emoji string) error {
-		calls++
-		if channel != "telegram" || chatID != "chat1" || messageID != "910" || emoji != "❤️" {
-			t.Fatalf(
-				"unexpected callback args channel=%q chatID=%q messageID=%q emoji=%q",
-				channel,
-				chatID,
-				messageID,
-				emoji,
-			)
-		}
-		return nil
-	})
+	rt.SetReactionCallback(
+		func(ctx context.Context, channel, chatID, messageID, emoji string) error {
+			calls++
+			if channel != "telegram" || chatID != "chat1" || messageID != "910" || emoji != "❤️" {
+				t.Fatalf(
+					"unexpected callback args channel=%q chatID=%q messageID=%q emoji=%q",
+					channel,
+					chatID,
+					messageID,
+					emoji,
+				)
+			}
+			return nil
+		},
+	)
 
 	response := helper.executeAndGetResponse(t, context.Background(), bus.InboundMessage{
 		Channel:   "telegram",
@@ -1158,15 +1174,25 @@ func TestReactionTool_BecomesAvailableForTelegramAfterChannelManagerBinding(t *t
 		t.Fatal("expected default agent")
 	}
 
-	before := defaultAgent.Tools.ToProviderDefsWithContext(context.Background(), "telegram", "chat1")
-	if slices.ContainsFunc(before, func(def providers.ToolDefinition) bool { return def.Function.Name == "reaction" }) {
+	before := defaultAgent.Tools.ToProviderDefsWithContext(
+		context.Background(),
+		"telegram",
+		"chat1",
+	)
+	if slices.ContainsFunc(
+		before,
+		func(def providers.ToolDefinition) bool { return def.Function.Name == "reaction" },
+	) {
 		t.Fatal("reaction tool should not be available before channel manager binding")
 	}
 
 	al.SetChannelManager(&channels.Manager{})
 
 	after := defaultAgent.Tools.ToProviderDefsWithContext(context.Background(), "telegram", "chat1")
-	if !slices.ContainsFunc(after, func(def providers.ToolDefinition) bool { return def.Function.Name == "reaction" }) {
+	if !slices.ContainsFunc(
+		after,
+		func(def providers.ToolDefinition) bool { return def.Function.Name == "reaction" },
+	) {
 		t.Fatal("reaction tool should be available for telegram after channel manager binding")
 	}
 }
@@ -1178,7 +1204,11 @@ func TestMessageTool_IsUnavailableForTelegramContext(t *testing.T) {
 		t.Fatal("expected default agent")
 	}
 
-	telegramDefs := defaultAgent.Tools.ToProviderDefsWithContext(context.Background(), "telegram", "chat1")
+	telegramDefs := defaultAgent.Tools.ToProviderDefsWithContext(
+		context.Background(),
+		"telegram",
+		"chat1",
+	)
 	if slices.ContainsFunc(
 		telegramDefs,
 		func(def providers.ToolDefinition) bool { return def.Function.Name == "message" },
@@ -1329,7 +1359,9 @@ func TestAgentLoop_ContextExhaustionRetry(t *testing.T) {
 	msgBus := bus.NewMessageBus()
 
 	// Create a provider that fails once with a context error
-	contextErr := fmt.Errorf("InvalidParameter: Total tokens of image and text exceed max message tokens")
+	contextErr := fmt.Errorf(
+		"InvalidParameter: Total tokens of image and text exceed max message tokens",
+	)
 	provider := &failFirstMockProvider{
 		failures:    1,
 		failError:   contextErr,
@@ -1649,7 +1681,9 @@ func TestHandleReasoning(t *testing.T) {
 			}
 		}
 		if foundReasoning {
-			t.Fatal("expected reasoning message to be dropped when bus is full, but it was published")
+			t.Fatal(
+				"expected reasoning message to be dropped when bus is full, but it was published",
+			)
 		}
 	})
 }
@@ -1943,7 +1977,10 @@ type syncFakeChannel struct {
 	sent []bus.OutboundMessage
 }
 
-func (f *syncFakeChannel) SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (string, error) {
+func (f *syncFakeChannel) SendMessageWithID(
+	ctx context.Context,
+	msg bus.OutboundMessage,
+) (string, error) {
 	f.sent = append(f.sent, msg)
 	return "mid-123", nil
 }
@@ -1968,7 +2005,9 @@ func TestPublishOutboundWithHistoryPersistsOnDelivered(t *testing.T) {
 
 	sessionKey := "agent:main:telegram:group:-1003717341079/17"
 	msg := providers.Message{Role: "assistant", Content: "hello from cron"}
-	if err := al.PublishOutboundWithHistory(context.Background(), sessionKey, "telegram", "-1003717341079/17", msg); err != nil {
+	if err := al.PublishOutboundWithHistory(
+		context.Background(), sessionKey, "telegram", "-1003717341079/17", msg,
+	); err != nil {
 		t.Fatalf("PublishOutboundWithHistory error: %v", err)
 	}
 
