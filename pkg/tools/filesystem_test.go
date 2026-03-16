@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -40,6 +41,48 @@ func TestFilesystemTool_ReadFile_Success(t *testing.T) {
 	// This is the expected behavior - file content goes to LLM, not directly to user
 	if result.ForUser != "" {
 		t.Errorf("Expected ForUser to be empty for NewToolResult, got: %s", result.ForUser)
+	}
+}
+
+func TestFilesystemTool_ReadFile_MediaRef_Success(t *testing.T) {
+	workspace := t.TempDir()
+	attachmentsDir := t.TempDir()
+	store := media.NewFileMediaStore()
+
+	testFile := filepath.Join(attachmentsDir, "telegram-upload")
+	if err := os.WriteFile(testFile, []byte("attachment content"), 0o644); err != nil {
+		t.Fatalf("failed to write attachment: %v", err)
+	}
+
+	ref, err := store.Store(testFile, media.MediaMeta{Filename: "notes.txt", Source: "telegram"}, "scope1")
+	if err != nil {
+		t.Fatalf("failed to store attachment: %v", err)
+	}
+
+	tool := NewReadFileTool(workspace, true, MaxReadFileSize)
+	tool.SetMediaStore(store)
+
+	result := tool.Execute(context.Background(), map[string]any{"path": ref})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "attachment content") {
+		t.Fatalf("expected attachment content in result, got: %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "[file: notes.txt") {
+		t.Fatalf("expected filename from media metadata in result header, got: %s", result.ForLLM)
+	}
+}
+
+func TestFilesystemTool_ReadFile_MediaRef_NoStore(t *testing.T) {
+	tool := NewReadFileTool(t.TempDir(), true, MaxReadFileSize)
+
+	result := tool.Execute(context.Background(), map[string]any{"path": "media://missing"})
+	if !result.IsError {
+		t.Fatal("expected error when media store is not configured")
+	}
+	if !strings.Contains(result.ForLLM, "media store not configured") {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
 	}
 }
 

@@ -107,6 +107,91 @@ func TestBuildCodexParams_ToolCallFunctionFallback(t *testing.T) {
 	}
 }
 
+func TestBuildCodexParams_UserMessageWithMedia(t *testing.T) {
+	params := buildCodexParams([]Message{
+		{Role: "user", Content: "Describe this", Media: []string{"data:image/png;base64,abc123"}},
+	}, nil, "gpt-4o", map[string]any{}, false)
+
+	if params.Input.OfInputItemList == nil || len(params.Input.OfInputItemList) != 1 {
+		t.Fatalf("expected exactly one input item, got %#v", params.Input.OfInputItemList)
+	}
+
+	msg := params.Input.OfInputItemList[0].OfMessage
+	if msg == nil {
+		t.Fatal("expected first input item to be a message")
+	}
+
+	parts := msg.Content.OfInputItemContentList
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 message parts, got %d", len(parts))
+	}
+	if parts[0].OfInputText == nil || parts[0].OfInputText.Text != "Describe this" {
+		t.Fatalf("unexpected text part: %#v", parts[0].OfInputText)
+	}
+	if parts[1].OfInputImage == nil {
+		t.Fatal("expected image part")
+	}
+	if got := parts[1].OfInputImage.ImageURL.Or(""); got != "data:image/png;base64,abc123" {
+		t.Fatalf("image URL = %q, want data URL", got)
+	}
+	if parts[1].OfInputImage.Detail != responses.ResponseInputImageDetailAuto {
+		t.Fatalf("image detail = %q, want %q", parts[1].OfInputImage.Detail, responses.ResponseInputImageDetailAuto)
+	}
+}
+
+func TestBuildCodexParams_UserMessageWithDocumentMedia(t *testing.T) {
+	tests := []struct {
+		name     string
+		mediaURL string
+		filename string
+		payload  string
+	}{
+		{
+			name:     "pdf",
+			mediaURL: "data:application/pdf;base64,JVBERi0xLjQ=",
+			filename: "attachment.pdf",
+			payload:  "JVBERi0xLjQ=",
+		},
+		{
+			name:     "text",
+			mediaURL: "data:text/plain;base64,aGVsbG8gd29ybGQ=",
+			filename: "attachment.txt",
+			payload:  "aGVsbG8gd29ybGQ=",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			params := buildCodexParams([]Message{
+				{Role: "user", Content: "Read this", Media: []string{tt.mediaURL}},
+			}, nil, "gpt-4o", map[string]any{}, false)
+
+			if params.Input.OfInputItemList == nil || len(params.Input.OfInputItemList) != 1 {
+				t.Fatalf("expected exactly one input item, got %#v", params.Input.OfInputItemList)
+			}
+
+			msg := params.Input.OfInputItemList[0].OfMessage
+			if msg == nil {
+				t.Fatal("expected first input item to be a message")
+			}
+
+			parts := msg.Content.OfInputItemContentList
+			if len(parts) != 2 {
+				t.Fatalf("expected 2 message parts, got %d", len(parts))
+			}
+			if parts[1].OfInputFile == nil {
+				t.Fatalf("expected input_file part, got %#v", parts[1])
+			}
+			if got := parts[1].OfInputFile.FileData.Or(""); got != tt.payload {
+				t.Fatalf("file_data = %q, want %q", got, tt.payload)
+			}
+			if got := parts[1].OfInputFile.Filename.Or(""); got != tt.filename {
+				t.Fatalf("filename = %q, want %q", got, tt.filename)
+			}
+		})
+	}
+}
+
 func TestBuildCodexParams_WithTools(t *testing.T) {
 	tools := []ToolDefinition{
 		{

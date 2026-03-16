@@ -635,6 +635,63 @@ func TestProcessMessage_UsesRouteSessionKey(t *testing.T) {
 	}
 }
 
+func TestProcessMessage_PersistsUserMediaInSessionHistory(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Model:             "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &simpleMockProvider{response: "ok"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	msg := bus.InboundMessage{
+		Channel:  "telegram",
+		SenderID: "user1",
+		ChatID:   "chat1",
+		Content:  "[image: photo]",
+		Media:    []string{"media://photo-1"},
+		Peer: bus.Peer{
+			Kind: "direct",
+			ID:   "user1",
+		},
+	}
+
+	route := al.registry.ResolveRoute(routing.RouteInput{
+		Channel: msg.Channel,
+		Peer:    extractPeer(msg),
+	})
+	sessionKey := route.SessionKey
+
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("No default agent found")
+	}
+
+	helper := testHelper{al: al}
+	_ = helper.executeAndGetResponse(t, context.Background(), msg)
+
+	history := defaultAgent.Sessions.GetHistory(sessionKey)
+	if len(history) != 2 {
+		t.Fatalf("expected session history len=2, got %d", len(history))
+	}
+	if !slices.Equal(history[0].Media, msg.Media) {
+		t.Fatalf("persisted media = %v, want %v", history[0].Media, msg.Media)
+	}
+}
+
 func TestParseFinalReplyDirective(t *testing.T) {
 	content, replyTo := parseFinalReplyDirective(
 		"telegram",
@@ -1752,11 +1809,11 @@ func TestResolveMediaRefs_UnknownTypeInjectsPath(t *testing.T) {
 	store := media.NewFileMediaStore()
 	dir := t.TempDir()
 
-	txtPath := filepath.Join(dir, "readme.txt")
-	if err := os.WriteFile(txtPath, []byte("hello world"), 0o644); err != nil {
+	blobPath := filepath.Join(dir, "readme")
+	if err := os.WriteFile(blobPath, []byte("hello world"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ref, _ := store.Store(txtPath, media.MediaMeta{}, "test")
+	ref, _ := store.Store(blobPath, media.MediaMeta{}, "test")
 
 	messages := []providers.Message{
 		{Role: "user", Content: "hi", Media: []string{ref}},
@@ -1766,7 +1823,7 @@ func TestResolveMediaRefs_UnknownTypeInjectsPath(t *testing.T) {
 	if len(result[0].Media) != 0 {
 		t.Fatalf("expected 0 media entries, got %d", len(result[0].Media))
 	}
-	expected := "hi [file:" + txtPath + "]"
+	expected := "hi [file:readme|" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -1845,10 +1902,67 @@ func TestResolveMediaRefs_PDFInjectsFilePath(t *testing.T) {
 	}
 	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize)
 
-	if len(result[0].Media) != 0 {
-		t.Fatalf("expected 0 media (non-image), got %d", len(result[0].Media))
+	if len(result[0].Media) != 1 {
+		t.Fatalf("expected 1 media (inline pdf), got %d", len(result[0].Media))
 	}
-	expected := "report.pdf [file:" + pdfPath + "]"
+	if !strings.HasPrefix(result[0].Media[0], "data:application/pdf;base64,") {
+		t.Fatalf("expected inline pdf data URL, got %q", result[0].Media[0])
+	}
+	expected := "report.pdf [file:report.pdf|" + ref + "]"
+	if result[0].Content != expected {
+		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
+	}
+}
+
+func TestResolveMediaRefs_TextPlainInlinesDocumentAndInjectsPath(t *testing.T) {
+	store := media.NewFileMediaStore()
+	dir := t.TempDir()
+
+	txtPath := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(txtPath, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref, _ := store.Store(txtPath, media.MediaMeta{ContentType: "text/plain"}, "test")
+
+	messages := []providers.Message{
+		{Role: "user", Content: "notes [file]", Media: []string{ref}},
+	}
+	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize)
+
+	if len(result[0].Media) != 1 {
+		t.Fatalf("expected 1 media (inline text), got %d", len(result[0].Media))
+	}
+	if !strings.HasPrefix(result[0].Media[0], "data:text/plain;base64,") {
+		t.Fatalf("expected inline text data URL, got %q", result[0].Media[0])
+	}
+	expected := "notes [file:notes.txt|" + ref + "]"
+	if result[0].Content != expected {
+		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
+	}
+}
+
+func TestResolveMediaRefs_UsesMetaFilenameExtensionForTextPlain(t *testing.T) {
+	store := media.NewFileMediaStore()
+	dir := t.TempDir()
+
+	txtPath := filepath.Join(dir, "blob")
+	if err := os.WriteFile(txtPath, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ref, _ := store.Store(txtPath, media.MediaMeta{Filename: "notes.txt"}, "test")
+
+	messages := []providers.Message{
+		{Role: "user", Content: "notes [file]", Media: []string{ref}},
+	}
+	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize)
+
+	if len(result[0].Media) != 1 {
+		t.Fatalf("expected 1 media (inline text), got %d", len(result[0].Media))
+	}
+	if !strings.HasPrefix(result[0].Media[0], "data:text/plain;base64,") {
+		t.Fatalf("expected inline text data URL, got %q", result[0].Media[0])
+	}
+	expected := "notes [file:notes.txt|" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -1870,7 +1984,7 @@ func TestResolveMediaRefs_AudioInjectsAudioPath(t *testing.T) {
 	if len(result[0].Media) != 0 {
 		t.Fatalf("expected 0 media, got %d", len(result[0].Media))
 	}
-	expected := "voice.ogg [audio:" + oggPath + "]"
+	expected := "voice.ogg [audio:voice.ogg|" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -1892,7 +2006,7 @@ func TestResolveMediaRefs_VideoInjectsVideoPath(t *testing.T) {
 	if len(result[0].Media) != 0 {
 		t.Fatalf("expected 0 media, got %d", len(result[0].Media))
 	}
-	expected := "clip.mp4 [video:" + mp4Path + "]"
+	expected := "clip.mp4 [video:clip.mp4|" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -1911,7 +2025,7 @@ func TestResolveMediaRefs_NoGenericTagAppendsPath(t *testing.T) {
 	}
 	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize)
 
-	expected := "here is my data [file:" + csvPath + "]"
+	expected := "here is my data [file:data.csv|" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -1931,7 +2045,7 @@ func TestResolveMediaRefs_EmptyContentGetsPathTag(t *testing.T) {
 	}
 	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize)
 
-	expected := "[file:" + docPath + "]"
+	expected := "[file:doc.docx|" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -1960,13 +2074,16 @@ func TestResolveMediaRefs_MixedImageAndFile(t *testing.T) {
 	}
 	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize)
 
-	if len(result[0].Media) != 1 {
-		t.Fatalf("expected 1 media (image only), got %d", len(result[0].Media))
+	if len(result[0].Media) != 2 {
+		t.Fatalf("expected 2 media (image + inline pdf), got %d", len(result[0].Media))
 	}
 	if !strings.HasPrefix(result[0].Media[0], "data:image/png;base64,") {
 		t.Fatal("expected image to be base64 encoded")
 	}
-	expectedContent := "check these [file:" + pdfPath + "]"
+	if !strings.HasPrefix(result[0].Media[1], "data:application/pdf;base64,") {
+		t.Fatal("expected pdf to be base64 encoded")
+	}
+	expectedContent := "check these [file:report.pdf|" + fileRef + "]"
 	if result[0].Content != expectedContent {
 		t.Fatalf("expected content %q, got %q", expectedContent, result[0].Content)
 	}

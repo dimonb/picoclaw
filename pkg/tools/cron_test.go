@@ -12,12 +12,17 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
-func newTestCronTool(t *testing.T) *CronTool {
+func newTestCronTool(t *testing.T, mutateCfg ...func(*config.Config)) *CronTool {
 	t.Helper()
 	storePath := filepath.Join(t.TempDir(), "cron.json")
 	cronService := cron.NewCronService(storePath, nil)
 	msgBus := bus.NewMessageBus()
 	cfg := config.DefaultConfig()
+	for _, mutate := range mutateCfg {
+		if mutate != nil {
+			mutate(cfg)
+		}
+	}
 	tool, err := NewCronTool(cronService, nil, msgBus, t.TempDir(), true, 0, cfg)
 	if err != nil {
 		t.Fatalf("NewCronTool() error: %v", err)
@@ -27,7 +32,9 @@ func newTestCronTool(t *testing.T) *CronTool {
 
 // TestCronTool_CommandBlockedFromRemoteChannel verifies command scheduling is restricted to internal channels
 func TestCronTool_CommandBlockedFromRemoteChannel(t *testing.T) {
-	tool := newTestCronTool(t)
+	tool := newTestCronTool(t, func(cfg *config.Config) {
+		cfg.Tools.Exec.AllowRemote = false
+	})
 	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
 	result := tool.Execute(ctx, map[string]any{
 		"action":          "add",
@@ -47,7 +54,9 @@ func TestCronTool_CommandBlockedFromRemoteChannel(t *testing.T) {
 
 // TestCronTool_CommandRequiresConfirm verifies command_confirm=true is required
 func TestCronTool_CommandRequiresConfirm(t *testing.T) {
-	tool := newTestCronTool(t)
+	tool := newTestCronTool(t, func(cfg *config.Config) {
+		cfg.Tools.Exec.AllowRemote = false
+	})
 	ctx := WithToolContext(context.Background(), "cli", "direct")
 	result := tool.Execute(ctx, map[string]any{
 		"action":     "add",
@@ -66,7 +75,9 @@ func TestCronTool_CommandRequiresConfirm(t *testing.T) {
 
 // TestCronTool_CommandAllowedFromInternalChannel verifies command scheduling works from internal channels
 func TestCronTool_CommandAllowedFromInternalChannel(t *testing.T) {
-	tool := newTestCronTool(t)
+	tool := newTestCronTool(t, func(cfg *config.Config) {
+		cfg.Tools.Exec.AllowRemote = false
+	})
 	ctx := WithToolContext(context.Background(), "cli", "direct")
 	result := tool.Execute(ctx, map[string]any{
 		"action":          "add",
@@ -81,6 +92,27 @@ func TestCronTool_CommandAllowedFromInternalChannel(t *testing.T) {
 			"expected command scheduling to succeed from internal channel, got: %s",
 			result.ForLLM,
 		)
+	}
+	if !strings.Contains(result.ForLLM, "Cron job added") {
+		t.Errorf("expected 'Cron job added', got: %s", result.ForLLM)
+	}
+}
+
+func TestCronTool_CommandAllowedFromRemoteChannelWhenAllowRemoteEnabled(t *testing.T) {
+	tool := newTestCronTool(t, func(cfg *config.Config) {
+		cfg.Tools.Exec.AllowRemote = true
+	})
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	result := tool.Execute(ctx, map[string]any{
+		"action":          "add",
+		"message":         "check disk",
+		"command":         "df -h",
+		"command_confirm": true,
+		"at_seconds":      float64(60),
+	})
+
+	if result.IsError {
+		t.Fatalf("expected command scheduling to succeed when allowRemote=true, got: %s", result.ForLLM)
 	}
 	if !strings.Contains(result.ForLLM, "Cron job added") {
 		t.Errorf("expected 'Cron job added', got: %s", result.ForLLM)

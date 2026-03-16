@@ -528,3 +528,151 @@ func TestRefToScopeConsistency(t *testing.T) {
 		t.Error("refToScope should still contain ref3")
 	}
 }
+
+func TestPersistentStoreRestoresRefsAfterRestart(t *testing.T) {
+	sourceDir := t.TempDir()
+	storeDir := filepath.Join(t.TempDir(), "media")
+	store := NewPersistentFileMediaStore(storeDir)
+
+	sourcePath := createTempFile(t, sourceDir, "photo.jpg")
+	meta := MediaMeta{
+		Filename:    "photo.jpg",
+		ContentType: "image/jpeg",
+		Source:      "telegram",
+	}
+
+	ref, err := store.Store(sourcePath, meta, "scope1")
+	if err != nil {
+		t.Fatalf("Store failed: %v", err)
+	}
+
+	managedPath, resolvedMeta, err := store.ResolveWithMeta(ref)
+	if err != nil {
+		t.Fatalf("ResolveWithMeta failed: %v", err)
+	}
+	if managedPath == sourcePath {
+		t.Fatalf("expected persistent store to copy media, got original path %q", managedPath)
+	}
+	if !strings.HasPrefix(managedPath, storeDir) {
+		t.Fatalf("managed path %q should be inside %q", managedPath, storeDir)
+	}
+	if resolvedMeta != meta {
+		t.Fatalf("resolved meta = %+v, want %+v", resolvedMeta, meta)
+	}
+	if _, err := os.Stat(store.metaPath(refID(ref))); err != nil {
+		t.Fatalf("expected metadata file to exist: %v", err)
+	}
+
+	restarted := NewPersistentFileMediaStore(storeDir)
+	restartedPath, restartedMeta, err := restarted.ResolveWithMeta(ref)
+	if err != nil {
+		t.Fatalf("ResolveWithMeta after restart failed: %v", err)
+	}
+	if restartedPath != managedPath {
+		t.Fatalf("restarted path = %q, want %q", restartedPath, managedPath)
+	}
+	if restartedMeta != meta {
+		t.Fatalf("restarted meta = %+v, want %+v", restartedMeta, meta)
+	}
+}
+
+func TestPersistentStoreReleaseAllKeepsManagedFilesAndLazilyReloadsRef(t *testing.T) {
+	sourceDir := t.TempDir()
+	storeDir := filepath.Join(t.TempDir(), "media")
+	store := NewPersistentFileMediaStore(storeDir)
+
+	sourcePath := createTempFile(t, sourceDir, "photo.jpg")
+	ref, err := store.Store(sourcePath, MediaMeta{Source: "telegram"}, "scope1")
+	if err != nil {
+		t.Fatalf("Store failed: %v", err)
+	}
+
+	managedPath, err := store.Resolve(ref)
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	metaPath := store.metaPath(refID(ref))
+
+	if err := store.ReleaseAll("scope1"); err != nil {
+		t.Fatalf("ReleaseAll failed: %v", err)
+	}
+
+	store.mu.RLock()
+	if _, ok := store.refs[ref]; ok {
+		store.mu.RUnlock()
+		t.Fatal("ref should be evicted from in-memory index after ReleaseAll")
+	}
+	store.mu.RUnlock()
+
+	if _, err := os.Stat(managedPath); err != nil {
+		t.Fatalf("managed blob should remain on disk: %v", err)
+	}
+	if _, err := os.Stat(metaPath); err != nil {
+		t.Fatalf("managed metadata should remain on disk: %v", err)
+	}
+	if _, err := os.Stat(sourcePath); err != nil {
+		t.Fatalf("source file should remain intact: %v", err)
+	}
+
+	reloadedPath, err := store.Resolve(ref)
+	if err != nil {
+		t.Fatalf("ref should be resolvable again via disk-backed lazy load: %v", err)
+	}
+	if reloadedPath != managedPath {
+		t.Fatalf("reloaded path = %q, want %q", reloadedPath, managedPath)
+	}
+}
+
+func TestPersistentStoreCleanExpiredKeepsManagedFilesAndLazilyReloadsRef(t *testing.T) {
+	sourceDir := t.TempDir()
+	storeDir := filepath.Join(t.TempDir(), "media")
+	now := time.Now()
+	store := NewPersistentFileMediaStoreWithCleanup(storeDir, MediaCleanerConfig{
+		Enabled:  true,
+		MaxAge:   10 * time.Minute,
+		Interval: time.Hour,
+	})
+	store.nowFunc = func() time.Time { return now.Add(-20 * time.Minute) }
+
+	sourcePath := createTempFile(t, sourceDir, "photo.jpg")
+	ref, err := store.Store(sourcePath, MediaMeta{Source: "telegram"}, "scope1")
+	if err != nil {
+		t.Fatalf("Store failed: %v", err)
+	}
+
+	managedPath, err := store.Resolve(ref)
+	if err != nil {
+		t.Fatalf("Resolve failed: %v", err)
+	}
+	metaPath := store.metaPath(refID(ref))
+
+	store.nowFunc = func() time.Time { return now }
+	if removed := store.CleanExpired(); removed != 1 {
+		t.Fatalf("CleanExpired removed %d entries, want 1", removed)
+	}
+
+	store.mu.RLock()
+	if _, ok := store.refs[ref]; ok {
+		store.mu.RUnlock()
+		t.Fatal("expired ref should be evicted from in-memory index")
+	}
+	store.mu.RUnlock()
+
+	if _, err := os.Stat(managedPath); err != nil {
+		t.Fatalf("managed blob should remain on disk: %v", err)
+	}
+	if _, err := os.Stat(metaPath); err != nil {
+		t.Fatalf("managed metadata should remain on disk: %v", err)
+	}
+	if _, err := os.Stat(sourcePath); err != nil {
+		t.Fatalf("source file should remain intact: %v", err)
+	}
+
+	reloadedPath, err := store.Resolve(ref)
+	if err != nil {
+		t.Fatalf("expired ref should be resolvable again via disk-backed lazy load: %v", err)
+	}
+	if reloadedPath != managedPath {
+		t.Fatalf("reloaded path = %q, want %q", reloadedPath, managedPath)
+	}
+}

@@ -488,8 +488,13 @@ func (al *AgentLoop) GetConfig() *config.Config {
 func (al *AgentLoop) SetMediaStore(s media.MediaStore) {
 	al.mediaStore = s
 
-	// Propagate store to send_file tools in all agents.
+	// Propagate store to media-aware tools in all agents.
 	registry := al.GetRegistry()
+	registry.ForEachTool("read_file", func(t tools.Tool) {
+		if rf, ok := t.(*tools.ReadFileTool); ok {
+			rf.SetMediaStore(s)
+		}
+	})
 	registry.ForEachTool("send_file", func(t tools.Tool) {
 		if sf, ok := t.(*tools.SendFileTool); ok {
 			sf.SetMediaStore(s)
@@ -1122,7 +1127,7 @@ func (al *AgentLoop) runAgentLoop(
 		opts.Sender,
 	)
 
-	// Resolve media:// refs: images→base64 data URLs, non-images→local paths in content
+	// Resolve media:// refs: images→base64 data URLs, non-images→media refs in content
 	cfg := al.GetConfig()
 	maxMediaSize := cfg.Agents.Defaults.GetMaxMediaSize()
 	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
@@ -1132,6 +1137,9 @@ func (al *AgentLoop) runAgentLoop(
 		Role:    "user",
 		Content: opts.UserMessage,
 		Sender:  opts.Sender,
+	}
+	if len(opts.Media) > 0 {
+		userMsg.Media = append([]string(nil), opts.Media...)
 	}
 	if opts.ReplyContext != nil {
 		userMsg.MessageID = opts.ReplyContext.CurrentMessageID

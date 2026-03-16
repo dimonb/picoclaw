@@ -96,6 +96,64 @@ func TestProviderChat_PrefersResponsesWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestSerializeResponsesMessageContent_WithDocumentMedia(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  Message
+		want any
+	}{
+		{
+			name: "pdf",
+			msg: Message{
+				Role:    "user",
+				Content: "Read this",
+				Media:   []string{"data:application/pdf;base64,JVBERi0xLjQ="},
+			},
+			want: []map[string]any{
+				{
+					"type": "input_text",
+					"text": "Read this",
+				},
+				{
+					"type":      "input_file",
+					"file_data": "JVBERi0xLjQ=",
+					"filename":  "attachment.pdf",
+				},
+			},
+		},
+		{
+			name: "text",
+			msg: Message{
+				Role:    "user",
+				Content: "Read this",
+				Media:   []string{"data:text/plain;base64,aGVsbG8gd29ybGQ="},
+			},
+			want: []map[string]any{
+				{
+					"type": "input_text",
+					"text": "Read this",
+				},
+				{
+					"type":      "input_file",
+					"file_data": "aGVsbG8gd29ybGQ=",
+					"filename":  "attachment.txt",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := serializeResponsesMessageContent(tt.msg)
+			if !reflect.DeepEqual(got, tt.want) {
+				gotJSON, _ := json.MarshalIndent(got, "", "  ")
+				wantJSON, _ := json.MarshalIndent(tt.want, "", "  ")
+				t.Fatalf("serializeResponsesMessageContent() mismatch:\ngot:\n%s\nwant:\n%s", gotJSON, wantJSON)
+			}
+		})
+	}
+}
+
 func TestProviderChat_FallsBackToChatCompletionsWhenResponsesFails(t *testing.T) {
 	var paths []string
 

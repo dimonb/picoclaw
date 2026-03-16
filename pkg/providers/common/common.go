@@ -77,6 +77,68 @@ type openaiMessage struct {
 	ToolCallID       string     `json:"tool_call_id,omitempty"`
 }
 
+// InlineData represents a parsed inline base64 data URL.
+type InlineData struct {
+	DataURL    string
+	MediaType  string
+	Base64Data string
+}
+
+// ParseInlineDataURL extracts the MIME type and base64 payload from a
+// data:...;base64,... URL. Returns false for malformed or unsupported data.
+func ParseInlineDataURL(mediaURL string) (InlineData, bool) {
+	if !strings.HasPrefix(mediaURL, "data:") {
+		return InlineData{}, false
+	}
+	meta, data, ok := strings.Cut(mediaURL, ",")
+	if !ok || data == "" || !strings.HasSuffix(meta, ";base64") {
+		return InlineData{}, false
+	}
+
+	mediaType := strings.TrimSuffix(strings.TrimPrefix(meta, "data:"), ";base64")
+	if mediaType == "" {
+		return InlineData{}, false
+	}
+
+	return InlineData{
+		DataURL:    mediaURL,
+		MediaType:  mediaType,
+		Base64Data: data,
+	}, true
+}
+
+// ParseInlineImageDataURL extracts an inline image data URL.
+func ParseInlineImageDataURL(mediaURL string) (InlineData, bool) {
+	data, ok := ParseInlineDataURL(mediaURL)
+	if !ok || !strings.HasPrefix(data.MediaType, "image/") {
+		return InlineData{}, false
+	}
+	return data, true
+}
+
+// IsInlineDocumentMediaType reports whether a media type should be passed as a
+// native document/file attachment to multimodal providers.
+func IsInlineDocumentMediaType(mediaType string) bool {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "application/pdf", "text/plain":
+		return true
+	default:
+		return false
+	}
+}
+
+// SuggestedFilenameForMediaType returns a stable filename for inline file parts.
+func SuggestedFilenameForMediaType(mediaType string) string {
+	switch strings.ToLower(strings.TrimSpace(mediaType)) {
+	case "application/pdf":
+		return "attachment.pdf"
+	case "text/plain":
+		return "attachment.txt"
+	default:
+		return "attachment.bin"
+	}
+}
+
 // SerializeMessages converts internal Message structs to the OpenAI wire format.
 //   - Strips SystemParts (unknown to third-party endpoints)
 //   - Converts messages with Media to multipart content format (text + image_url parts)
@@ -104,11 +166,11 @@ func SerializeMessages(messages []Message) []any {
 			})
 		}
 		for _, mediaURL := range m.Media {
-			if strings.HasPrefix(mediaURL, "data:image/") {
+			if image, ok := ParseInlineImageDataURL(mediaURL); ok {
 				parts = append(parts, map[string]any{
 					"type": "image_url",
 					"image_url": map[string]any{
-						"url": mediaURL,
+						"url": image.DataURL,
 					},
 				})
 			}

@@ -315,8 +315,8 @@ func buildResponsesInput(messages []Message) ([]any, error) {
 	return input, nil
 }
 
-// serializeResponsesMessageContent converts plain text and inline image data
-// into the content format expected by the Responses API.
+// serializeResponsesMessageContent converts plain text plus supported inline
+// image/document data into the content format expected by the Responses API.
 func serializeResponsesMessageContent(m Message) any {
 	effectiveText := m.Content
 	if effectiveText == "" {
@@ -336,12 +336,24 @@ func serializeResponsesMessageContent(m Message) any {
 	}
 
 	for _, mediaURL := range m.Media {
-		if strings.HasPrefix(mediaURL, "data:image/") {
+		if image, ok := common.ParseInlineImageDataURL(mediaURL); ok {
 			parts = append(parts, map[string]any{
 				"type":      "input_image",
-				"image_url": mediaURL,
+				"image_url": image.DataURL,
 			})
+			continue
 		}
+
+		data, ok := common.ParseInlineDataURL(mediaURL)
+		if !ok || !common.IsInlineDocumentMediaType(data.MediaType) {
+			continue
+		}
+
+		parts = append(parts, map[string]any{
+			"type":      "input_file",
+			"file_data": data.Base64Data,
+			"filename":  common.SuggestedFilenameForMediaType(data.MediaType),
+		})
 	}
 
 	if len(parts) == 0 {

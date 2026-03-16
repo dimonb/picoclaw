@@ -197,6 +197,123 @@ func TestBuildRequestBody(t *testing.T) {
 	}
 }
 
+func TestBuildRequestBody_WithMedia(t *testing.T) {
+	got, err := buildRequestBody([]Message{
+		{Role: "user", Content: "Describe this", Media: []string{"data:image/png;base64,abc123"}},
+	}, nil, "test-model", map[string]any{"max_tokens": 1024})
+	if err != nil {
+		t.Fatalf("buildRequestBody() error = %v", err)
+	}
+
+	want := map[string]any{
+		"model":      "test-model",
+		"max_tokens": int64(1024),
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type": "text",
+						"text": "Describe this",
+					},
+					map[string]any{
+						"type": "image",
+						"source": map[string]any{
+							"type":       "base64",
+							"media_type": "image/png",
+							"data":       "abc123",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		gotJSON, _ := json.MarshalIndent(got, "", "  ")
+		wantJSON, _ := json.MarshalIndent(want, "", "  ")
+		t.Fatalf("buildRequestBody() mismatch:\ngot:\n%s\nwant:\n%s", gotJSON, wantJSON)
+	}
+}
+
+func TestBuildRequestBody_WithPDFDocument(t *testing.T) {
+	got, err := buildRequestBody([]Message{
+		{Role: "user", Content: "Read this", Media: []string{"data:application/pdf;base64,JVBERi0xLjQ="}},
+	}, nil, "test-model", map[string]any{"max_tokens": 1024})
+	if err != nil {
+		t.Fatalf("buildRequestBody() error = %v", err)
+	}
+
+	want := map[string]any{
+		"model":      "test-model",
+		"max_tokens": int64(1024),
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type": "text",
+						"text": "Read this",
+					},
+					map[string]any{
+						"type": "document",
+						"source": map[string]any{
+							"type":       "base64",
+							"media_type": "application/pdf",
+							"data":       "JVBERi0xLjQ=",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		gotJSON, _ := json.MarshalIndent(got, "", "  ")
+		wantJSON, _ := json.MarshalIndent(want, "", "  ")
+		t.Fatalf("buildRequestBody() mismatch:\ngot:\n%s\nwant:\n%s", gotJSON, wantJSON)
+	}
+}
+
+func TestBuildRequestBody_WithTextDocument(t *testing.T) {
+	got, err := buildRequestBody([]Message{
+		{Role: "user", Content: "Read this", Media: []string{"data:text/plain;base64,aGVsbG8gd29ybGQ="}},
+	}, nil, "test-model", map[string]any{"max_tokens": 1024})
+	if err != nil {
+		t.Fatalf("buildRequestBody() error = %v", err)
+	}
+
+	want := map[string]any{
+		"model":      "test-model",
+		"max_tokens": int64(1024),
+		"messages": []any{
+			map[string]any{
+				"role": "user",
+				"content": []any{
+					map[string]any{
+						"type": "text",
+						"text": "Read this",
+					},
+					map[string]any{
+						"type": "document",
+						"source": map[string]any{
+							"type":       "text",
+							"media_type": "text/plain",
+							"data":       "hello world",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	if !reflect.DeepEqual(got, want) {
+		gotJSON, _ := json.MarshalIndent(got, "", "  ")
+		wantJSON, _ := json.MarshalIndent(want, "", "  ")
+		t.Fatalf("buildRequestBody() mismatch:\ngot:\n%s\nwant:\n%s", gotJSON, wantJSON)
+	}
+}
+
 func TestParseResponseBody(t *testing.T) {
 	tests := []struct {
 		name    string

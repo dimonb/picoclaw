@@ -555,12 +555,9 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	scope := channels.BuildMediaScope("telegram", compositeChatID, messageIDStr)
 
 	// Helper to register a local file with the media store
-	storeMedia := func(localPath, filename string) string {
+	storeMedia := func(localPath string, meta media.MediaMeta) string {
 		if store := c.GetMediaStore(); store != nil {
-			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename: filename,
-				Source:   "telegram",
-			}, scope)
+			ref, err := store.Store(localPath, meta, scope)
 			if err == nil {
 				return ref
 			}
@@ -583,7 +580,11 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 		photo := message.Photo[len(message.Photo)-1]
 		photoPath := c.downloadPhoto(ctx, photo.FileID)
 		if photoPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(photoPath, "photo.jpg"))
+			mediaPaths = append(mediaPaths, storeMedia(photoPath, media.MediaMeta{
+				Filename:    "photo.jpg",
+				ContentType: "image/jpeg",
+				Source:      "telegram",
+			}))
 			if content != "" {
 				content += "\n"
 			}
@@ -594,7 +595,11 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	if message.Voice != nil {
 		voicePath := c.downloadFile(ctx, message.Voice.FileID, ".ogg")
 		if voicePath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(voicePath, "voice.ogg"))
+			mediaPaths = append(mediaPaths, storeMedia(voicePath, media.MediaMeta{
+				Filename:    "voice.ogg",
+				ContentType: "audio/ogg",
+				Source:      "telegram",
+			}))
 
 			if content != "" {
 				content += "\n"
@@ -606,7 +611,11 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	if message.Audio != nil {
 		audioPath := c.downloadFile(ctx, message.Audio.FileID, ".mp3")
 		if audioPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(audioPath, "audio.mp3"))
+			mediaPaths = append(mediaPaths, storeMedia(audioPath, media.MediaMeta{
+				Filename:    "audio.mp3",
+				ContentType: "audio/mpeg",
+				Source:      "telegram",
+			}))
 			if content != "" {
 				content += "\n"
 			}
@@ -617,7 +626,15 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	if message.Document != nil {
 		docPath := c.downloadFile(ctx, message.Document.FileID, "")
 		if docPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(docPath, "document"))
+			filename := strings.TrimSpace(message.Document.FileName)
+			if filename == "" {
+				filename = "document"
+			}
+			mediaPaths = append(mediaPaths, storeMedia(docPath, media.MediaMeta{
+				Filename:    filename,
+				ContentType: strings.TrimSpace(message.Document.MimeType),
+				Source:      "telegram",
+			}))
 			if content != "" {
 				content += "\n"
 			}

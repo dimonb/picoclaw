@@ -10,7 +10,9 @@ import (
 	"bytes"
 	"encoding/base64"
 	"io"
+	"mime"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/h2non/filetype"
@@ -18,12 +20,14 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	providerscommon "github.com/sipeed/picoclaw/pkg/providers/common"
 )
 
 // resolveMediaRefs resolves media:// refs in messages.
-// Images are base64-encoded into the Media array for multimodal LLMs.
-// Non-image files (documents, audio, video) have their local path injected
-// into Content so the agent can access them via file tools like read_file.
+// Images and supported document types are base64-encoded into the Media array
+// for multimodal LLMs. Non-image files also have a media:// ref injected into
+// Content so the agent can choose to access them later via file tools like
+// read_file instead of eagerly consuming every attachment.
 // Returns a new slice; original messages are not mutated.
 func resolveMediaRefs(messages []providers.Message, store media.MediaStore, maxSize int) []providers.Message {
 	if store == nil {
@@ -75,7 +79,16 @@ func resolveMediaRefs(messages []providers.Message, store media.MediaStore, maxS
 				continue
 			}
 
-			pathTags = append(pathTags, buildPathTag(mime, localPath))
+			if providerscommon.IsInlineDocumentMediaType(mime) {
+				dataURL := encodeBinaryToDataURL(localPath, mime, info, maxSize)
+				if dataURL != "" {
+					resolved = append(resolved, dataURL)
+				}
+				pathTags = append(pathTags, buildPathTag(mime, ref, meta, localPath))
+				continue
+			}
+
+			pathTags = append(pathTags, buildPathTag(mime, ref, meta, localPath))
 		}
 
 		result[i].Media = resolved
@@ -94,15 +107,35 @@ func detectMIME(localPath string, meta media.MediaMeta) string {
 		return meta.ContentType
 	}
 	kind, err := filetype.MatchFile(localPath)
-	if err != nil || kind == filetype.Unknown {
-		return ""
+	if err == nil && kind != filetype.Unknown {
+		return kind.MIME.Value
 	}
-	return kind.MIME.Value
+
+	for _, name := range []string{meta.Filename, localPath} {
+		ext := strings.TrimSpace(filepath.Ext(name))
+		if ext == "" {
+			continue
+		}
+		if guessed := mime.TypeByExtension(ext); guessed != "" {
+			mediaType, _, _ := strings.Cut(guessed, ";")
+			if mediaType != "" {
+				return strings.TrimSpace(mediaType)
+			}
+		}
+	}
+
+	return ""
 }
 
 // encodeImageToDataURL base64-encodes an image file into a data URL.
 // Returns empty string if the file exceeds maxSize or encoding fails.
 func encodeImageToDataURL(localPath, mime string, info os.FileInfo, maxSize int) string {
+	return encodeBinaryToDataURL(localPath, mime, info, maxSize)
+}
+
+// encodeBinaryToDataURL base64-encodes a file into a data URL.
+// Returns empty string if the file exceeds maxSize or encoding fails.
+func encodeBinaryToDataURL(localPath, mime string, info os.FileInfo, maxSize int) string {
 	if info.Size() > int64(maxSize) {
 		logger.WarnCF("agent", "Media file too large, skipping", map[string]any{
 			"path":     localPath,
@@ -141,16 +174,31 @@ func encodeImageToDataURL(localPath, mime string, info os.FileInfo, maxSize int)
 	return buf.String()
 }
 
-// buildPathTag creates a structured tag exposing the local file path.
-// Tag type is derived from MIME: [audio:/path], [video:/path], or [file:/path].
-func buildPathTag(mime, localPath string) string {
+// buildPathTag creates a structured tag exposing the media ref the model can
+// pass to tools later, while keeping a human-readable filename.
+// Tag type is derived from MIME: [audio:name|media://id], [video:name|media://id],
+// or [file:name|media://id].
+func buildPathTag(mime, ref string, meta media.MediaMeta, localPath string) string {
+	target := ref
+	if strings.TrimSpace(target) == "" {
+		target = localPath
+	}
+
+	displayName := strings.TrimSpace(meta.Filename)
+	if displayName == "" {
+		displayName = filepath.Base(localPath)
+	}
+	if displayName == "" {
+		displayName = target
+	}
+
 	switch {
 	case strings.HasPrefix(mime, "audio/"):
-		return "[audio:" + localPath + "]"
+		return "[audio:" + displayName + "|" + target + "]"
 	case strings.HasPrefix(mime, "video/"):
-		return "[video:" + localPath + "]"
+		return "[video:" + displayName + "|" + target + "]"
 	default:
-		return "[file:" + localPath + "]"
+		return "[file:" + displayName + "|" + target + "]"
 	}
 }
 

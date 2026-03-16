@@ -194,8 +194,10 @@ func setupAndStartServices(
 	}
 	fmt.Println("✓ Heartbeat service started")
 
-	// Create media store for file lifecycle management with TTL cleanup
-	services.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
+	// Create media store for file lifecycle management with TTL cleanup.
+	// Keep media blobs under the workspace so refs survive process restarts.
+	mediaDir := filepath.Join(cfg.Agents.Defaults.Workspace, "media")
+	services.MediaStore = media.NewPersistentFileMediaStoreWithCleanup(mediaDir, media.MediaCleanerConfig{
 		Enabled:  cfg.Tools.MediaCleanup.Enabled,
 		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
 		Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
@@ -442,7 +444,8 @@ func restartServices(
 	}
 
 	// Re-create media store with new config
-	services.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
+	mediaDir := filepath.Join(cfg.Agents.Defaults.Workspace, "media")
+	services.MediaStore = media.NewPersistentFileMediaStoreWithCleanup(mediaDir, media.MediaCleanerConfig{
 		Enabled:  cfg.Tools.MediaCleanup.Enabled,
 		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
 		Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
