@@ -2123,8 +2123,9 @@ turnLoop:
 					ts.refreshRestorePointFromSession(ts.agent)
 				}
 
-				newHistory := ts.agent.Sessions.GetHistory(ts.sessionKey)
-				newSummary := ts.agent.Sessions.GetSummary(ts.sessionKey)
+				snapshot := ts.agent.Sessions.GetContextSnapshot(ts.sessionKey)
+				newHistory := snapshot.History
+				newSummary := snapshot.Summary
 				messages = ts.agent.ContextBuilder.BuildMessages(
 					newHistory, newSummary, "",
 					nil, ts.channel, ts.chatID, ts.opts.SenderID, ts.opts.SenderDisplayName,
@@ -2750,18 +2751,43 @@ func (al *AgentLoop) selectCandidates(
 
 // maybeSummarize triggers summarization if the session history exceeds thresholds.
 func (al *AgentLoop) maybeSummarize(agent *AgentInstance, sessionKey string, turnScope turnEventScope) {
-	newHistory := agent.Sessions.GetHistory(sessionKey)
+	snapshot := agent.Sessions.GetContextSnapshot(sessionKey)
+	newHistory := snapshot.History
 	tokenEstimate := al.estimateTokens(newHistory)
 	threshold := agent.ContextWindow * agent.SummarizeTokenPercent / 100
+	messageThresholdExceeded := len(newHistory) > agent.SummarizeMessageThreshold
+	tokenThresholdExceeded := tokenEstimate > threshold
 
-	if len(newHistory) > agent.SummarizeMessageThreshold || tokenEstimate > threshold {
+	if messageThresholdExceeded || tokenThresholdExceeded {
 		summarizeKey := agent.ID + ":" + sessionKey
+		fields := map[string]any{
+			"session_key":                sessionKey,
+			"history_count":              len(newHistory),
+			"message_threshold":          agent.SummarizeMessageThreshold,
+			"message_threshold_exceeded": messageThresholdExceeded,
+			"token_estimate":             tokenEstimate,
+			"token_threshold":            threshold,
+			"token_threshold_exceeded":   tokenThresholdExceeded,
+			"existing_summary_chars":     len(snapshot.Summary),
+			"context_window":             agent.ContextWindow,
+			"summarize_keep_messages":    agent.SummarizeKeepMessages,
+			"summarize_token_percent":    agent.SummarizeTokenPercent,
+		}
 		if _, loading := al.summarizing.LoadOrStore(summarizeKey, true); !loading {
+			logger.DebugCF("agent", "Summarization scheduled", fields)
 			go func() {
 				defer al.summarizing.Delete(summarizeKey)
-				logger.Debug("Memory threshold reached. Optimizing conversation history...")
+
+				startedAt := time.Now()
+				logger.DebugCF("agent", "Memory threshold reached. Optimizing conversation history...", fields)
 				al.summarizeSession(agent, sessionKey, turnScope)
+				logger.DebugCF("agent", "Summarization worker finished", map[string]any{
+					"session_key": sessionKey,
+					"duration_ms": time.Since(startedAt).Milliseconds(),
+				})
 			}()
+		} else {
+			logger.DebugCF("agent", "Summarization already in progress", fields)
 		}
 	}
 }
@@ -2940,12 +2966,26 @@ func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string, t
 	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	history := agent.Sessions.GetHistory(sessionKey)
-	summary := agent.Sessions.GetSummary(sessionKey)
+	snapshot := agent.Sessions.GetContextSnapshot(sessionKey)
+	history := snapshot.History
+	summary := snapshot.Summary
 
 	// Keep last N messages for continuity, extended to thread root if needed.
-	keepCount := threadAwareKeepCount(history, 4)
+	keepCount := threadAwareKeepCount(history, agent.SummarizeKeepMessages)
+	logger.DebugCF("agent", "Summarization started", map[string]any{
+		"session_key":            sessionKey,
+		"history_count":          len(history),
+		"keep_count":             keepCount,
+		"min_keep_count":         agent.SummarizeKeepMessages,
+		"existing_summary_chars": len(summary),
+	})
 	if len(history) <= keepCount {
+		logger.DebugCF("agent", "Summarization skipped: keep window covers full history", map[string]any{
+			"session_key":    sessionKey,
+			"history_count":  len(history),
+			"keep_count":     keepCount,
+			"min_keep_count": agent.SummarizeKeepMessages,
+		})
 		return
 	}
 
@@ -2955,20 +2995,39 @@ func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string, t
 	maxMessageTokens := agent.ContextWindow / 2
 	validMessages := make([]providers.Message, 0)
 	omitted := false
+	oversizedCount := 0
+	nonDialogueCount := 0
 
 	for _, m := range toSummarize {
 		if m.Role != "user" && m.Role != "assistant" {
+			nonDialogueCount++
 			continue
 		}
 		msgTokens := len(m.Content) / 2
 		if msgTokens > maxMessageTokens {
 			omitted = true
+			oversizedCount++
 			continue
 		}
 		validMessages = append(validMessages, m)
 	}
 
+	logger.DebugCF("agent", "Summarization filtered history", map[string]any{
+		"session_key":           sessionKey,
+		"messages_to_summarize": len(toSummarize),
+		"valid_messages":        len(validMessages),
+		"non_dialogue_skipped":  nonDialogueCount,
+		"oversized_skipped":     oversizedCount,
+		"max_message_tokens":    maxMessageTokens,
+	})
+
 	if len(validMessages) == 0 {
+		logger.WarnCF("agent", "Summarization skipped: no valid user/assistant messages", map[string]any{
+			"session_key":           sessionKey,
+			"messages_to_summarize": len(toSummarize),
+			"non_dialogue_skipped":  nonDialogueCount,
+			"oversized_skipped":     oversizedCount,
+		})
 		return
 	}
 
@@ -2989,91 +3048,185 @@ func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string, t
 		part1 := validMessages[:mid]
 		part2 := validMessages[mid:]
 
-		s1, _ := al.summarizeBatch(ctx, agent, part1, "")
-		s2, _ := al.summarizeBatch(ctx, agent, part2, "")
+		logger.DebugCF("agent", "Summarization using multi-part compaction", map[string]any{
+			"session_key":    sessionKey,
+			"valid_messages": len(validMessages),
+			"split_index":    mid,
+			"part1_messages": len(part1),
+			"part2_messages": len(part2),
+		})
+
+		s1, err1 := al.summarizeBatch(ctx, agent, part1, "")
+		if err1 != nil {
+			logger.WarnCF("agent", "Summarization batch fallback used", map[string]any{
+				"session_key":   sessionKey,
+				"batch":         1,
+				"batch_size":    len(part1),
+				"summary_chars": len(s1),
+				"error":         err1.Error(),
+			})
+		}
+		s2, err2 := al.summarizeBatch(ctx, agent, part2, "")
+		if err2 != nil {
+			logger.WarnCF("agent", "Summarization batch fallback used", map[string]any{
+				"session_key":   sessionKey,
+				"batch":         2,
+				"batch_size":    len(part2),
+				"summary_chars": len(s2),
+				"error":         err2.Error(),
+			})
+		}
 		mergedSummary, err := al.mergeRunningSummaries(
 			ctx,
 			agent,
 			summary,
 			[]string{s1, s2},
 		)
-		if err == nil {
+		if err == nil && strings.TrimSpace(mergedSummary) != "" {
 			finalSummary = mergedSummary
 		} else {
+			errText := "empty merged summary"
+			if err != nil {
+				errText = err.Error()
+			}
+			logger.WarnCF("agent", "Summarization merge fallback used", map[string]any{
+				"session_key":             sessionKey,
+				"existing_summary_chars":  len(summary),
+				"partial_summary_1_chars": len(s1),
+				"partial_summary_2_chars": len(s2),
+				"error":                   errText,
+			})
 			finalSummary = strings.TrimSpace(
 				strings.Join([]string{summary, s1, s2}, "\n\n"),
 			)
 		}
 	} else {
-		finalSummary, _ = al.summarizeBatch(ctx, agent, validMessages, summary)
+		var summaryErr error
+		finalSummary, summaryErr = al.summarizeBatch(ctx, agent, validMessages, summary)
+		if summaryErr != nil {
+			logger.WarnCF("agent", "Summarization fallback used", map[string]any{
+				"session_key":            sessionKey,
+				"batch_size":             len(validMessages),
+				"existing_summary_chars": len(summary),
+				"summary_chars":          len(finalSummary),
+				"error":                  summaryErr.Error(),
+			})
+		}
 	}
 
 	if omitted && finalSummary != "" {
 		finalSummary += "\n[Note: Some oversized messages were omitted from this summary for efficiency.]"
 	}
 
-	if finalSummary != "" {
-		meta := compactionNoteMetadata{
-			SessionKey:      sessionKey,
-			Channel:         channel,
-			ChatID:          chatID,
-			SourceMessages:  len(validMessages),
-			OmittedMessages: omitted,
-		}
+	if finalSummary == "" {
+		logger.WarnCF("agent", "Summarization produced empty summary", map[string]any{
+			"session_key":            sessionKey,
+			"valid_messages":         len(validMessages),
+			"existing_summary_chars": len(summary),
+			"oversized_skipped":      oversizedCount,
+		})
+		return
+	}
 
-		noteTimestamp := time.Now()
-		detailedNote, detailErr := al.generateDetailedCompactionNote(
-			ctx,
-			agent,
-			validMessages,
-			finalSummary,
+	applyResult := agent.Sessions.ApplySummaryCompaction(
+		sessionKey,
+		finalSummary,
+		len(history),
+		keepCount,
+	)
+	if !applyResult.Applied {
+		logger.WarnCF("agent", "Summarization skipped: session changed before compaction commit", map[string]any{
+			"session_key":            sessionKey,
+			"history_snapshot_count": len(history),
+			"history_count_before":   applyResult.HistoryCountBefore,
+			"history_count_after":    applyResult.HistoryCountAfter,
+			"keep_count":             keepCount,
+			"summary_chars":          len(finalSummary),
+		})
+		return
+	}
+
+	if err := agent.Sessions.Save(sessionKey); err != nil {
+		logger.WarnCF("agent", "Summarization save failed", map[string]any{
+			"session_key": sessionKey,
+			"error":       err.Error(),
+		})
+	}
+	logger.InfoCF("agent", "Summarization applied", map[string]any{
+		"session_key":                sessionKey,
+		"history_snapshot_count":     len(history),
+		"history_count_before":       applyResult.HistoryCountBefore,
+		"history_count_after":        applyResult.HistoryCountAfter,
+		"summarized_count":           applyResult.SummarizedCount,
+		"new_messages_while_running": applyResult.NewMessagesWhileRunning,
+		"summarized_messages":        len(validMessages),
+		"summary_chars":              len(finalSummary),
+		"oversized_skipped":          oversizedCount,
+		"non_dialogue_skipped":       nonDialogueCount,
+	})
+
+	meta := compactionNoteMetadata{
+		SessionKey:      sessionKey,
+		SourceMessages:  len(validMessages),
+		OmittedMessages: omitted,
+	}
+
+	noteTimestamp := time.Now()
+	detailedNote, detailErr := al.generateDetailedCompactionNote(
+		ctx,
+		agent,
+		validMessages,
+		finalSummary,
+		meta,
+	)
+	if detailErr != nil {
+		logger.WarnCF("agent", "Detailed compaction summary generation failed", map[string]any{
+			"session_key": sessionKey,
+			"error":       detailErr.Error(),
+		})
+	}
+
+	if agent.ContextBuilder != nil && agent.ContextBuilder.memory != nil {
+		content := buildCompactionFileContent(
+			noteTimestamp,
 			meta,
+			finalSummary,
+			detailedNote,
 		)
-		if detailErr != nil {
-			logger.WarnCF("agent", "Detailed compaction summary generation failed", map[string]any{
+		path, err := agent.ContextBuilder.memory.WriteCompactionSummary(
+			noteTimestamp,
+			content,
+		)
+		if err != nil {
+			logger.WarnCF("agent", "Failed to persist compaction summary", map[string]any{
 				"session_key": sessionKey,
-				"error":       detailErr.Error(),
+				"error":       err.Error(),
+			})
+		} else {
+			logger.DebugCF("agent", "Compaction summary persisted", map[string]any{
+				"session_key": sessionKey,
+				"path":        path,
 			})
 		}
-
-		if agent.ContextBuilder != nil && agent.ContextBuilder.memory != nil {
-			content := buildCompactionFileContent(
-				noteTimestamp,
-				meta,
-				finalSummary,
-				detailedNote,
-			)
-			path, err := agent.ContextBuilder.memory.WriteCompactionSummary(
-				noteTimestamp,
-				content,
-			)
-			if err != nil {
-				logger.WarnCF("agent", "Failed to persist compaction summary", map[string]any{
-					"session_key": sessionKey,
-					"error":       err.Error(),
-				})
-			} else {
-				logger.DebugCF("agent", "Compaction summary persisted", map[string]any{
-					"session_key": sessionKey,
-					"path":        path,
-				})
-			}
-		}
-
-		agent.Sessions.SetSummary(sessionKey, finalSummary)
-		agent.Sessions.TruncateHistory(sessionKey, keepCount)
-		agent.Sessions.Save(sessionKey)
-		al.emitEvent(
-			EventKindSessionSummarize,
-			turnScope.meta(0, "summarizeSession", "turn.session.summarize"),
-			SessionSummarizePayload{
-				SummarizedMessages: len(validMessages),
-				KeptMessages:       keepCount,
-				SummaryLen:         len(finalSummary),
-				OmittedOversized:   omitted,
-			},
-		)
+	} else {
+		logger.DebugCF("agent", "Compaction summary persistence skipped: memory store unavailable", map[string]any{
+			"session_key": sessionKey,
+		})
 	}
+
+	agent.Sessions.SetSummary(sessionKey, finalSummary)
+	agent.Sessions.TruncateHistory(sessionKey, keepCount)
+	agent.Sessions.Save(sessionKey)
+	al.emitEvent(
+		EventKindSessionSummarize,
+		turnScope.meta(0, "summarizeSession", "turn.session.summarize"),
+		SessionSummarizePayload{
+			SummarizedMessages: len(validMessages),
+			KeptMessages:       keepCount,
+			SummaryLen:         len(finalSummary),
+			OmittedOversized:   omitted,
+		},
+	)
 }
 
 // findNearestUserMessage finds the nearest user message to the given index.
@@ -3125,8 +3278,8 @@ func threadAwareKeepCount(history []providers.Message, minKeep int) int {
 		// Build a set of message IDs in the keep window.
 		keptIDs := make(map[string]bool, keep)
 		for _, m := range history[cutoff:] {
-			if m.MessageID != "" {
-				keptIDs[m.MessageID] = true
+			if len(m.MessageIDs) > 0 {
+				keptIDs[m.MessageIDs[0]] = true
 			}
 		}
 
@@ -3143,7 +3296,7 @@ func threadAwareKeepCount(history []providers.Message, minKeep int) int {
 			// from that point forward into the keep window, capped so long
 			// threads still allow compaction.
 			for i := cutoff - 1; i >= 0; i-- {
-				if history[i].MessageID == m.ReplyToMessageID {
+				if len(history[i].MessageIDs) > 0 && history[i].MessageIDs[0] == m.ReplyToMessageID {
 					candidate := len(history) - i
 					if candidate > maxKeep {
 						candidate = maxKeep
@@ -3201,8 +3354,25 @@ func (al *AgentLoop) retryLLMCall(
 		}()
 
 		if err == nil && resp != nil && resp.Content != "" {
+			if attempt > 0 {
+				logger.DebugCF("agent", "Summarization LLM call succeeded after retry", map[string]any{
+					"attempt":      attempt + 1,
+					"max_retries":  maxRetries,
+					"prompt_chars": len(prompt),
+				})
+			}
 			return resp, nil
 		}
+		errText := "empty response"
+		if err != nil {
+			errText = err.Error()
+		}
+		logger.WarnCF("agent", "Summarization LLM call failed", map[string]any{
+			"attempt":      attempt + 1,
+			"max_retries":  maxRetries,
+			"prompt_chars": len(prompt),
+			"error":        errText,
+		})
 		if attempt < maxRetries-1 {
 			time.Sleep(time.Duration(attempt+1) * 100 * time.Millisecond)
 		}
@@ -3259,7 +3429,10 @@ func (al *AgentLoop) summarizeBatch(
 		}
 		fallback.WriteString(fmt.Sprintf("%s: %s", m.Role, content))
 	}
-	return fallback.String(), nil
+	if err != nil {
+		return fallback.String(), err
+	}
+	return fallback.String(), errors.New("empty summary response")
 }
 
 func (al *AgentLoop) mergeRunningSummaries(

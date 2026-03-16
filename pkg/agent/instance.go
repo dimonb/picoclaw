@@ -33,6 +33,7 @@ type AgentInstance struct {
 	ContextWindow             int
 	SummarizeMessageThreshold int
 	SummarizeTokenPercent     int
+	SummarizeKeepMessages     int
 	Provider                  providers.LLMProvider
 	Sessions                  session.SessionStore
 	ContextBuilder            *ContextBuilder
@@ -162,6 +163,11 @@ func NewAgentInstance(
 		summarizeTokenPercent = 75
 	}
 
+	summarizeKeepMessages := defaults.SummarizeKeepMessages
+	if summarizeKeepMessages == 0 {
+		summarizeKeepMessages = 4
+	}
+
 	// Resolve fallback candidates
 	candidates := resolveModelCandidates(cfg, defaults.Provider, model, fallbacks)
 
@@ -196,6 +202,7 @@ func NewAgentInstance(
 		ContextWindow:             contextWindow,
 		SummarizeMessageThreshold: summarizeMessageThreshold,
 		SummarizeTokenPercent:     summarizeTokenPercent,
+		SummarizeKeepMessages:     summarizeKeepMessages,
 		Provider:                  provider,
 		Sessions:                  sessions,
 		ContextBuilder:            contextBuilder,

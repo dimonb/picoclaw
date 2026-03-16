@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"log"
+	"sync"
 
 	"github.com/sipeed/picoclaw/pkg/memory"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -12,7 +13,8 @@ import (
 // Write errors are logged rather than returned, matching the fire-and-forget
 // contract of SessionManager that the agent loop relies on.
 type JSONLBackend struct {
-	store memory.Store
+	store          memory.Store
+	thinkingLevels sync.Map
 }
 
 // NewJSONLBackend wraps a memory.Store for use as a SessionStore.
@@ -50,6 +52,18 @@ func (b *JSONLBackend) GetSummary(key string) string {
 	return summary
 }
 
+func (b *JSONLBackend) GetContextSnapshot(key string) ContextSnapshot {
+	snapshot, err := b.store.GetContextSnapshot(context.Background(), key)
+	if err != nil {
+		log.Printf("session: get context snapshot: %v", err)
+		return ContextSnapshot{History: []providers.Message{}}
+	}
+	return ContextSnapshot{
+		History: snapshot.History,
+		Summary: snapshot.Summary,
+	}
+}
+
 func (b *JSONLBackend) SetSummary(key, summary string) {
 	if err := b.store.SetSummary(context.Background(), key, summary); err != nil {
 		log.Printf("session: set summary: %v", err)
@@ -66,6 +80,40 @@ func (b *JSONLBackend) TruncateHistory(key string, keepLast int) {
 	if err := b.store.TruncateHistory(context.Background(), key, keepLast); err != nil {
 		log.Printf("session: truncate history: %v", err)
 	}
+}
+
+func (b *JSONLBackend) ApplySummaryCompaction(
+	key, summary string,
+	expectedHistoryCount, keepLast int,
+) SummaryCompactionResult {
+	result, err := b.store.ApplySummaryCompaction(
+		context.Background(),
+		key,
+		summary,
+		expectedHistoryCount,
+		keepLast,
+	)
+	if err != nil {
+		log.Printf("session: apply summary compaction: %v", err)
+		return SummaryCompactionResult{}
+	}
+	return SummaryCompactionResult{
+		Applied:                 result.Applied,
+		HistoryCountBefore:      result.HistoryCountBefore,
+		HistoryCountAfter:       result.HistoryCountAfter,
+		SummarizedCount:         result.SummarizedCount,
+		NewMessagesWhileRunning: result.NewMessagesWhileRunning,
+	}
+}
+
+func (b *JSONLBackend) GetThinkingLevel(key string) string {
+	v, _ := b.thinkingLevels.Load(key)
+	s, _ := v.(string)
+	return s
+}
+
+func (b *JSONLBackend) SetThinkingLevel(key, level string) {
+	b.thinkingLevels.Store(key, level)
 }
 
 // Save persists session state. Since the JSONL store fsyncs every write

@@ -20,10 +20,10 @@ func formatConversationMessages(batch []providers.Message) string {
 	var sb strings.Builder
 	for _, m := range batch {
 		switch {
-		case m.MessageID != "" && m.ReplyToMessageID != "":
-			fmt.Fprintf(&sb, "%s [msg:#%s, reply_to:#%s]: %s\n", m.Role, m.MessageID, m.ReplyToMessageID, m.Content)
-		case m.MessageID != "":
-			fmt.Fprintf(&sb, "%s [msg:#%s]: %s\n", m.Role, m.MessageID, m.Content)
+		case len(m.MessageIDs) > 0 && m.ReplyToMessageID != "":
+			fmt.Fprintf(&sb, "%s [msg:#%s, reply_to:#%s]: %s\n", m.Role, m.MessageIDs[0], m.ReplyToMessageID, m.Content)
+		case len(m.MessageIDs) > 0:
+			fmt.Fprintf(&sb, "%s [msg:#%s]: %s\n", m.Role, m.MessageIDs[0], m.Content)
 		case m.ReplyToMessageID != "":
 			fmt.Fprintf(&sb, "%s [reply_to:#%s]: %s\n", m.Role, m.ReplyToMessageID, m.Content)
 		default:
