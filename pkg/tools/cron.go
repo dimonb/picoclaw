@@ -27,6 +27,7 @@ type CronTool struct {
 	executor    JobExecutor
 	msgBus      *bus.MessageBus
 	execTool    *ExecTool
+	allowRemote bool
 }
 
 // NewCronTool creates a new CronTool
@@ -41,11 +42,16 @@ func NewCronTool(
 	}
 
 	execTool.SetTimeout(execTimeout)
+	allowRemote := false
+	if config != nil {
+		allowRemote = config.Tools.Exec.AllowRemote
+	}
 	return &CronTool{
 		cronService: cronService,
 		executor:    executor,
 		msgBus:      msgBus,
 		execTool:    execTool,
+		allowRemote: allowRemote,
 	}, nil
 }
 
@@ -188,7 +194,7 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 	command, _ := args["command"].(string)
 	commandConfirm, _ := args["command_confirm"].(bool)
 	if command != "" {
-		if !constants.IsInternalChannel(channel) {
+		if !t.allowRemote && !constants.IsInternalChannel(channel) {
 			return ErrorResult("scheduling command execution is restricted to internal channels")
 		}
 		if !commandConfirm {
