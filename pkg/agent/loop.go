@@ -2484,13 +2484,18 @@ func (al *AgentLoop) findNearestUserMessage(messages []providers.Message, mid in
 // threadAwareKeepCount returns how many trailing messages to keep out of
 // summarization. It starts with minKeep and walks backwards to include any
 // message whose ReplyToMessageID points to a message that would otherwise be
-// summarized away — i.e. it finds the root of an active reply thread and keeps
-// everything from that root to the end.
+// summarized away. It pulls the thread root into the keep window when possible,
+// but never retains more than half of the session so long forum threads can
+// still compact.
 func threadAwareKeepCount(history []providers.Message, minKeep int) int {
 	if len(history) <= minKeep {
 		return len(history)
 	}
 	keep := minKeep
+	maxKeep := len(history) / 2
+	if maxKeep < minKeep {
+		maxKeep = minKeep
+	}
 
 	// Collect IDs of all messages that will be kept initially.
 	// Walk the tail and check whether any message is a reply whose parent
@@ -2515,11 +2520,18 @@ func threadAwareKeepCount(history []providers.Message, minKeep int) int {
 				continue // parent is already kept
 			}
 			// Parent is in the summarized portion — find it and pull everything
-			// from that point forward into the keep window.
+			// from that point forward into the keep window, capped so long
+			// threads still allow compaction.
 			for i := cutoff - 1; i >= 0; i-- {
 				if history[i].MessageID == m.ReplyToMessageID {
-					keep = len(history) - i
-					extended = true
+					candidate := len(history) - i
+					if candidate > maxKeep {
+						candidate = maxKeep
+					}
+					if candidate > keep {
+						keep = candidate
+						extended = true
+					}
 					break
 				}
 			}
@@ -2530,8 +2542,7 @@ func threadAwareKeepCount(history []providers.Message, minKeep int) int {
 		if !extended {
 			break
 		}
-		// Safety cap: never keep more than half the history.
-		if keep >= len(history)/2 {
+		if keep >= maxKeep {
 			break
 		}
 	}

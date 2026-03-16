@@ -256,22 +256,80 @@ func TestThreadAwareKeepCount_NoThreads(t *testing.T) {
 
 func TestThreadAwareKeepCount_ActiveThreadExtendsWindow(t *testing.T) {
 	t.Parallel()
-	// History: root at index 0 (#1), reply thread continues into kept window.
+	// History: root at index 4 (#5), reply thread continues into kept window.
+	history := []providers.Message{
+		{Role: "user", Content: "old-1", MessageID: "1"},
+		{Role: "assistant", Content: "old-2", MessageID: "2"},
+		{Role: "user", Content: "old-3", MessageID: "3"},
+		{Role: "assistant", Content: "old-4", MessageID: "4"},
+		{Role: "user", Content: "thread root", MessageID: "5"},
+		{Role: "assistant", Content: "context", MessageID: "6"},
+		// Kept window starts here (last 4):
+		{Role: "user", Content: "follow-up on root", MessageID: "7", ReplyToMessageID: "5"},
+		{Role: "assistant", Content: "ok", MessageID: "8"},
+		{Role: "user", Content: "more", MessageID: "9"},
+		{Role: "assistant", Content: "done", MessageID: "10"},
+	}
+	// msg #7 replies to #5 which sits just outside the keep window, so keep should
+	// extend by one without exceeding the half-history cap.
+	got := threadAwareKeepCount(history, 4)
+	if got != 5 {
+		t.Fatalf("expected 5, got %d", got)
+	}
+}
+
+func TestSummarizeSession_ThreadRootOlderThanHalfStillSummarizes(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:             workspace,
+				Model:                 "test-model",
+				MaxTokens:             4096,
+				MaxToolIterations:     10,
+				SummarizeKeepMessages: 6,
+			},
+		},
+	}
+
+	provider := &compactionSummaryMockProvider{}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	sessionKey := "session-thread-root-old"
 	history := []providers.Message{
 		{Role: "user", Content: "root question", MessageID: "1"},
 		{Role: "assistant", Content: "answer", MessageID: "2"},
-		{Role: "user", Content: "unrelated", MessageID: "3"},
-		{Role: "assistant", Content: "reply", MessageID: "4"},
-		// Kept window starts here (last 4):
-		{Role: "user", Content: "follow-up on root", MessageID: "5", ReplyToMessageID: "1"},
-		{Role: "assistant", Content: "ok", MessageID: "6"},
-		{Role: "user", Content: "more", MessageID: "7"},
-		{Role: "assistant", Content: "done", MessageID: "8"},
+		{Role: "user", Content: "follow-up 1", MessageID: "3", ReplyToMessageID: "1"},
+		{Role: "assistant", Content: "reply 1", MessageID: "4", ReplyToMessageID: "1"},
+		{Role: "user", Content: "follow-up 2", MessageID: "5", ReplyToMessageID: "1"},
+		{Role: "assistant", Content: "reply 2", MessageID: "6", ReplyToMessageID: "1"},
+		{Role: "user", Content: "follow-up 3", MessageID: "7", ReplyToMessageID: "1"},
+		{Role: "assistant", Content: "reply 3", MessageID: "8", ReplyToMessageID: "1"},
+		{Role: "user", Content: "follow-up 4", MessageID: "9", ReplyToMessageID: "1"},
+		{Role: "assistant", Content: "reply 4", MessageID: "10", ReplyToMessageID: "1"},
+		{Role: "user", Content: "follow-up 5", MessageID: "11", ReplyToMessageID: "1"},
+		{Role: "assistant", Content: "reply 5", MessageID: "12", ReplyToMessageID: "1"},
 	}
-	// msg #5 replies to #1 which is at index 0 — keep must extend to include #1.
-	got := threadAwareKeepCount(history, 4)
-	if got != len(history) {
-		t.Fatalf("expected %d (all messages kept), got %d", len(history), got)
+	for _, msg := range history {
+		agent.Sessions.AddFullMessage(sessionKey, msg)
+	}
+
+	al.summarizeSession(agent, sessionKey, "telegram", "chat-42")
+
+	summary := agent.Sessions.GetSummary(sessionKey)
+	if !strings.Contains(summary, "## Key Context") {
+		t.Fatalf("summary missing structured heading: %q", summary)
+	}
+
+	finalHistory := agent.Sessions.GetHistory(sessionKey)
+	if len(finalHistory) != 6 {
+		t.Fatalf("history len = %d, want 6", len(finalHistory))
 	}
 }
 
