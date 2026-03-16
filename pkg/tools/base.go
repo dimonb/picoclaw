@@ -1,6 +1,9 @@
 package tools
 
-import "context"
+import (
+	"context"
+	"sync/atomic"
+)
 
 // Tool is the interface that all tools must implement.
 type Tool interface {
@@ -26,6 +29,7 @@ var (
 	ctxKeySessionKey       = &toolCtxKey{"sessionKey"}
 	ctxKeyCurrentMessageID = &toolCtxKey{"currentMessageID"}
 	ctxKeyParentMessageID  = &toolCtxKey{"parentMessageID"}
+	ctxKeyRoundSent        = &toolCtxKey{"roundSent"}
 )
 
 // WithToolContext returns a child context carrying channel and chatID.
@@ -79,6 +83,29 @@ func ToolCurrentMessageID(ctx context.Context) string {
 func ToolParentMessageID(ctx context.Context) string {
 	v, _ := ctx.Value(ctxKeyParentMessageID).(string)
 	return v
+}
+
+// WithRoundSent injects a per-round sent tracker into ctx.
+// Call once at the start of each message processing round; pass the same
+// context (or a child of it) to all tool Execute calls in that round.
+func WithRoundSent(ctx context.Context, sent *atomic.Bool) context.Context {
+	return context.WithValue(ctx, ctxKeyRoundSent, sent)
+}
+
+// MarkRoundSent marks that a message was sent during the current round.
+// No-op if the tracker is not present in ctx.
+func MarkRoundSent(ctx context.Context) {
+	if v, ok := ctx.Value(ctxKeyRoundSent).(*atomic.Bool); ok && v != nil {
+		v.Store(true)
+	}
+}
+
+// RoundHasSent reports whether any message was sent during the current round.
+func RoundHasSent(ctx context.Context) bool {
+	if v, ok := ctx.Value(ctxKeyRoundSent).(*atomic.Bool); ok && v != nil {
+		return v.Load()
+	}
+	return false
 }
 
 // AsyncCallback is a function type that async tools use to notify completion.

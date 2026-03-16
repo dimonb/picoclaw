@@ -52,6 +52,7 @@ type AgentLoop struct {
 	taskManager    *session.TaskManager
 	mcp            mcpRuntime
 	mu             sync.RWMutex
+	dispatcher     *sessionDispatcher
 	// Track active requests for safe provider cleanup
 	activeRequests sync.WaitGroup
 }
@@ -136,6 +137,7 @@ func NewAgentLoop(
 		cmdRegistry: commands.NewRegistry(commands.BuiltinDefinitions()),
 		taskManager: session.NewTaskManager(filepath.Join(cfg.WorkspacePath(), "tasks")),
 	}
+	al.dispatcher = newSessionDispatcher(al)
 
 	// Register shared tools to all agents (TaskTool needs task manager from AgentLoop)
 	registerSharedTools(cfg, msgBus, registry, provider, al.taskManager)
@@ -289,37 +291,18 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 	for al.running.Load() {
 		select {
 		case <-ctx.Done():
+			al.dispatcher.Wait()
 			return nil
 		default:
 			msg, ok := al.bus.ConsumeInbound(ctx)
 			if !ok {
 				continue
 			}
-
-			// Process message
-			func() {
-				// TODO: Re-enable media cleanup after inbound media is properly consumed by the agent.
-				// Currently disabled because files are deleted before the LLM can access their content.
-				// defer func() {
-				// 	if al.mediaStore != nil && msg.MediaScope != "" {
-				// 		if releaseErr := al.mediaStore.ReleaseAll(msg.MediaScope); releaseErr != nil {
-				// 			logger.WarnCF("agent", "Failed to release media", map[string]any{
-				// 				"scope": msg.MediaScope,
-				// 				"error": releaseErr.Error(),
-				// 			})
-				// 		}
-				// 	}
-				// }()
-
-				response, err := al.processMessage(ctx, msg)
-				if err != nil {
-					response = agentResponse{Content: fmt.Sprintf("Error processing message: %v", err)}
-				}
-				al.deliverAgentResponse(ctx, msg.Channel, msg.ChatID, response)
-			}()
+			al.dispatcher.Dispatch(ctx, msg)
 		}
 	}
 
+	al.dispatcher.Wait()
 	return nil
 }
 
@@ -519,27 +502,8 @@ func (al *AgentLoop) SetTranscriber(t voice.Transcriber) {
 	al.transcriber = t
 }
 
-func (al *AgentLoop) agentTurnHandledByDirectToolAction(agent *AgentInstance) bool {
-	if agent == nil {
-		return false
-	}
-	if tool, ok := agent.Tools.Get("message"); ok {
-		if mt, ok := tool.(*tools.MessageTool); ok && mt.HasSentInRound() {
-			return true
-		}
-	}
-	return false
-}
-
-func (al *AgentLoop) resetRoundActionTools(agent *AgentInstance) {
-	if agent == nil {
-		return
-	}
-	if tool, ok := agent.Tools.Get("message"); ok {
-		if resetter, ok := tool.(interface{ ResetSentInRound() }); ok {
-			resetter.ResetSentInRound()
-		}
-	}
+func (al *AgentLoop) agentTurnHandledByDirectToolAction(ctx context.Context, _ *AgentInstance) bool {
+	return tools.RoundHasSent(ctx)
 }
 
 func (al *AgentLoop) PublishOutboundWithHistory(
@@ -958,7 +922,10 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		return agentResponse{}, routeErr
 	}
 
-	al.resetRoundActionTools(agent)
+	// Inject a fresh per-round sent tracker so MessageTool.Execute can mark
+	// delivery without touching shared state on the tool instance.
+	roundSent := new(atomic.Bool)
+	ctx = tools.WithRoundSent(ctx, roundSent)
 
 	// Resolve session key from route, while preserving explicit agent-scoped keys.
 	scopeKey := resolveScopeKey(route, msg.SessionKey)
@@ -1169,7 +1136,7 @@ func (al *AgentLoop) runAgentLoop(
 	// This is controlled by the tool's Silent flag and ForUser content
 
 	// 4. Handle empty response
-	directActionHandled := al.agentTurnHandledByDirectToolAction(agent)
+	directActionHandled := al.agentTurnHandledByDirectToolAction(ctx, agent)
 	response := resolveFinalResponse(opts.Channel, opts.ReplyContext, finalContent)
 	response.Reactions = al.normalizeFinalReactions(opts.Channel, response.Reactions)
 	if response.SuppressTextReply && len(response.Reactions) > 0 && al.channelManager == nil {
