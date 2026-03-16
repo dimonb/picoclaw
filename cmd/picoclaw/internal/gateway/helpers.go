@@ -196,7 +196,7 @@ func setupAndStartServices(
 
 	// Create media store for file lifecycle management with TTL cleanup.
 	// Keep media blobs under the workspace so refs survive process restarts.
-	mediaDir := filepath.Join(cfg.Agents.Defaults.Workspace, "media")
+	mediaDir := filepath.Join(cfg.WorkspacePath(), "media")
 	services.MediaStore = media.NewPersistentFileMediaStoreWithCleanup(mediaDir, media.MediaCleanerConfig{
 		Enabled:  cfg.Tools.MediaCleanup.Enabled,
 		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
@@ -444,7 +444,7 @@ func restartServices(
 	}
 
 	// Re-create media store with new config
-	mediaDir := filepath.Join(cfg.Agents.Defaults.Workspace, "media")
+	mediaDir := filepath.Join(cfg.WorkspacePath(), "media")
 	services.MediaStore = media.NewPersistentFileMediaStoreWithCleanup(mediaDir, media.MediaCleanerConfig{
 		Enabled:  cfg.Tools.MediaCleanup.Enabled,
 		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
