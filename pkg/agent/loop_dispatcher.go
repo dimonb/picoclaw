@@ -26,17 +26,22 @@ type sessionWorker struct {
 // ensuring messages within a session are processed sequentially while
 // different sessions run concurrently.
 type sessionDispatcher struct {
-	mu      sync.Mutex
-	workers map[string]*sessionWorker
-	wg      sync.WaitGroup
-	al      *AgentLoop
+	mu        sync.Mutex
+	workers   map[string]*sessionWorker
+	wg        sync.WaitGroup
+	al        *AgentLoop
+	semaphore chan struct{} // nil means unlimited
 }
 
-func newSessionDispatcher(al *AgentLoop) *sessionDispatcher {
-	return &sessionDispatcher{
+func newSessionDispatcher(al *AgentLoop, maxConcurrent int) *sessionDispatcher {
+	d := &sessionDispatcher{
 		workers: make(map[string]*sessionWorker),
 		al:      al,
 	}
+	if maxConcurrent > 0 {
+		d.semaphore = make(chan struct{}, maxConcurrent)
+	}
+	return d
 }
 
 // Dispatch routes msg to the appropriate session worker, creating one if needed.
@@ -106,6 +111,14 @@ func (d *sessionDispatcher) runWorker(key string, w *sessionWorker) {
 }
 
 func (d *sessionDispatcher) process(task workerTask) {
+	if d.semaphore != nil {
+		select {
+		case d.semaphore <- struct{}{}:
+			defer func() { <-d.semaphore }()
+		case <-task.ctx.Done():
+			return
+		}
+	}
 	response, err := d.al.processMessage(task.ctx, task.msg)
 	if err != nil {
 		response = agentResponse{Content: fmt.Sprintf("Error processing message: %v", err)}

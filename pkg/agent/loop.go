@@ -137,7 +137,7 @@ func NewAgentLoop(
 		cmdRegistry: commands.NewRegistry(commands.BuiltinDefinitions()),
 		taskManager: session.NewTaskManager(filepath.Join(cfg.WorkspacePath(), "tasks")),
 	}
-	al.dispatcher = newSessionDispatcher(al)
+	al.dispatcher = newSessionDispatcher(al, cfg.Agents.Defaults.MaxConcurrentSessions)
 
 	// Register shared tools to all agents (TaskTool needs task manager from AgentLoop)
 	registerSharedTools(cfg, msgBus, registry, provider, al.taskManager)
