@@ -4,9 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
+		"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -285,6 +286,31 @@ func (c *TelegramChannel) sendHTMLChunk(
 	return msg.MessageID, nil
 }
 
+type telegramNamedReader struct {
+	Reader   *os.File
+	filename string
+}
+
+func (r telegramNamedReader) Read(p []byte) (int, error) {
+	return r.Reader.Read(p)
+}
+
+func (r telegramNamedReader) Name() string {
+	return r.filename
+}
+
+func telegramDocumentFilename(part bus.MediaPart, fallbackPath string) string {
+	name := strings.TrimSpace(part.Filename)
+	if name == "" {
+		name = filepath.Base(fallbackPath)
+	}
+	name = strings.TrimSpace(name)
+	if name == "" || name == "." || name == string(filepath.Separator) {
+		return "document"
+	}
+	return name
+}
+
 func telegramReplyParameters(replyToMessageID string) (*telego.ReplyParameters, bool) {
 	replyToMessageID = strings.TrimSpace(replyToMessageID)
 	if replyToMessageID == "" {
@@ -517,8 +543,8 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			params := &telego.SendDocumentParams{
 				ChatID:          tu.ID(chatID),
 				MessageThreadID: threadID,
-				Document:        telego.InputFile{File: file},
-				Caption:         part.Caption,
+				Document: telego.InputFile{File: telegramNamedReader{Reader: file, filename: telegramDocumentFilename(part, localPath)}},
+				Caption: part.Caption,
 			}
 			if replyParams, ok := telegramReplyParameters(msg.ReplyToMessageID); ok {
 				params.ReplyParameters = replyParams

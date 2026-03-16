@@ -10,7 +10,7 @@ import (
 )
 
 func TestResolveDispatchSessionKey_UsesResolvedScopeKey(t *testing.T) {
-	al, _, _, _, cleanup := newTestAgentLoop(t)
+	al, _, _, _, cleanup := newTestAgentLoop(t) //nolint:dogsled
 	defer cleanup()
 
 	msg := bus.InboundMessage{
@@ -37,7 +37,7 @@ func TestResolveDispatchSessionKey_UsesResolvedScopeKey(t *testing.T) {
 }
 
 func TestResolveDispatchSessionKey_SystemMessagesUseDefaultMainSession(t *testing.T) {
-	al, _, _, _, cleanup := newTestAgentLoop(t)
+	al, _, _, _, cleanup := newTestAgentLoop(t) //nolint:dogsled
 	defer cleanup()
 
 	got := al.resolveDispatchSessionKey(bus.InboundMessage{

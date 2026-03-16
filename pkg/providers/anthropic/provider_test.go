@@ -105,10 +105,14 @@ func TestBuildParams_UserMessageWithMedia(t *testing.T) {
 	}
 }
 
-func TestBuildParams_UserMessageWithPDFDocument(t *testing.T) {
-	params, err := buildParams([]Message{
-		{Role: "user", Content: "Read this", Media: []string{"data:application/pdf;base64,JVBERi0xLjQ="}},
-	}, nil, "claude-sonnet-4.6", map[string]any{"max_tokens": 1024})
+func assertUserMessageDocumentBlock(t *testing.T, dataURL, wantMediaType string, assertSource func(t *testing.T, document *anthropic.DocumentBlockParam)) {
+	t.Helper()
+
+	params, err := buildParams([]Message{{
+		Role:    "user",
+		Content: "Read this",
+		Media:   []string{dataURL},
+	}}, nil, "claude-sonnet-4.6", map[string]any{"max_tokens": 1024})
 	if err != nil {
 		t.Fatalf("buildParams() error: %v", err)
 	}
@@ -121,9 +125,10 @@ func TestBuildParams_UserMessageWithPDFDocument(t *testing.T) {
 	}
 
 	document := params.Messages[0].Content[1].OfDocument
-	if document == nil || document.Source.OfBase64 == nil {
-		t.Fatalf("expected base64 document block, got %#v", document)
+	if document == nil {
+		t.Fatalf("expected document block, got %#v", params.Messages[0].Content[1].OfDocument)
 	}
+	assertSource(t, document)
 
 	raw, err := json.Marshal(document)
 	if err != nil {
@@ -133,56 +138,37 @@ func TestBuildParams_UserMessageWithPDFDocument(t *testing.T) {
 	if err := json.Unmarshal(raw, &encoded); err != nil {
 		t.Fatalf("unmarshal document block: %v", err)
 	}
-	if document.Source.OfBase64.Data != "JVBERi0xLjQ=" {
-		t.Fatalf("base64 data = %q, want JVBERi0xLjQ=", document.Source.OfBase64.Data)
-	}
 	source, ok := encoded["source"].(map[string]any)
 	if !ok {
 		t.Fatalf("expected marshaled source object, got %#v", encoded["source"])
 	}
-	if got := source["media_type"]; got != "application/pdf" {
-		t.Fatalf("media type = %v, want application/pdf", got)
+	if got := source["media_type"]; got != wantMediaType {
+		t.Fatalf("media type = %v, want %s", got, wantMediaType)
 	}
 }
 
+func TestBuildParams_UserMessageWithPDFDocument(t *testing.T) {
+	assertUserMessageDocumentBlock(t, "data:application/pdf;base64,JVBERi0xLjQ=", "application/pdf", func(t *testing.T, document *anthropic.DocumentBlockParam) {
+		t.Helper()
+		if document.Source.OfBase64 == nil {
+			t.Fatalf("expected base64 document block, got %#v", document)
+		}
+		if document.Source.OfBase64.Data != "JVBERi0xLjQ=" {
+			t.Fatalf("base64 data = %q, want JVBERi0xLjQ=", document.Source.OfBase64.Data)
+		}
+	})
+}
+
 func TestBuildParams_UserMessageWithTextDocument(t *testing.T) {
-	params, err := buildParams([]Message{
-		{Role: "user", Content: "Read this", Media: []string{"data:text/plain;base64,aGVsbG8gd29ybGQ="}},
-	}, nil, "claude-sonnet-4.6", map[string]any{"max_tokens": 1024})
-	if err != nil {
-		t.Fatalf("buildParams() error: %v", err)
-	}
-
-	if len(params.Messages) != 1 {
-		t.Fatalf("len(Messages) = %d, want 1", len(params.Messages))
-	}
-	if len(params.Messages[0].Content) != 2 {
-		t.Fatalf("len(Content) = %d, want 2", len(params.Messages[0].Content))
-	}
-
-	document := params.Messages[0].Content[1].OfDocument
-	if document == nil || document.Source.OfText == nil {
-		t.Fatalf("expected plain text document block, got %#v", document)
-	}
-
-	raw, err := json.Marshal(document)
-	if err != nil {
-		t.Fatalf("marshal document block: %v", err)
-	}
-	var encoded map[string]any
-	if err := json.Unmarshal(raw, &encoded); err != nil {
-		t.Fatalf("unmarshal document block: %v", err)
-	}
-	if document.Source.OfText.Data != "hello world" {
-		t.Fatalf("text data = %q, want hello world", document.Source.OfText.Data)
-	}
-	source, ok := encoded["source"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected marshaled source object, got %#v", encoded["source"])
-	}
-	if got := source["media_type"]; got != "text/plain" {
-		t.Fatalf("media type = %v, want text/plain", got)
-	}
+	assertUserMessageDocumentBlock(t, "data:text/plain;base64,aGVsbG8gd29ybGQ=", "text/plain", func(t *testing.T, document *anthropic.DocumentBlockParam) {
+		t.Helper()
+		if document.Source.OfText == nil {
+			t.Fatalf("expected plain text document block, got %#v", document)
+		}
+		if document.Source.OfText.Data != "hello world" {
+			t.Fatalf("text data = %q, want hello world", document.Source.OfText.Data)
+		}
+	})
 }
 
 func TestBuildParams_WithTools(t *testing.T) {
