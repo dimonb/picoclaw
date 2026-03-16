@@ -11,6 +11,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	anthropicmessages "github.com/sipeed/picoclaw/pkg/providers/anthropic_messages"
+	"github.com/sipeed/picoclaw/pkg/providers/azure"
 	"github.com/sipeed/picoclaw/pkg/providers/openai_compat"
 )
 
@@ -97,6 +98,24 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 			cfg.MaxTokensField,
 			cfg.RequestTimeout,
 			openai_compat.WithResponsesPreferred(),
+		), modelID, nil
+
+	case "azure", "azure-openai":
+		// Azure OpenAI uses deployment-based URLs, api-key header auth,
+		// and always sends max_completion_tokens.
+		if cfg.APIKey == "" {
+			return nil, "", fmt.Errorf("api_key is required for azure protocol")
+		}
+		if cfg.APIBase == "" {
+			return nil, "", fmt.Errorf(
+				"api_base is required for azure protocol (e.g., https://your-resource.openai.azure.com)",
+			)
+		}
+		return azure.NewProviderWithTimeout(
+			cfg.APIKey,
+			cfg.APIBase,
+			cfg.Proxy,
+			cfg.RequestTimeout,
 		), modelID, nil
 
 	case "litellm", "openrouter", "groq", "zhipu", "gemini", "nvidia",

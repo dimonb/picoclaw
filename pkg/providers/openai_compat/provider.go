@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/providers/common"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
@@ -40,7 +41,7 @@ type Provider struct {
 
 type Option func(*Provider)
 
-const defaultRequestTimeout = 120 * time.Second
+const defaultRequestTimeout = common.DefaultRequestTimeout
 
 func WithMaxTokensField(maxTokensField string) Option {
 	return func(p *Provider) {
@@ -65,25 +66,10 @@ func WithResponsesPreferred() Option {
 }
 
 func NewProvider(apiKey, apiBase, proxy string, opts ...Option) *Provider {
-	client := &http.Client{
-		Timeout: defaultRequestTimeout,
-	}
-
-	if proxy != "" {
-		parsed, err := url.Parse(proxy)
-		if err == nil {
-			client.Transport = &http.Transport{
-				Proxy: http.ProxyURL(parsed),
-			}
-		} else {
-			log.Printf("openai_compat: invalid proxy URL %q: %v", proxy, err)
-		}
-	}
-
 	p := &Provider{
 		apiKey:     apiKey,
 		apiBase:    strings.TrimRight(apiBase, "/"),
-		httpClient: client,
+		httpClient: common.NewHTTPClient(proxy),
 	}
 
 	for _, opt := range opts {
@@ -188,7 +174,7 @@ func buildChatCompletionsRequestBody(
 ) map[string]any {
 	requestBody := map[string]any{
 		"model":    model,
-		"messages": serializeMessages(messages),
+		"messages": common.SerializeMessages(messages),
 	}
 
 	if len(tools) > 0 {
@@ -196,7 +182,7 @@ func buildChatCompletionsRequestBody(
 		requestBody["tool_choice"] = "auto"
 	}
 
-	if maxTokens, ok := asInt(options["max_tokens"]); ok {
+	if maxTokens, ok := common.AsInt(options["max_tokens"]); ok {
 		// Use configured maxTokensField if specified, otherwise fallback to model-based detection.
 		fieldName := maxTokensField
 		if fieldName == "" {
@@ -257,7 +243,7 @@ func buildResponsesRequestBody(
 		requestBody["tool_choice"] = "auto"
 	}
 
-	if maxTokens, ok := asInt(options["max_tokens"]); ok {
+	if maxTokens, ok := common.AsInt(options["max_tokens"]); ok {
 		requestBody["max_output_tokens"] = maxTokens
 	}
 
@@ -418,7 +404,7 @@ func resolveResponseToolCall(tc ToolCall) (name string, arguments string, ok boo
 }
 
 func requestTemperature(model string, options map[string]any) (float64, bool) {
-	temperature, ok := asFloat(options["temperature"])
+	temperature, ok := common.AsFloat(options["temperature"])
 	if !ok {
 		return 0, false
 	}
@@ -481,20 +467,8 @@ func (p *Provider) doRequest(
 	defer resp.Body.Close()
 
 	contentType := resp.Header.Get("Content-Type")
-	// Non-200: read a prefix to tell HTML error page apart from JSON error body.
 	if resp.StatusCode != http.StatusOK {
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256))
-		if readErr != nil {
-			return nil, fmt.Errorf("failed to read response: %w", readErr)
-		}
-		if looksLikeHTML(body, contentType) {
-			return nil, wrapHTMLResponseError(resp.StatusCode, body, contentType, p.apiBase)
-		}
-		return nil, fmt.Errorf(
-			"API request failed:\n  Status: %d\n  Body:   %s",
-			resp.StatusCode,
-			responsePreview(body, 128),
-		)
+		return nil, common.HandleErrorResponse(resp, p.apiBase)
 	}
 
 	// Peek without consuming so the full stream reaches the JSON decoder.
@@ -503,8 +477,8 @@ func (p *Provider) doRequest(
 	if err != nil && err != io.EOF && err != bufio.ErrBufferFull {
 		return nil, fmt.Errorf("failed to inspect response: %w", err)
 	}
-	if looksLikeHTML(prefix, contentType) {
-		return nil, wrapHTMLResponseError(resp.StatusCode, prefix, contentType, p.apiBase)
+	if common.LooksLikeHTML(prefix, contentType) {
+		return nil, common.WrapHTMLResponseError(resp.StatusCode, prefix, contentType, p.apiBase)
 	}
 
 	out, err := parse(reader)
@@ -513,57 +487,6 @@ func (p *Provider) doRequest(
 	}
 
 	return out, nil
-}
-
-func wrapHTMLResponseError(statusCode int, body []byte, contentType, apiBase string) error {
-	respPreview := responsePreview(body, 128)
-	return fmt.Errorf(
-		"API request failed: %s returned HTML instead of JSON (content-type: %s); check api_base or proxy configuration.\n  Status: %d\n  Body:   %s",
-		apiBase,
-		contentType,
-		statusCode,
-		respPreview,
-	)
-}
-
-func looksLikeHTML(body []byte, contentType string) bool {
-	contentType = strings.ToLower(strings.TrimSpace(contentType))
-	if strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml+xml") {
-		return true
-	}
-	prefix := bytes.ToLower(leadingTrimmedPrefix(body, 128))
-	return bytes.HasPrefix(prefix, []byte("<!doctype html")) ||
-		bytes.HasPrefix(prefix, []byte("<html")) ||
-		bytes.HasPrefix(prefix, []byte("<head")) ||
-		bytes.HasPrefix(prefix, []byte("<body"))
-}
-
-func leadingTrimmedPrefix(body []byte, maxLen int) []byte {
-	i := 0
-	for i < len(body) {
-		switch body[i] {
-		case ' ', '\t', '\n', '\r', '\f', '\v':
-			i++
-		default:
-			end := i + maxLen
-			if end > len(body) {
-				end = len(body)
-			}
-			return body[i:end]
-		}
-	}
-	return nil
-}
-
-func responsePreview(body []byte, maxLen int) string {
-	trimmed := bytes.TrimSpace(body)
-	if len(trimmed) == 0 {
-		return "<empty>"
-	}
-	if len(trimmed) <= maxLen {
-		return string(trimmed)
-	}
-	return string(trimmed[:maxLen]) + "..."
 }
 
 func parseResponse(body io.Reader) (*LLMResponse, error) {
@@ -933,36 +856,6 @@ func normalizeModel(model, apiBase string) string {
 		return after
 	default:
 		return model
-	}
-}
-
-func asInt(v any) (int, bool) {
-	switch val := v.(type) {
-	case int:
-		return val, true
-	case int64:
-		return int(val), true
-	case float64:
-		return int(val), true
-	case float32:
-		return int(val), true
-	default:
-		return 0, false
-	}
-}
-
-func asFloat(v any) (float64, bool) {
-	switch val := v.(type) {
-	case float64:
-		return val, true
-	case float32:
-		return float64(val), true
-	case int:
-		return float64(val), true
-	case int64:
-		return float64(val), true
-	default:
-		return 0, false
 	}
 }
 
