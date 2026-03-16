@@ -433,3 +433,53 @@ func TestToolRegistry_ConcurrentAccess(t *testing.T) {
 		t.Error("expected tools to be registered after concurrent access")
 	}
 }
+
+func TestToolRegistry_RequestScopedHiddenToolVisibility(t *testing.T) {
+	r := NewToolRegistry()
+	hidden := &mockContextAwareTool{
+		mockRegistryTool: *newMockTool("hidden_seq", "request scoped hidden tool"),
+	}
+	r.RegisterHidden(hidden)
+
+	ctx := WithHiddenToolState(context.Background())
+	if !PromoteHiddenTools(ctx, []string{"hidden_seq"}, 2) {
+		t.Fatal("expected request-scoped promotion to succeed")
+	}
+
+	if _, ok := r.Get("hidden_seq"); ok {
+		t.Fatal("expected hidden tool to remain globally hidden")
+	}
+	defs := r.ToProviderDefsWithContext(ctx, "cli", "direct")
+	if len(defs) != 1 || defs[0].Function.Name != "hidden_seq" {
+		t.Fatalf("expected locally unlocked hidden tool in provider defs, got %+v", defs)
+	}
+
+	result := r.ExecuteWithContext(ctx, "hidden_seq", nil, "cli", "direct", nil)
+	if result.IsError {
+		t.Fatalf("expected request-scoped hidden tool to execute, got %q", result.ForLLM)
+	}
+	if hidden.lastCtx == nil {
+		t.Fatal("expected hidden tool to receive execution context")
+	}
+
+	if !TickHiddenTools(ctx) {
+		t.Fatal("expected first TTL tick to apply to request-scoped state")
+	}
+	defs = r.ToProviderDefsWithContext(ctx, "cli", "direct")
+	if len(defs) != 1 {
+		t.Fatalf("expected hidden tool to remain visible after first tick, got %d defs", len(defs))
+	}
+
+	if !TickHiddenTools(ctx) {
+		t.Fatal("expected second TTL tick to apply to request-scoped state")
+	}
+	defs = r.ToProviderDefsWithContext(ctx, "cli", "direct")
+	if len(defs) != 0 {
+		t.Fatalf("expected hidden tool visibility to expire, got %d defs", len(defs))
+	}
+
+	result = r.ExecuteWithContext(ctx, "hidden_seq", nil, "cli", "direct", nil)
+	if !result.IsError {
+		t.Fatal("expected expired hidden tool to become unavailable again")
+	}
+}

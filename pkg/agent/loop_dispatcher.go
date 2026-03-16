@@ -10,7 +10,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
-const sessionWorkerIdleTimeout = 30 * time.Second
+var sessionWorkerIdleTimeout = 30 * time.Second
 
 type workerTask struct {
 	ctx context.Context
@@ -18,8 +18,9 @@ type workerTask struct {
 }
 
 type sessionWorker struct {
-	ch    chan workerTask
-	timer *time.Timer
+	ch      chan workerTask
+	mu      sync.Mutex
+	closing bool
 }
 
 // sessionDispatcher fans out inbound messages to per-session goroutines,
@@ -44,45 +45,45 @@ func newSessionDispatcher(al *AgentLoop, maxConcurrent int) *sessionDispatcher {
 	return d
 }
 
-// dispatchKey returns the key used to route msg to a session worker.
-//
-// msg.SessionKey is only set for cron/direct messages (agent:-prefixed).
-// For inbound channel messages it is always "", because the actual session key
-// is resolved inside processMessage after routing. We therefore fall back to
-// "channel:chatID" which uniquely identifies one conversation.
-func dispatchKey(msg bus.InboundMessage) string {
-	if msg.SessionKey != "" {
-		return msg.SessionKey
-	}
-	return msg.Channel + ":" + msg.ChatID
-}
-
 // Dispatch routes msg to the appropriate session worker, creating one if needed.
 // Returns immediately; the message is processed asynchronously.
 func (d *sessionDispatcher) Dispatch(ctx context.Context, msg bus.InboundMessage) {
-	key := dispatchKey(msg)
+	key := d.al.resolveDispatchSessionKey(msg)
 
-	d.mu.Lock()
-	w, ok := d.workers[key]
-	if !ok {
-		w = &sessionWorker{
-			ch: make(chan workerTask, 32),
+	for {
+		d.mu.Lock()
+		w, ok := d.workers[key]
+		if !ok {
+			w = &sessionWorker{
+				ch: make(chan workerTask, 32),
+			}
+			d.workers[key] = w
+			d.wg.Add(1)
+			go d.runWorker(key, w)
 		}
-		d.workers[key] = w
-		d.wg.Add(1)
-		go d.runWorker(key, w)
-	}
-	// Reset idle timer so the worker doesn't exit while we have work.
-	if w.timer != nil {
-		w.timer.Reset(sessionWorkerIdleTimeout)
-	}
-	d.mu.Unlock()
+		d.mu.Unlock()
 
-	select {
-	case w.ch <- workerTask{ctx: ctx, msg: msg}:
-	case <-ctx.Done():
-		logger.WarnCF("agent", "Dispatcher: context done before enqueue",
-			map[string]any{"session_key": key})
+		w.mu.Lock()
+		if w.closing {
+			w.mu.Unlock()
+			d.mu.Lock()
+			if current, ok := d.workers[key]; ok && current == w {
+				delete(d.workers, key)
+			}
+			d.mu.Unlock()
+			continue
+		}
+
+		select {
+		case w.ch <- workerTask{ctx: ctx, msg: msg}:
+			w.mu.Unlock()
+			return
+		case <-ctx.Done():
+			w.mu.Unlock()
+			logger.WarnCF("agent", "Dispatcher: context done before enqueue",
+				map[string]any{"session_key": key})
+			return
+		}
 	}
 }
 
@@ -101,7 +102,6 @@ func (d *sessionDispatcher) runWorker(key string, w *sessionWorker) {
 
 	idleTimer := time.NewTimer(sessionWorkerIdleTimeout)
 	defer idleTimer.Stop()
-	w.timer = idleTimer
 
 	for {
 		select {
@@ -110,16 +110,40 @@ func (d *sessionDispatcher) runWorker(key string, w *sessionWorker) {
 				// Channel closed by Wait() — drain and exit.
 				return
 			}
-			idleTimer.Reset(sessionWorkerIdleTimeout)
+			stopAndDrainTimer(idleTimer)
 			d.process(task)
+			idleTimer.Reset(sessionWorkerIdleTimeout)
 
 		case <-idleTimer.C:
-			// No messages for a while — clean up and exit.
 			d.mu.Lock()
-			delete(d.workers, key)
+			w.mu.Lock()
+			if len(w.ch) > 0 {
+				w.mu.Unlock()
+				d.mu.Unlock()
+				idleTimer.Reset(sessionWorkerIdleTimeout)
+				continue
+			}
+			w.closing = true
+			if current, ok := d.workers[key]; ok && current == w {
+				delete(d.workers, key)
+			}
+			w.mu.Unlock()
 			d.mu.Unlock()
 			return
 		}
+	}
+}
+
+func stopAndDrainTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if timer.Stop() {
+		return
+	}
+	select {
+	case <-timer.C:
+	default:
 	}
 }
 

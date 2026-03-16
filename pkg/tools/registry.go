@@ -150,10 +150,37 @@ func (r *ToolRegistry) Get(name string) (Tool, bool) {
 	return entry.Tool, true
 }
 
+func toolEntryVisibleInContext(entry *ToolEntry, ctx context.Context, name string) bool {
+	if entry.IsCore || entry.TTL > 0 {
+		return true
+	}
+	return HiddenToolVisible(ctx, name)
+}
+
+func (r *ToolRegistry) getWithContext(ctx context.Context, name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	entry, ok := r.tools[name]
+	if !ok {
+		return nil, false
+	}
+	if !toolEntryVisibleInContext(entry, ctx, name) {
+		return nil, false
+	}
+	return entry.Tool, true
+}
+
 // ExecutesSequentially reports whether the named tool must preserve model order
 // within a single LLM turn instead of being fanned out with sibling calls.
 func (r *ToolRegistry) ExecutesSequentially(name string) bool {
-	tool, ok := r.Get(name)
+	return r.ExecutesSequentiallyWithContext(context.Background(), name)
+}
+
+// ExecutesSequentiallyWithContext reports whether the named tool must preserve
+// model order within a single LLM turn for the current request context.
+func (r *ToolRegistry) ExecutesSequentiallyWithContext(ctx context.Context, name string) bool {
+	tool, ok := r.getWithContext(ctx, name)
 	if !ok {
 		return false
 	}
@@ -183,7 +210,11 @@ func (r *ToolRegistry) ExecuteWithContext(
 			"args": args,
 		})
 
-	tool, ok := r.Get(name)
+	// Inject channel/chatID into ctx so tools read them via ToolChannel(ctx)/ToolChatID(ctx).
+	// Always inject — tools validate what they require.
+	ctx = WithToolContext(ctx, channel, chatID)
+
+	tool, ok := r.getWithContext(ctx, name)
 	if !ok {
 		logger.ErrorCF("tool", "Tool not found",
 			map[string]any{
@@ -191,10 +222,6 @@ func (r *ToolRegistry) ExecuteWithContext(
 			})
 		return ErrorResult(fmt.Sprintf("tool %q not found", name)).WithError(fmt.Errorf("tool not found"))
 	}
-
-	// Inject channel/chatID into ctx so tools read them via ToolChannel(ctx)/ToolChatID(ctx).
-	// Always inject — tools validate what they require.
-	ctx = WithToolContext(ctx, channel, chatID)
 
 	// If tool implements AsyncExecutor and callback is provided, use ExecuteAsync.
 	// The callback is a call parameter, not mutable state on the tool instance.
@@ -263,7 +290,7 @@ func (r *ToolRegistry) GetDefinitionsWithContext(ctx context.Context, channel, c
 	definitions := make([]map[string]any, 0, len(sorted))
 	for _, name := range sorted {
 		entry := r.tools[name]
-		if !entry.IsCore && entry.TTL <= 0 {
+		if !toolEntryVisibleInContext(entry, ctx, name) {
 			continue
 		}
 		if !toolAvailableInContext(entry.Tool, ctx) {
@@ -292,7 +319,7 @@ func (r *ToolRegistry) ToProviderDefsWithContext(
 	definitions := make([]providers.ToolDefinition, 0, len(sorted))
 	for _, name := range sorted {
 		entry := r.tools[name]
-		if !entry.IsCore && entry.TTL <= 0 {
+		if !toolEntryVisibleInContext(entry, ctx, name) {
 			continue
 		}
 		if !toolAvailableInContext(entry.Tool, ctx) {

@@ -997,6 +997,24 @@ func resolveScopeKey(route routing.ResolvedRoute, msgSessionKey string) string {
 	return route.SessionKey
 }
 
+func (al *AgentLoop) resolveDispatchSessionKey(msg bus.InboundMessage) string {
+	if msg.Channel == "system" {
+		if agent := al.GetRegistry().GetDefaultAgent(); agent != nil {
+			return routing.BuildAgentMainSessionKey(agent.ID)
+		}
+	}
+
+	route, _, err := al.resolveMessageRoute(msg)
+	if err == nil {
+		return resolveScopeKey(route, msg.SessionKey)
+	}
+
+	if msg.SessionKey != "" {
+		return msg.SessionKey
+	}
+	return msg.Channel + ":" + msg.ChatID
+}
+
 func (al *AgentLoop) processSystemMessage(
 	ctx context.Context,
 	msg bus.InboundMessage,
@@ -1068,6 +1086,10 @@ func (al *AgentLoop) runAgentLoop(
 	agent *AgentInstance,
 	opts processOptions,
 ) (agentResponse, error) {
+	// Hidden tool discovery must stay request-scoped so concurrent sessions do
+	// not age out each other's unlocked tools.
+	ctx = tools.WithHiddenToolState(ctx)
+
 	// 0. Record last channel for heartbeat notifications (skip internal channels and cli)
 	if opts.Channel != "" && opts.ChatID != "" {
 		if !constants.IsInternalChannel(opts.Channel) {
@@ -2001,7 +2023,7 @@ func (al *AgentLoop) runLLMIteration(
 		for i, tc := range normalizedToolCalls {
 			agentResults[i].tc = tc
 
-			if agent.Tools.ExecutesSequentially(tc.Name) {
+			if agent.Tools.ExecutesSequentiallyWithContext(ctx, tc.Name) {
 				if batchStart != -1 {
 					executeParallelBatch(batchStart, i)
 					batchStart = -1
@@ -2076,13 +2098,13 @@ func (al *AgentLoop) runLLMIteration(
 			agent.Sessions.AddFullMessage(opts.SessionKey, toolResultMsg)
 		}
 
-		// Tick down TTL of discovered tools after processing tool results.
-		// Only reached when tool calls were made (the loop continues);
-		// the break on no-tool-call responses skips this.
-		// NOTE: This is safe because processMessage is sequential per agent.
-		// If per-agent concurrency is added, TTL consistency between
-		// ToProviderDefs and Get must be re-evaluated.
-		agent.Tools.TickTTL()
+		// Tick down unlocked hidden tools after processing tool results.
+		// In the agent loop this state is request-scoped to keep discovery
+		// isolated across concurrent sessions; tests and direct registry callers
+		// still fall back to the legacy registry-wide TTL path.
+		if !tools.TickHiddenTools(ctx) {
+			agent.Tools.TickTTL()
+		}
 		logger.DebugCF("agent", "TTL tick after tool execution", map[string]any{
 			"agent_id": agent.ID, "iteration": iteration,
 		})

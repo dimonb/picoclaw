@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 )
 
@@ -30,7 +31,19 @@ var (
 	ctxKeyCurrentMessageID = &toolCtxKey{"currentMessageID"}
 	ctxKeyParentMessageID  = &toolCtxKey{"parentMessageID"}
 	ctxKeyRoundSent        = &toolCtxKey{"roundSent"}
+	ctxKeyHiddenToolState  = &toolCtxKey{"hiddenToolState"}
 )
+
+type hiddenToolState struct {
+	mu   sync.RWMutex
+	ttls map[string]int
+}
+
+func newHiddenToolState() *hiddenToolState {
+	return &hiddenToolState{
+		ttls: make(map[string]int),
+	}
+}
 
 // WithToolContext returns a child context carrying channel and chatID.
 func WithToolContext(ctx context.Context, channel, chatID string) context.Context {
@@ -106,6 +119,69 @@ func RoundHasSent(ctx context.Context) bool {
 		return v.Load()
 	}
 	return false
+}
+
+// WithHiddenToolState injects request-scoped hidden tool visibility into ctx.
+// This keeps discovery unlocks isolated to one agent turn, avoiding cross-session
+// interference when multiple sessions run concurrently.
+func WithHiddenToolState(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyHiddenToolState, newHiddenToolState())
+}
+
+func hiddenToolStateFromContext(ctx context.Context) *hiddenToolState {
+	v, _ := ctx.Value(ctxKeyHiddenToolState).(*hiddenToolState)
+	return v
+}
+
+// PromoteHiddenTools records hidden tool visibility for the current request.
+// Returns false when ctx does not carry request-scoped hidden tool state.
+func PromoteHiddenTools(ctx context.Context, names []string, ttl int) bool {
+	state := hiddenToolStateFromContext(ctx)
+	if state == nil || ttl <= 0 {
+		return false
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		state.ttls[name] = ttl
+	}
+	return true
+}
+
+// TickHiddenTools decrements request-scoped hidden tool TTLs.
+// Returns false when ctx does not carry request-scoped hidden tool state.
+func TickHiddenTools(ctx context.Context) bool {
+	state := hiddenToolStateFromContext(ctx)
+	if state == nil {
+		return false
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	for name, ttl := range state.ttls {
+		if ttl <= 1 {
+			delete(state.ttls, name)
+			continue
+		}
+		state.ttls[name] = ttl - 1
+	}
+	return true
+}
+
+// HiddenToolVisible reports whether name is unlocked for the current request.
+func HiddenToolVisible(ctx context.Context, name string) bool {
+	state := hiddenToolStateFromContext(ctx)
+	if state == nil || name == "" {
+		return false
+	}
+
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.ttls[name] > 0
 }
 
 // AsyncCallback is a function type that async tools use to notify completion.
