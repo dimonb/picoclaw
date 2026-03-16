@@ -44,10 +44,23 @@ func newSessionDispatcher(al *AgentLoop, maxConcurrent int) *sessionDispatcher {
 	return d
 }
 
+// dispatchKey returns the key used to route msg to a session worker.
+//
+// msg.SessionKey is only set for cron/direct messages (agent:-prefixed).
+// For inbound channel messages it is always "", because the actual session key
+// is resolved inside processMessage after routing. We therefore fall back to
+// "channel:chatID" which uniquely identifies one conversation.
+func dispatchKey(msg bus.InboundMessage) string {
+	if msg.SessionKey != "" {
+		return msg.SessionKey
+	}
+	return msg.Channel + ":" + msg.ChatID
+}
+
 // Dispatch routes msg to the appropriate session worker, creating one if needed.
 // Returns immediately; the message is processed asynchronously.
 func (d *sessionDispatcher) Dispatch(ctx context.Context, msg bus.InboundMessage) {
-	key := msg.SessionKey
+	key := dispatchKey(msg)
 
 	d.mu.Lock()
 	w, ok := d.workers[key]
