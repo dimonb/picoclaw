@@ -116,7 +116,7 @@ func TestSerializeResponsesMessageContent_WithDocumentMedia(t *testing.T) {
 				},
 				{
 					"type":      "input_file",
-					"file_data": "JVBERi0xLjQ=",
+					"file_data": "data:application/pdf;base64,JVBERi0xLjQ=",
 					"filename":  "attachment.pdf",
 				},
 			},
@@ -135,7 +135,7 @@ func TestSerializeResponsesMessageContent_WithDocumentMedia(t *testing.T) {
 				},
 				{
 					"type":      "input_file",
-					"file_data": "aGVsbG8gd29ybGQ=",
+					"file_data": "data:text/plain;base64,aGVsbG8gd29ybGQ=",
 					"filename":  "attachment.txt",
 				},
 			},

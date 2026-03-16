@@ -334,7 +334,7 @@ func buildCodexInputMessageContent(msg Message) responses.EasyInputMessageConten
 
 		part := responses.ResponseInputContentUnionParam{
 			OfInputFile: &responses.ResponseInputFileParam{
-				FileData: openai.Opt(data.Base64Data),
+				FileData: openai.Opt(data.DataURL),
 				Filename: openai.Opt(common.SuggestedFilenameForMediaType(data.MediaType)),
 			},
 		}

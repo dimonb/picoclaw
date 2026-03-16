@@ -144,19 +144,19 @@ func TestBuildCodexParams_UserMessageWithDocumentMedia(t *testing.T) {
 		name     string
 		mediaURL string
 		filename string
-		payload  string
+		fileData string
 	}{
 		{
 			name:     "pdf",
 			mediaURL: "data:application/pdf;base64,JVBERi0xLjQ=",
 			filename: "attachment.pdf",
-			payload:  "JVBERi0xLjQ=",
+			fileData: "data:application/pdf;base64,JVBERi0xLjQ=",
 		},
 		{
 			name:     "text",
 			mediaURL: "data:text/plain;base64,aGVsbG8gd29ybGQ=",
 			filename: "attachment.txt",
-			payload:  "aGVsbG8gd29ybGQ=",
+			fileData: "data:text/plain;base64,aGVsbG8gd29ybGQ=",
 		},
 	}
 
@@ -182,8 +182,8 @@ func TestBuildCodexParams_UserMessageWithDocumentMedia(t *testing.T) {
 			if parts[1].OfInputFile == nil {
 				t.Fatalf("expected input_file part, got %#v", parts[1])
 			}
-			if got := parts[1].OfInputFile.FileData.Or(""); got != tt.payload {
-				t.Fatalf("file_data = %q, want %q", got, tt.payload)
+			if got := parts[1].OfInputFile.FileData.Or(""); got != tt.fileData {
+				t.Fatalf("file_data = %q, want %q", got, tt.fileData)
 			}
 			if got := parts[1].OfInputFile.Filename.Or(""); got != tt.filename {
 				t.Fatalf("filename = %q, want %q", got, tt.filename)

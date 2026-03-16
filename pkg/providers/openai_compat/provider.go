@@ -351,7 +351,7 @@ func serializeResponsesMessageContent(m Message) any {
 
 		parts = append(parts, map[string]any{
 			"type":      "input_file",
-			"file_data": data.Base64Data,
+			"file_data": data.DataURL,
 			"filename":  common.SuggestedFilenameForMediaType(data.MediaType),
 		})
 	}
