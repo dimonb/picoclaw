@@ -1914,19 +1914,19 @@ func TestResolveMediaRefs_PDFInjectsFilePath(t *testing.T) {
 	}
 }
 
-func TestResolveMediaRefs_TextPlainInlinesDocumentAndInjectsPath(t *testing.T) {
+func assertResolvedTextDocument(t *testing.T, meta media.MediaMeta, storedName string) {
+	t.Helper()
+
 	store := media.NewFileMediaStore()
 	dir := t.TempDir()
 
-	txtPath := filepath.Join(dir, "notes.txt")
+	txtPath := filepath.Join(dir, storedName)
 	if err := os.WriteFile(txtPath, []byte("hello world"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	ref, _ := store.Store(txtPath, media.MediaMeta{ContentType: "text/plain"}, "test")
+	ref, _ := store.Store(txtPath, meta, "test")
 
-	messages := []providers.Message{
-		{Role: "user", Content: "notes [file]", Media: []string{ref}},
-	}
+	messages := []providers.Message{{Role: "user", Content: "notes [file]", Media: []string{ref}}}
 	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize)
 
 	if len(result[0].Media) != 1 {
@@ -1941,31 +1941,12 @@ func TestResolveMediaRefs_TextPlainInlinesDocumentAndInjectsPath(t *testing.T) {
 	}
 }
 
+func TestResolveMediaRefs_TextPlainInlinesDocumentAndInjectsPath(t *testing.T) {
+	assertResolvedTextDocument(t, media.MediaMeta{ContentType: "text/plain"}, "notes.txt")
+}
+
 func TestResolveMediaRefs_UsesMetaFilenameExtensionForTextPlain(t *testing.T) {
-	store := media.NewFileMediaStore()
-	dir := t.TempDir()
-
-	txtPath := filepath.Join(dir, "blob")
-	if err := os.WriteFile(txtPath, []byte("hello world"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	ref, _ := store.Store(txtPath, media.MediaMeta{Filename: "notes.txt"}, "test")
-
-	messages := []providers.Message{
-		{Role: "user", Content: "notes [file]", Media: []string{ref}},
-	}
-	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize)
-
-	if len(result[0].Media) != 1 {
-		t.Fatalf("expected 1 media (inline text), got %d", len(result[0].Media))
-	}
-	if !strings.HasPrefix(result[0].Media[0], "data:text/plain;base64,") {
-		t.Fatalf("expected inline text data URL, got %q", result[0].Media[0])
-	}
-	expected := "notes [file:notes.txt|" + ref + "]"
-	if result[0].Content != expected {
-		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
-	}
+	assertResolvedTextDocument(t, media.MediaMeta{Filename: "notes.txt"}, "blob")
 }
 
 func TestResolveMediaRefs_AudioInjectsAudioPath(t *testing.T) {
