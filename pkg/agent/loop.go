@@ -349,19 +349,77 @@ func (al *AgentLoop) bindAdvancedMessageManagers(cm *channels.Manager) {
 			advancedManager.SetCallbacks(
 				// sendPlaceholder
 				func(ctx context.Context, channelName, chatID, content string) (string, error) {
-					return cm.SendMessageWithID(ctx, bus.OutboundMessage{
+					msgID, err := cm.SendMessageWithID(ctx, bus.OutboundMessage{
 						Channel: channelName,
 						ChatID:  chatID,
 						Content: content,
 					})
+					if err != nil {
+						return "", err
+					}
+					al.upsertAdvancedToolMessage(ctx, msgID, content)
+					return msgID, nil
 				},
 				// editMessage
 				func(ctx context.Context, channelName, chatID, messageID, content string) error {
-					return cm.EditMessage(ctx, channelName, chatID, messageID, content)
+					if err := cm.EditMessage(ctx, channelName, chatID, messageID, content); err != nil {
+						return err
+					}
+					al.upsertAdvancedToolMessage(ctx, messageID, content)
+					return nil
 				},
 			)
 		}
 	})
+}
+
+func (al *AgentLoop) agentForSessionKey(sessionKey string) *AgentInstance {
+	if parsed := routing.ParseAgentSessionKey(sessionKey); parsed != nil {
+		if agent, ok := al.registry.GetAgent(parsed.AgentID); ok && agent != nil {
+			return agent
+		}
+	}
+	return al.registry.GetDefaultAgent()
+}
+
+func (al *AgentLoop) upsertAdvancedToolMessage(
+	ctx context.Context,
+	messageID, content string,
+) {
+	sessionKey := strings.TrimSpace(tools.ToolSessionKey(ctx))
+	content = strings.TrimSpace(content)
+	if sessionKey == "" || content == "" {
+		return
+	}
+
+	agent := al.agentForSessionKey(sessionKey)
+	if agent == nil {
+		return
+	}
+
+	messageID = strings.TrimSpace(messageID)
+	if messageID != "" {
+		history := agent.Sessions.GetHistory(sessionKey)
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Role != "assistant" {
+				continue
+			}
+			if strings.TrimSpace(history[i].MessageID) != messageID {
+				continue
+			}
+			history[i].Content = content
+			agent.Sessions.SetHistory(sessionKey, history)
+			_ = agent.Sessions.Save(sessionKey)
+			return
+		}
+	}
+
+	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+		Role:      "assistant",
+		Content:   content,
+		MessageID: messageID,
+	})
+	_ = agent.Sessions.Save(sessionKey)
 }
 
 func (al *AgentLoop) bindReactionTools(cm *channels.Manager) {

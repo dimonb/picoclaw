@@ -166,6 +166,12 @@ func TestBuildMessages_TelegramReplyRoutingContext(t *testing.T) {
 	) {
 		t.Fatal("system prompt missing guidance about hidden-block delivery")
 	}
+	if !strings.Contains(
+		sys,
+		"never invent or guess Telegram message IDs",
+	) {
+		t.Fatal("system prompt missing guidance against guessing message IDs")
+	}
 }
 
 // TestMtimeAutoInvalidation verifies that the cache detects source file changes

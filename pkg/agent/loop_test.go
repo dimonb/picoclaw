@@ -2091,7 +2091,13 @@ func TestResolveMediaRefs_MixedImageAndFile(t *testing.T) {
 
 type syncFakeChannel struct {
 	fakeChannel
-	sent []bus.OutboundMessage
+	sent   []bus.OutboundMessage
+	edited []struct {
+		chatID    string
+		messageID string
+		content   string
+	}
+	msgID string
 }
 
 func (f *syncFakeChannel) SendMessageWithID(
@@ -2099,7 +2105,28 @@ func (f *syncFakeChannel) SendMessageWithID(
 	msg bus.OutboundMessage,
 ) (string, error) {
 	f.sent = append(f.sent, msg)
+	if f.msgID != "" {
+		return f.msgID, nil
+	}
 	return "mid-123", nil
+}
+
+func (f *syncFakeChannel) EditMessage(
+	ctx context.Context,
+	chatID string,
+	messageID string,
+	content string,
+) error {
+	f.edited = append(f.edited, struct {
+		chatID    string
+		messageID string
+		content   string
+	}{
+		chatID:    chatID,
+		messageID: messageID,
+		content:   content,
+	})
+	return nil
 }
 
 func TestPublishOutboundWithHistoryPersistsOnDelivered(t *testing.T) {
@@ -2140,5 +2167,135 @@ func TestPublishOutboundWithHistoryPersistsOnDelivered(t *testing.T) {
 	}
 	if history[0].MessageID != "mid-123" {
 		t.Fatalf("message id=%q, want mid-123", history[0].MessageID)
+	}
+}
+
+func TestAdvancedMessageManager_SendPlaceholderPersistsHistory(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+
+	cm, err := channels.NewManager(&config.Config{}, msgBus, nil)
+	if err != nil {
+		t.Fatalf("NewManager error: %v", err)
+	}
+	ch := &syncFakeChannel{fakeChannel: fakeChannel{id: "fake"}, msgID: "550"}
+	cm.RegisterChannel("telegram", ch)
+
+	agent := al.GetRegistry().GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	taskTool := tools.NewTaskTool(al.taskManager, config.DefaultConfig().Tools.TaskTool.Icons)
+	agent.Tools.Register(taskTool)
+	al.SetChannelManager(cm)
+
+	sessionKey := "agent:main:telegram:group:-1003717341079/17"
+	ctx := tools.WithToolSessionKey(
+		tools.WithToolContext(context.Background(), "telegram", "-1003717341079/17"),
+		sessionKey,
+	)
+
+	result := taskTool.Execute(ctx, map[string]any{
+		"action": "create_plan",
+		"tasks": []any{
+			map[string]any{
+				"id":          "step_1",
+				"description": "Inspect workspace",
+			},
+		},
+	})
+	if result == nil {
+		t.Fatal("expected tool result")
+	}
+	if !result.Silent {
+		t.Fatalf("expected delivered plan to be silent, got %+v", result)
+	}
+	if !strings.Contains(result.ForLLM, "Plan message: [msg:#550]") {
+		t.Fatalf("expected tool result to expose delivered message id, got %q", result.ForLLM)
+	}
+
+	history := agent.Sessions.GetHistory(sessionKey)
+	if len(history) != 1 {
+		t.Fatalf("history len=%d, want 1", len(history))
+	}
+	if history[0].Role != "assistant" {
+		t.Fatalf("history role=%q, want assistant", history[0].Role)
+	}
+	if history[0].MessageID != "550" {
+		t.Fatalf("message id=%q, want 550", history[0].MessageID)
+	}
+	if !strings.Contains(history[0].Content, "Execution Plan") {
+		t.Fatalf("expected persisted content to contain plan, got %q", history[0].Content)
+	}
+}
+
+func TestAdvancedMessageManager_EditMessageUpdatesPersistedHistory(t *testing.T) {
+	al, _, msgBus, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+
+	cm, err := channels.NewManager(&config.Config{}, msgBus, nil)
+	if err != nil {
+		t.Fatalf("NewManager error: %v", err)
+	}
+	ch := &syncFakeChannel{fakeChannel: fakeChannel{id: "fake"}, msgID: "550"}
+	cm.RegisterChannel("telegram", ch)
+
+	agent := al.GetRegistry().GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	taskTool := tools.NewTaskTool(al.taskManager, config.DefaultConfig().Tools.TaskTool.Icons)
+	agent.Tools.Register(taskTool)
+	al.SetChannelManager(cm)
+
+	sessionKey := "agent:main:telegram:group:-1003717341079/17"
+	ctx := tools.WithToolSessionKey(
+		tools.WithToolContext(context.Background(), "telegram", "-1003717341079/17"),
+		sessionKey,
+	)
+
+	taskTool.Execute(ctx, map[string]any{
+		"action": "create_plan",
+		"tasks": []any{
+			map[string]any{
+				"id":          "step_1",
+				"description": "Inspect workspace",
+			},
+		},
+	})
+
+	result := taskTool.Execute(ctx, map[string]any{
+		"action":  "update_task",
+		"task_id": "step_1",
+		"status":  "completed",
+		"result":  "done",
+	})
+	if result == nil {
+		t.Fatal("expected tool result")
+	}
+	if !result.Silent {
+		t.Fatalf("expected edited plan to stay silent, got %+v", result)
+	}
+	if !strings.Contains(result.ForLLM, "Plan message: [msg:#550]") {
+		t.Fatalf("expected tool result to keep exposing tracked message id, got %q", result.ForLLM)
+	}
+	if len(ch.edited) != 1 {
+		t.Fatalf("edited len=%d, want 1", len(ch.edited))
+	}
+	if ch.edited[0].messageID != "550" {
+		t.Fatalf("edited message id=%q, want 550", ch.edited[0].messageID)
+	}
+
+	history := agent.Sessions.GetHistory(sessionKey)
+	if len(history) != 1 {
+		t.Fatalf("history len=%d, want 1", len(history))
+	}
+	if history[0].MessageID != "550" {
+		t.Fatalf("message id=%q, want 550", history[0].MessageID)
+	}
+	if !strings.Contains(history[0].Content, "done") {
+		t.Fatalf("expected updated plan content in history, got %q", history[0].Content)
 	}
 }

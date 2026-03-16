@@ -524,6 +524,7 @@ func buildTelegramDeliveryContext(channel string, replyCtx *ReplyContextInfo, al
 			"- `text_reply` defaults to `true`; set `text_reply=false` for a reaction-only response\n"+
 			"- after the block, add a blank line and then the user-visible message body\n"+
 			"- if `text_reply=false`, do not include any visible message body after the block\n"+
+			"- never invent or guess Telegram message IDs; only use IDs that already appear in the annotations above or in the current/parent fields\n"+
 			"- allowed reaction emoji: %s\n"+
 			"- do not mention the hidden block in the visible message body\n"+
 			"- the `message` tool is unavailable in this chat; use the hidden delivery block for normal replies",

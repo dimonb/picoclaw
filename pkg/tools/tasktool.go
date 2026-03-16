@@ -175,11 +175,13 @@ func (t *TaskTool) handleCreatePlan(
 	summary := fmt.Sprintf("Plan created with %d tasks.\nTasks: %s", len(parsedTasks), mustMarshalJSON(parsedTasks))
 
 	delivered := false
+	deliveredMessageID := ""
 	var deliveryErr error
 	if t.sendPlaceholder != nil {
 		msgID, err := t.sendPlaceholder(ctx, channel, chatID, content)
 		if err == nil {
 			delivered = true
+			deliveredMessageID = msgID
 			if msgID != "" {
 				t.taskManager.SetMessageID(sessionKey, msgID)
 			}
@@ -188,7 +190,7 @@ func (t *TaskTool) handleCreatePlan(
 		}
 	}
 
-	return t.newPlanResult(summary, content, delivered, deliveryErr)
+	return t.newPlanResult(summary, content, delivered, deliveredMessageID, deliveryErr)
 }
 
 func (t *TaskTool) handleListPlan(sessionKey string) *ToolResult {
@@ -224,11 +226,13 @@ func (t *TaskTool) handleResendPlan(ctx context.Context, sessionKey, channel, ch
 	content := t.formatPlanMessage(st.Tasks)
 
 	delivered := false
+	deliveredMessageID := ""
 	var deliveryErr error
 	if t.sendPlaceholder != nil {
 		msgID, err := t.sendPlaceholder(ctx, channel, chatID, content)
 		if err == nil {
 			delivered = true
+			deliveredMessageID = msgID
 			if msgID != "" {
 				t.taskManager.SetMessageID(sessionKey, msgID)
 			}
@@ -242,7 +246,7 @@ func (t *TaskTool) handleResendPlan(ctx context.Context, sessionKey, channel, ch
 		summary = fmt.Sprintf("Plan successfully resent as a new message.\nTasks: %s", mustMarshalJSON(st.Tasks))
 	}
 
-	return t.newPlanResult(summary, content, delivered, deliveryErr)
+	return t.newPlanResult(summary, content, delivered, deliveredMessageID, deliveryErr)
 }
 
 func (t *TaskTool) handleUpdateTask(
@@ -271,6 +275,7 @@ func (t *TaskTool) handleUpdateTask(
 	summary := fmt.Sprintf("Task '%s' updated to '%s'. Current plan:\n%s", taskID, statusStr, mustMarshalJSON(st.Tasks))
 
 	delivered := false
+	deliveredMessageID := strings.TrimSpace(st.MessageID)
 	var deliveryErr error
 	if t.editMessage != nil && st.MessageID != "" {
 		if err := t.editMessage(ctx, channel, chatID, st.MessageID, content); err != nil {
@@ -292,6 +297,7 @@ func (t *TaskTool) handleUpdateTask(
 		if err == nil {
 			delivered = true
 			deliveryErr = nil
+			deliveredMessageID = msgID
 			if msgID != "" {
 				t.taskManager.SetMessageID(sessionKey, msgID)
 			}
@@ -300,7 +306,7 @@ func (t *TaskTool) handleUpdateTask(
 		}
 	}
 
-	return t.newPlanResult(summary, content, delivered, deliveryErr)
+	return t.newPlanResult(summary, content, delivered, deliveredMessageID, deliveryErr)
 }
 
 func (t *TaskTool) formatPlanMessage(tasks []session.Task) string {
@@ -336,8 +342,29 @@ func (t *TaskTool) formatPlanMessage(tasks []session.Task) string {
 	return sb.String()
 }
 
-func (t *TaskTool) newPlanResult(summary, content string, delivered bool, deliveryErr error) *ToolResult {
+func taskToolMessageRefs(messageID string) string {
+	parts := strings.Split(strings.TrimSpace(messageID), ",")
+	refs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		refs = append(refs, fmt.Sprintf("[msg:#%s]", part))
+	}
+	return strings.Join(refs, " ")
+}
+
+func (t *TaskTool) newPlanResult(
+	summary, content string,
+	delivered bool,
+	messageID string,
+	deliveryErr error,
+) *ToolResult {
 	if delivered {
+		if refs := taskToolMessageRefs(messageID); refs != "" {
+			summary = fmt.Sprintf("%s\nPlan message: %s", summary, refs)
+		}
 		return &ToolResult{
 			ForLLM: summary,
 			Silent: true,
