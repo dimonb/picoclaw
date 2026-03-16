@@ -52,6 +52,18 @@ func (b *JSONLBackend) GetSummary(key string) string {
 	return summary
 }
 
+func (b *JSONLBackend) GetContextSnapshot(key string) ContextSnapshot {
+	snapshot, err := b.store.GetContextSnapshot(context.Background(), key)
+	if err != nil {
+		log.Printf("session: get context snapshot: %v", err)
+		return ContextSnapshot{History: []providers.Message{}}
+	}
+	return ContextSnapshot{
+		History: snapshot.History,
+		Summary: snapshot.Summary,
+	}
+}
+
 func (b *JSONLBackend) SetSummary(key, summary string) {
 	if err := b.store.SetSummary(context.Background(), key, summary); err != nil {
 		log.Printf("session: set summary: %v", err)
@@ -67,6 +79,30 @@ func (b *JSONLBackend) SetHistory(key string, history []providers.Message) {
 func (b *JSONLBackend) TruncateHistory(key string, keepLast int) {
 	if err := b.store.TruncateHistory(context.Background(), key, keepLast); err != nil {
 		log.Printf("session: truncate history: %v", err)
+	}
+}
+
+func (b *JSONLBackend) ApplySummaryCompaction(
+	key, summary string,
+	expectedHistoryCount, keepLast int,
+) SummaryCompactionResult {
+	result, err := b.store.ApplySummaryCompaction(
+		context.Background(),
+		key,
+		summary,
+		expectedHistoryCount,
+		keepLast,
+	)
+	if err != nil {
+		log.Printf("session: apply summary compaction: %v", err)
+		return SummaryCompactionResult{}
+	}
+	return SummaryCompactionResult{
+		Applied:                 result.Applied,
+		HistoryCountBefore:      result.HistoryCountBefore,
+		HistoryCountAfter:       result.HistoryCountAfter,
+		SummarizedCount:         result.SummarizedCount,
+		NewMessagesWhileRunning: result.NewMessagesWhileRunning,
 	}
 }
 

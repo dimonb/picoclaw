@@ -85,3 +85,36 @@ func TestSave_RejectsPathTraversal(t *testing.T) {
 		t.Errorf("expected foo_bar.json in storage (sanitized from foo/bar)")
 	}
 }
+
+func TestApplySummaryCompaction_PreservesMessagesAppendedAfterSnapshot(t *testing.T) {
+	sm := NewSessionManager(t.TempDir())
+	key := "telegram:topic"
+
+	for i := 0; i < 20; i++ {
+		sm.AddMessage(key, "user", string(rune('a'+i)))
+	}
+	sm.AddMessage(key, "user", "u")
+	sm.AddMessage(key, "assistant", "v")
+
+	result := sm.ApplySummaryCompaction(key, "summary", 20, 4)
+	if !result.Applied {
+		t.Fatal("expected compaction to apply")
+	}
+	if result.NewMessagesWhileRunning != 2 {
+		t.Fatalf("NewMessagesWhileRunning = %d, want 2", result.NewMessagesWhileRunning)
+	}
+
+	history := sm.GetHistory(key)
+	if len(history) != 6 {
+		t.Fatalf("len(history) = %d, want 6", len(history))
+	}
+	if history[0].Content != "q" {
+		t.Fatalf("history[0] = %q, want %q", history[0].Content, "q")
+	}
+	if history[4].Content != "u" || history[5].Content != "v" {
+		t.Fatalf("tail = %q, %q; want %q, %q", history[4].Content, history[5].Content, "u", "v")
+	}
+	if got := sm.GetSummary(key); got != "summary" {
+		t.Fatalf("summary = %q, want %q", got, "summary")
+	}
+}

@@ -277,6 +277,66 @@ func TestTruncateHistory_KeepLast(t *testing.T) {
 	}
 }
 
+func TestApplySummaryCompaction_PreservesMessagesAppendedAfterSnapshot(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	for i := 0; i < 20; i++ {
+		err := store.AddMessage(ctx, "compaction", "user", string(rune('a'+i)))
+		if err != nil {
+			t.Fatalf("AddMessage(%d): %v", i, err)
+		}
+	}
+
+	err := store.AddMessage(ctx, "compaction", "user", "u")
+	if err != nil {
+		t.Fatalf("AddMessage(u): %v", err)
+	}
+	err = store.AddMessage(ctx, "compaction", "assistant", "v")
+	if err != nil {
+		t.Fatalf("AddMessage(v): %v", err)
+	}
+
+	result, err := store.ApplySummaryCompaction(
+		ctx,
+		"compaction",
+		"updated summary",
+		20,
+		4,
+	)
+	if err != nil {
+		t.Fatalf("ApplySummaryCompaction: %v", err)
+	}
+	if !result.Applied {
+		t.Fatal("expected compaction to apply")
+	}
+	if result.NewMessagesWhileRunning != 2 {
+		t.Fatalf("NewMessagesWhileRunning = %d, want 2", result.NewMessagesWhileRunning)
+	}
+
+	history, err := store.GetHistory(ctx, "compaction")
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if len(history) != 6 {
+		t.Fatalf("len(history) = %d, want 6", len(history))
+	}
+	if history[0].Content != "q" {
+		t.Fatalf("history[0] = %q, want %q", history[0].Content, "q")
+	}
+	if history[4].Content != "u" || history[5].Content != "v" {
+		t.Fatalf("tail = %q, %q; want %q, %q", history[4].Content, history[5].Content, "u", "v")
+	}
+
+	summary, err := store.GetSummary(ctx, "compaction")
+	if err != nil {
+		t.Fatalf("GetSummary: %v", err)
+	}
+	if summary != "updated summary" {
+		t.Fatalf("summary = %q, want %q", summary, "updated summary")
+	}
+}
+
 func TestTruncateHistory_KeepZero(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

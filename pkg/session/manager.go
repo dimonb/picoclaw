@@ -112,6 +112,23 @@ func (sm *SessionManager) GetSummary(key string) string {
 	return session.Summary
 }
 
+func (sm *SessionManager) GetContextSnapshot(key string) ContextSnapshot {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	session, ok := sm.sessions[key]
+	if !ok {
+		return ContextSnapshot{History: []providers.Message{}}
+	}
+
+	history := make([]providers.Message, len(session.Messages))
+	copy(history, session.Messages)
+	return ContextSnapshot{
+		History: history,
+		Summary: session.Summary,
+	}
+}
+
 func (sm *SessionManager) SetSummary(key string, summary string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -173,6 +190,46 @@ func (sm *SessionManager) TruncateHistory(key string, keepLast int) {
 
 	session.Messages = session.Messages[len(session.Messages)-keepLast:]
 	session.Updated = time.Now()
+}
+
+func (sm *SessionManager) ApplySummaryCompaction(
+	key, summary string,
+	expectedHistoryCount, keepLast int,
+) SummaryCompactionResult {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	session, ok := sm.sessions[key]
+	if !ok {
+		return SummaryCompactionResult{}
+	}
+
+	currentCount := len(session.Messages)
+	result := SummaryCompactionResult{
+		HistoryCountBefore: currentCount,
+		HistoryCountAfter:  currentCount,
+	}
+	if expectedHistoryCount <= 0 || currentCount < expectedHistoryCount {
+		return result
+	}
+
+	if keepLast < 0 {
+		keepLast = 0
+	}
+	if keepLast >= expectedHistoryCount {
+		return result
+	}
+
+	summarizedCount := expectedHistoryCount - keepLast
+	session.Summary = summary
+	session.Messages = append([]providers.Message(nil), session.Messages[summarizedCount:]...)
+	session.Updated = time.Now()
+
+	result.Applied = true
+	result.SummarizedCount = summarizedCount
+	result.NewMessagesWhileRunning = currentCount - expectedHistoryCount
+	result.HistoryCountAfter = len(session.Messages)
+	return result
 }
 
 func (sm *SessionManager) Save(key string) error {

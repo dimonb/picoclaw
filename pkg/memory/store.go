@@ -6,6 +6,19 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
+type ContextSnapshot struct {
+	History []providers.Message
+	Summary string
+}
+
+type SummaryCompactionResult struct {
+	Applied                 bool
+	HistoryCountBefore      int
+	HistoryCountAfter       int
+	SummarizedCount         int
+	NewMessagesWhileRunning int
+}
+
 // Store defines an interface for persistent session storage.
 // Each method is an atomic operation — there is no separate Save() call.
 type Store interface {
@@ -23,6 +36,9 @@ type Store interface {
 	// Returns an empty string if no summary exists.
 	GetSummary(ctx context.Context, sessionKey string) (string, error)
 
+	// GetContextSnapshot returns history and summary from a single consistent snapshot.
+	GetContextSnapshot(ctx context.Context, sessionKey string) (ContextSnapshot, error)
+
 	// SetSummary updates the conversation summary for a session.
 	SetSummary(ctx context.Context, sessionKey, summary string) error
 
@@ -32,6 +48,14 @@ type Store interface {
 
 	// SetHistory replaces all messages in a session with the provided history.
 	SetHistory(ctx context.Context, sessionKey string, history []providers.Message) error
+
+	// ApplySummaryCompaction atomically updates the summary and truncates only
+	// the portion of history covered by the completed summarization snapshot.
+	ApplySummaryCompaction(
+		ctx context.Context,
+		sessionKey, summary string,
+		expectedHistoryCount, keepLast int,
+	) (SummaryCompactionResult, error)
 
 	// Compact reclaims storage by physically removing logically truncated
 	// data. Backends that do not accumulate dead data may return nil.
