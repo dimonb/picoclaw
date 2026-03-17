@@ -66,6 +66,8 @@ type processOptions struct {
 	EnableSummary     bool     // Whether to trigger summarization
 	SendResponse      bool     // Whether to send response via bus
 	NoHistory         bool     // If true, don't load session history (for heartbeat)
+	MessageID         string   // Inbound platform message ID (for threading)
+	ReplyToMessageID  string   // Parent message ID from inbound (for threading)
 }
 
 const (
@@ -74,8 +76,9 @@ const (
 	metadataKeyAccountID      = "account_id"
 	metadataKeyGuildID        = "guild_id"
 	metadataKeyTeamID         = "team_id"
-	metadataKeyParentPeerKind = "parent_peer_kind"
-	metadataKeyParentPeerID   = "parent_peer_id"
+	metadataKeyParentPeerKind  = "parent_peer_kind"
+	metadataKeyParentPeerID    = "parent_peer_id"
+	metadataKeyReplyToMessage  = "reply_to_message_id"
 )
 
 func NewAgentLoop(
@@ -756,6 +759,8 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		DefaultResponse:   defaultResponse,
 		EnableSummary:     true,
 		SendResponse:      false,
+		MessageID:         msg.MessageID,
+		ReplyToMessageID:  inboundMetadata(msg, metadataKeyReplyToMessage),
 	}
 
 	// context-dependent commands check their own Runtime fields and report
@@ -905,7 +910,13 @@ func (al *AgentLoop) runAgentLoop(
 	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 
 	// 2. Save user message to session
-	agent.Sessions.AddMessage(opts.SessionKey, "user", opts.UserMessage)
+	userMsg := providers.Message{
+		Role:             "user",
+		Content:          opts.UserMessage,
+		MessageID:        opts.MessageID,
+		ReplyToMessageID: opts.ReplyToMessageID,
+	}
+	agent.Sessions.AddFullMessage(opts.SessionKey, userMsg)
 
 	// 3. Run LLM iteration loop
 	finalContent, iteration, err := al.runLLMIteration(ctx, agent, messages, opts)
