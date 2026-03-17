@@ -1,11 +1,14 @@
 package cron
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	pkgcron "github.com/sipeed/picoclaw/pkg/cron"
 )
 
 func TestNewAddSubcommand(t *testing.T) {
@@ -54,4 +57,29 @@ func TestNewAddCommandEveryAndCronMutuallyExclusive(t *testing.T) {
 
 	err := cmd.Execute()
 	require.Error(t, err)
+}
+
+func TestNewAddCommandMapsDeliverFlagToDirectMode(t *testing.T) {
+	t.Parallel()
+
+	storePath := filepath.Join(t.TempDir(), "jobs.json")
+	cmd := newAddCommand(func() string { return storePath })
+	cmd.SetArgs([]string{
+		"--name", "job",
+		"--message", "hello",
+		"--every", "10",
+		"--deliver",
+		"--channel", "cli",
+		"--to", "direct",
+	})
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	cs := pkgcron.NewCronService(storePath, nil)
+	jobs := cs.ListJobs(false)
+	require.Len(t, jobs, 1)
+	assert.Equal(t, pkgcron.ModeDirect, jobs[0].Payload.Mode)
+	assert.Equal(t, "cli", jobs[0].Payload.Channel)
+	assert.Equal(t, "direct", jobs[0].Payload.To)
 }

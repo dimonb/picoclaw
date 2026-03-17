@@ -36,8 +36,13 @@ func newAddCommand(storePath func() string) *cobra.Command {
 				schedule = cron.CronSchedule{Kind: "cron", Expr: cronExp}
 			}
 
+			mode := cron.ModeAgent
+			if deliver {
+				mode = cron.ModeDirect
+			}
+
 			cs := cron.NewCronService(storePath(), nil)
-			job, err := cs.AddJob(name, schedule, message, deliver, channel, to)
+			job, err := cs.AddJob(name, schedule, message, mode, channel, to, "")
 			if err != nil {
 				return fmt.Errorf("error adding job: %w", err)
 			}
