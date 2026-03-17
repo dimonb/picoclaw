@@ -553,7 +553,7 @@ func buildTelegramDeliveryContext(channel string, replyCtx *ReplyContextInfo, al
 		"## Telegram Delivery\n"+
 			"Current inbound message ID: %s\n"+
 			"Parent message ID: %s\n\n"+
-			"Historical messages in the conversation may include `[msg:#ID]`, `[reply_to:#PARENT]`, and `[react_to:#ID=EMOJI]` annotations so you can reference exact Telegram messages.\n\n"+
+			"Historical messages in the conversation may include `[[msg:#ID]]`, `[[reply_to:#PARENT]]`, and `[[react_to:#ID=EMOJI]]` annotations so you can reference exact Telegram messages.\n\n"+
 			"To control delivery of your final Telegram response, you may put exactly one hidden delivery block on the first line of your final response.\n"+
 			"Format:\n"+
 			"`[[reply_to:<message_id|current|parent|chat>;react_to:<message_id|current|parent>:<emoji>;react_to:<message_id|current|parent>:<emoji>;text_reply=<true|false>]]`\n\n"+
@@ -859,7 +859,7 @@ func (cb *ContextBuilder) GetSkillsInfo() map[string]any {
 }
 
 // messageThreadAnnotation returns the delivery/thread annotation prefix for a
-// message, e.g. "[msg:#5, reply_to:#3, react_to:#5=❤️] " or "" if absent.
+// message, e.g. "[[msg:#5, reply_to:#3, react_to:#5=❤️]] " or "" if absent.
 func messageThreadAnnotation(msg providers.Message) string {
 	parts := make([]string, 0, 3+len(msg.Reactions))
 	switch len(msg.MessageIDs) {
@@ -915,5 +915,5 @@ func messageThreadAnnotation(msg providers.Message) string {
 	if len(parts) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("[%s] ", strings.Join(parts, ", "))
+	return fmt.Sprintf("[[%s]] ", strings.Join(parts, ", "))
 }

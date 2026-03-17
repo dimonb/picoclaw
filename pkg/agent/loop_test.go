@@ -992,6 +992,45 @@ func TestResolveFinalResponse_TelegramSingleBracketDirectiveReplyToCurrent(t *te
 	}
 }
 
+func TestResolveFinalResponse_StripsLeadingTelegramControlAnnotation(t *testing.T) {
+	response := resolveFinalResponse(
+		"telegram",
+		nil,
+		"[[msg:#644, via:telegram]] проверил\n\n- rollout ok",
+	)
+
+	if response.Content != "проверил\n\n- rollout ok" {
+		t.Fatalf("content=%q", response.Content)
+	}
+	if response.SuppressTextReply {
+		t.Fatal("expected text reply to stay enabled")
+	}
+}
+
+func TestResolveFinalResponse_StripsLeadingCronControlAnnotation(t *testing.T) {
+	response := resolveFinalResponse(
+		"cli",
+		nil,
+		"[[source:cron, trigger:cron#job-42, via:telegram]] check complete",
+	)
+
+	if response.Content != "check complete" {
+		t.Fatalf("content=%q", response.Content)
+	}
+}
+
+func TestResolveFinalResponse_StripsLegacySingleBracketControlAnnotation(t *testing.T) {
+	response := resolveFinalResponse(
+		"cli",
+		nil,
+		"[source:cron, trigger:cron#job-42, via:telegram] legacy check complete",
+	)
+
+	if response.Content != "legacy check complete" {
+		t.Fatalf("content=%q", response.Content)
+	}
+}
+
 func TestProcessMessage_TelegramFinalDirectiveSetsReplyTarget(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
@@ -2461,7 +2500,7 @@ func TestAdvancedMessageManager_SendPlaceholderPersistsHistory(t *testing.T) {
 	if !result.Silent {
 		t.Fatalf("expected delivered plan to be silent, got %+v", result)
 	}
-	if !strings.Contains(result.ForLLM, "Plan message: [msg:#550]") {
+	if !strings.Contains(result.ForLLM, "Plan message: [[msg:#550]]") {
 		t.Fatalf("expected tool result to expose delivered message id, got %q", result.ForLLM)
 	}
 
@@ -2528,7 +2567,7 @@ func TestAdvancedMessageManager_EditMessageUpdatesPersistedHistory(t *testing.T)
 	if !result.Silent {
 		t.Fatalf("expected edited plan to stay silent, got %+v", result)
 	}
-	if !strings.Contains(result.ForLLM, "Plan message: [msg:#550]") {
+	if !strings.Contains(result.ForLLM, "Plan message: [[msg:#550]]") {
 		t.Fatalf("expected tool result to keep exposing tracked message id, got %q", result.ForLLM)
 	}
 	if len(ch.edited) != 1 {

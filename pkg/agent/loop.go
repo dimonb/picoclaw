@@ -1445,7 +1445,7 @@ func resolveFinalResponse(
 	rawContent string,
 ) agentResponse {
 	if channel != "telegram" {
-		return agentResponse{Content: rawContent}
+		return agentResponse{Content: stripLeadingControlAnnotations(rawContent)}
 	}
 
 	directive, content, err := parseTelegramDeliveryDirective(replyCtx, rawContent)
@@ -1483,11 +1483,86 @@ func resolveFinalResponse(
 	logger.DebugCF("agent", "Resolved Telegram final delivery", fields)
 
 	return agentResponse{
-		Content:           content,
+		Content:           stripLeadingControlAnnotations(content),
 		ReplyToMessageID:  directive.ReplyToMessageID,
 		Reactions:         directive.Reactions,
 		SuppressTextReply: directive.SuppressTextReply,
 	}
+}
+
+func stripLeadingControlAnnotations(raw string) string {
+	content := raw
+	for {
+		trimmed := strings.TrimLeft(content, " \t\r\n")
+		if trimmed == "" || !strings.HasPrefix(trimmed, "[") {
+			return trimmed
+		}
+
+		rest, ok := consumeLeadingControlAnnotation(trimmed)
+		if !ok {
+			return trimmed
+		}
+		content = rest
+	}
+}
+
+func looksLikeControlAnnotation(header string) bool {
+	if header == "" {
+		return false
+	}
+	if strings.Contains(header, ";") {
+		return false
+	}
+
+	parts := strings.Split(header, ",")
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			return false
+		}
+		switch {
+		case strings.HasPrefix(part, "msg:#"):
+		case strings.HasPrefix(part, "msgs:"):
+		case strings.HasPrefix(part, "reply_to:#"):
+		case strings.HasPrefix(part, "react_to:#"):
+		case strings.HasPrefix(part, "source:"):
+		case strings.HasPrefix(part, "trigger:"):
+		case strings.HasPrefix(part, "via:"):
+		case strings.HasPrefix(part, "username:"):
+		case strings.HasPrefix(part, "name:"):
+		default:
+			return false
+		}
+	}
+
+	return true
+}
+
+func consumeLeadingControlAnnotation(raw string) (rest string, ok bool) {
+	if strings.HasPrefix(raw, "[[") {
+		end := strings.Index(raw, "]]")
+		if end <= 1 {
+			return "", false
+		}
+		header := strings.TrimSpace(raw[2:end])
+		if !looksLikeControlAnnotation(header) {
+			return "", false
+		}
+		return raw[end+2:], true
+	}
+
+	if !strings.HasPrefix(raw, "[") {
+		return "", false
+	}
+	end := strings.Index(raw, "]")
+	if end <= 0 {
+		return "", false
+	}
+	header := strings.TrimSpace(raw[1:end])
+	if !looksLikeControlAnnotation(header) {
+		return "", false
+	}
+	return raw[end+1:], true
 }
 
 func parseTelegramDeliveryDirective(
@@ -1644,6 +1719,9 @@ func extractTelegramDeliveryHeaderInner(header string) (string, bool) {
 	}
 
 	if !looksLikeTelegramDeliveryDirective(inner) {
+		return "", false
+	}
+	if looksLikeControlAnnotation(inner) {
 		return "", false
 	}
 

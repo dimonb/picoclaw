@@ -53,7 +53,7 @@ Prioritize:
 
 Omit small talk, repetition, exploratory dead ends, and wording that does not change future behavior.
 If newer statements conflict with older ones, prefer the newer statement and note the change briefly.
-Messages may carry [msg:#ID], [reply_to:#PARENT], [react_to:#ID=EMOJI], [source:KIND], [trigger:KIND#ID], and [via:CHANNEL] annotations showing thread structure, delivery path, and automation triggers. If a reply
+Messages may carry [[msg:#ID]], [[reply_to:#PARENT]], [[react_to:#ID=EMOJI]], [[source:KIND]], [[trigger:KIND#ID]], and [[via:CHANNEL]] annotations showing thread structure, delivery path, and automation triggers. If a reply
 thread is active or unresolved, note it briefly as "thread rooted at #ID about <topic>" in Open Loops.
 Do not invent facts.
 Write in the dominant language of the conversation.

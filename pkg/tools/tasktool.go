@@ -350,7 +350,7 @@ func taskToolMessageRefs(messageID string) string {
 		if part == "" {
 			continue
 		}
-		refs = append(refs, fmt.Sprintf("[msg:#%s]", part))
+		refs = append(refs, fmt.Sprintf("[[msg:#%s]]", part))
 	}
 	return strings.Join(refs, " ")
 }
