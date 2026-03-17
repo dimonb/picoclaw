@@ -157,7 +157,7 @@ func TestBuildMessages_TelegramReplyRoutingContext(t *testing.T) {
 	}
 	if !strings.Contains(
 		sys,
-		"[[reply_to:<message_id|current|parent|chat>;react_to:<message_id|current|parent>:<emoji>;react_to:<message_id|current|parent>:<emoji>;text_reply=<true|false>]]",
+		`<meta>{"reply_to":"<message_id>"`,
 	) {
 		t.Fatal("system prompt missing final delivery block guidance")
 	}
@@ -215,14 +215,11 @@ func TestBuildMessages_CronTriggerContext(t *testing.T) {
 	}
 
 	user := msgs[len(msgs)-1]
-	if !strings.Contains(user.Content, "source:cron") {
-		t.Fatalf("user message missing source annotation: %q", user.Content)
-	}
-	if !strings.Contains(user.Content, "trigger:cron#job-42") {
+	if !strings.Contains(user.Content, `"trigger":"cron"`) {
 		t.Fatalf("user message missing trigger annotation: %q", user.Content)
 	}
-	if !strings.Contains(user.Content, "via:telegram") {
-		t.Fatalf("user message missing transport annotation: %q", user.Content)
+	if !strings.Contains(user.Content, `"source_id":"job-42"`) {
+		t.Fatalf("user message missing source_id annotation: %q", user.Content)
 	}
 }
 

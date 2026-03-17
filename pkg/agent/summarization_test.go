@@ -362,14 +362,14 @@ func TestFormatConversationMessages_ThreadAnnotations(t *testing.T) {
 		{Role: "user", Content: "plain"},
 	}
 	out := formatConversationMessages(batch)
-	if !strings.Contains(out, "[[msg:#10]]") {
-		t.Fatalf("missing msg annotation: %q", out)
+	if !strings.Contains(out, `"msg_ids":["10"]`) {
+		t.Fatalf("missing msg_ids annotation: %q", out)
 	}
-	if !strings.Contains(out, "[[msg:#12, reply_to:#10]]") {
+	if !strings.Contains(out, `"msg_ids":["12"]`) || !strings.Contains(out, `"reply_to":"10"`) {
 		t.Fatalf("missing combined annotation: %q", out)
 	}
-	if !strings.Contains(out, "[[reply_to:#10]]") {
-		t.Fatalf("missing reply_to-only annotation: %q", out)
+	if !strings.Contains(out, `"reply_to":"10"`) {
+		t.Fatalf("missing in_reply_to annotation: %q", out)
 	}
 	if !strings.Contains(out, "user: plain") {
 		t.Fatalf("plain message lost: %q", out)

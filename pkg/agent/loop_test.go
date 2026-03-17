@@ -212,7 +212,7 @@ func TestProcessMessage_TelegramSilentNoTextReplyDoesNotFallback(t *testing.T) {
 	}
 
 	msgBus := bus.NewMessageBus()
-	provider := &simpleMockProvider{response: "[[text_reply=false]]"}
+	provider := &simpleMockProvider{response: `<meta>{"text_reply":false}</meta>`}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
 	response, err := al.processMessage(context.Background(), bus.InboundMessage{
@@ -872,32 +872,26 @@ func TestProcessMessage_PersistsUserMediaInSessionHistory(t *testing.T) {
 	}
 }
 
-func TestParseFinalReplyDirective(t *testing.T) {
-	content, replyTo := parseFinalReplyDirective(
+func TestResolveFinalResponse_ParsesReplyDirective(t *testing.T) {
+	response := resolveFinalResponse(
 		"telegram",
-		&ReplyContextInfo{
-			CurrentMessageID: "910",
-			ParentMessageID:  "905",
-		},
-		"[[reply_to:parent;react_to:current:❤️;react_to:905:🔥;text_reply=true]]\n\nThreaded answer",
+		nil,
+		`<meta>{"reply_to":"905","react_to":[{"target":"910","emoji":"❤️"},{"target":"905","emoji":"🔥"}],"text_reply":true}</meta>`+"\n\nThreaded answer",
 	)
 
-	if content != "Threaded answer" {
-		t.Fatalf("content=%q", content)
+	if response.Content != "Threaded answer" {
+		t.Fatalf("content=%q", response.Content)
 	}
-	if replyTo != "905" {
-		t.Fatalf("replyTo=%q", replyTo)
+	if response.ReplyToMessageID != "905" {
+		t.Fatalf("replyTo=%q", response.ReplyToMessageID)
 	}
 }
 
 func TestResolveFinalResponse_TelegramDeliveryDirectiveSupportsSilentMultiReaction(t *testing.T) {
 	response := resolveFinalResponse(
 		"telegram",
-		&ReplyContextInfo{
-			CurrentMessageID: "910",
-			ParentMessageID:  "905",
-		},
-		"[[reply_to:parent;react_to:current:❤️;react_to:905:🔥;text_reply=false]]\n",
+		nil,
+		`<meta>{"reply_to":"905","react_to":[{"target":"910","emoji":"❤️"},{"target":"905","emoji":"🔥"}],"text_reply":false}</meta>`+"\n",
 	)
 
 	if response.ReplyToMessageID != "905" {
@@ -917,14 +911,11 @@ func TestResolveFinalResponse_TelegramDeliveryDirectiveSupportsSilentMultiReacti
 	}
 }
 
-func TestResolveFinalResponse_TelegramDeliveryDirectiveIgnoresMsgKey(t *testing.T) {
+func TestResolveFinalResponse_DeliveryDirectiveIgnoresUnknownFields(t *testing.T) {
 	response := resolveFinalResponse(
 		"telegram",
-		&ReplyContextInfo{
-			CurrentMessageID: "910",
-			ParentMessageID:  "905",
-		},
-		"[[msg:#325;reply_to:parent;react_to:current:❤️;text_reply=true]]\n\nThreaded answer",
+		nil,
+		`<meta>{"reply_to":"905","react_to":[{"target":"910","emoji":"❤️"}],"unknown_field":"ignored","text_reply":true}</meta>`+"\n\nThreaded answer",
 	)
 
 	if response.Content != "Threaded answer" {
@@ -944,14 +935,14 @@ func TestResolveFinalResponse_TelegramDeliveryDirectiveIgnoresMsgKey(t *testing.
 	}
 }
 
-func TestResolveFinalResponse_InvalidTelegramDeliveryDirectiveDoesNotPartiallyApply(t *testing.T) {
+func TestResolveFinalResponse_InvalidReactToTargetDoesNotPartiallyApply(t *testing.T) {
 	response := resolveFinalResponse(
 		"telegram",
 		&ReplyContextInfo{
 			CurrentMessageID: "910",
 			ParentMessageID:  "905",
 		},
-		"[[reply_to:parent;react_to:current:❤️;unknown=true;text_reply=false]]\n\nVisible answer",
+		`<meta>{"reply_to":"parent","react_to":[{"target":"","emoji":"❤️"}],"text_reply":false}</meta>`+"\n\nVisible answer",
 	)
 
 	if response.ReplyToMessageID != "" {
@@ -968,35 +959,11 @@ func TestResolveFinalResponse_InvalidTelegramDeliveryDirectiveDoesNotPartiallyAp
 	}
 }
 
-func TestResolveFinalResponse_TelegramSingleBracketDirectiveReplyToCurrent(t *testing.T) {
-	response := resolveFinalResponse(
-		"telegram",
-		&ReplyContextInfo{
-			CurrentMessageID: "281",
-			ParentMessageID:  "275",
-		},
-		"[reply_to:current] готово",
-	)
-
-	if response.Content != "готово" {
-		t.Fatalf("content=%q", response.Content)
-	}
-	if response.ReplyToMessageID != "281" {
-		t.Fatalf("reply_to_message_id=%q", response.ReplyToMessageID)
-	}
-	if response.SuppressTextReply {
-		t.Fatal("expected text reply to stay enabled")
-	}
-	if len(response.Reactions) != 0 {
-		t.Fatalf("unexpected reactions: %+v", response.Reactions)
-	}
-}
-
 func TestResolveFinalResponse_StripsLeadingTelegramControlAnnotation(t *testing.T) {
 	response := resolveFinalResponse(
 		"telegram",
 		nil,
-		"[[msg:#644, via:telegram]] проверил\n\n- rollout ok",
+		`<meta>{"msg":"644","via":"telegram"}</meta>`+"\n\nпроверил\n\n- rollout ok",
 	)
 
 	if response.Content != "проверил\n\n- rollout ok" {
@@ -1011,7 +978,7 @@ func TestResolveFinalResponse_StripsLeadingCronControlAnnotation(t *testing.T) {
 	response := resolveFinalResponse(
 		"cli",
 		nil,
-		"[[source:cron, trigger:cron#job-42, via:telegram]] check complete",
+		`<meta>{"source":"cron","trigger":"cron#job-42","via":"telegram"}</meta> check complete`,
 	)
 
 	if response.Content != "check complete" {
@@ -1019,15 +986,21 @@ func TestResolveFinalResponse_StripsLeadingCronControlAnnotation(t *testing.T) {
 	}
 }
 
-func TestResolveFinalResponse_StripsLegacySingleBracketControlAnnotation(t *testing.T) {
+func TestResolveFinalResponse_NonTelegramParsesDeliveryDirective(t *testing.T) {
 	response := resolveFinalResponse(
-		"cli",
+		"slack",
 		nil,
-		"[source:cron, trigger:cron#job-42, via:telegram] legacy check complete",
+		`<meta>{"reply_to":"905","text_reply":true}</meta>`+"\n\nThreaded answer",
 	)
 
-	if response.Content != "legacy check complete" {
+	if response.Content != "Threaded answer" {
 		t.Fatalf("content=%q", response.Content)
+	}
+	if response.ReplyToMessageID != "905" {
+		t.Fatalf("reply_to_message_id=%q", response.ReplyToMessageID)
+	}
+	if response.SuppressTextReply {
+		t.Fatal("expected text reply to stay enabled")
 	}
 }
 
@@ -1051,7 +1024,7 @@ func TestProcessMessage_TelegramFinalDirectiveSetsReplyTarget(t *testing.T) {
 
 	msgBus := bus.NewMessageBus()
 	provider := &simpleMockProvider{
-		response: "[[reply_to:parent;text_reply=true]]\n\nThreaded answer",
+		response: `<meta>{"reply_to":"905","text_reply":true}</meta>` + "\n\nThreaded answer",
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
@@ -1102,7 +1075,7 @@ func TestRun_PublishesTelegramReplyTargetFromFinalDirective(t *testing.T) {
 
 	msgBus := bus.NewMessageBus()
 	provider := &simpleMockProvider{
-		response: "[[reply_to:parent;text_reply=true]]\n\nThreaded answer",
+		response: `<meta>{"reply_to":"905","text_reply":true}</meta>` + "\n\nThreaded answer",
 	}
 	al := NewAgentLoop(cfg, msgBus, provider)
 

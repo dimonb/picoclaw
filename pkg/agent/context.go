@@ -553,17 +553,17 @@ func buildTelegramDeliveryContext(channel string, replyCtx *ReplyContextInfo, al
 		"## Telegram Delivery\n"+
 			"Current inbound message ID: %s\n"+
 			"Parent message ID: %s\n\n"+
-			"Historical messages in the conversation may include `[[msg:#ID]]`, `[[reply_to:#PARENT]]`, and `[[react_to:#ID=EMOJI]]` annotations so you can reference exact Telegram messages.\n\n"+
-			"To control delivery of your final Telegram response, you may put exactly one hidden delivery block on the first line of your final response.\n"+
+			"Historical messages in the conversation may include `<meta>{\"msg_ids\":[\"ID\"]}</meta>`, `<meta>{\"reply_to\":\"ID\"}</meta>`, and `<meta>{\"reactions\":[{\"target\":\"ID\",\"emoji\":\"EMOJI\"}]}</meta>` annotations so you can reference exact Telegram messages.\n\n"+
+			"To control delivery of your final Telegram response, you may put exactly one hidden delivery block at the very start of your final response.\n"+
 			"Format:\n"+
-			"`[[reply_to:<message_id|current|parent|chat>;react_to:<message_id|current|parent>:<emoji>;react_to:<message_id|current|parent>:<emoji>;text_reply=<true|false>]]`\n\n"+
+			"`<meta>{\"reply_to\":\"<message_id>\",\"react_to\":[{\"target\":\"<message_id>\",\"emoji\":\"<emoji>\"}],\"text_reply\":false}</meta>`\n\n"+
 			"Rules:\n"+
-			"- `reply_to` is optional; use `chat` for a normal non-reply message\n"+
-			"- `react_to` is optional and may appear multiple times\n"+
-			"- `text_reply` defaults to `true`; set `text_reply=false` for a reaction-only response\n"+
-			"- after the block, add a blank line and then the user-visible message body\n"+
-			"- if `text_reply=false`, do not include any visible message body after the block\n"+
-			"- never invent or guess Telegram message IDs; only use IDs that already appear in the annotations above or in the current/parent fields\n"+
+			"- `reply_to` is optional; omit it for a normal non-reply message\n"+
+			"- `react_to` is optional; it is a JSON array and may contain multiple entries\n"+
+			"- `text_reply` defaults to `true`; set `false` for a reaction-only response\n"+
+			"- after the block add a blank line and then the user-visible message body\n"+
+			"- if `text_reply` is `false`, do not include any visible message body after the block\n"+
+			"- never invent or guess Telegram message IDs; only use IDs that already appear in the annotations above or in the current/parent fields listed above\n"+
 			"- allowed reaction emoji: %s\n"+
 			"- do not mention the hidden block in the visible message body\n"+
 			"- the `message` tool is unavailable in this chat; use the hidden delivery block for normal replies",
@@ -575,7 +575,7 @@ func buildTelegramDeliveryContext(channel string, replyCtx *ReplyContextInfo, al
 
 func annotateMessageForPrompt(msg providers.Message) providers.Message {
 	annotated := msg
-	if prefix := messageThreadAnnotation(msg); prefix != "" {
+	if prefix := buildMetaControlAnnotation(msg); prefix != "" {
 		annotated.Content = prefix + msg.Content
 	}
 	return annotated
@@ -856,64 +856,4 @@ func (cb *ContextBuilder) GetSkillsInfo() map[string]any {
 		"available": len(allSkills),
 		"names":     skillNames,
 	}
-}
-
-// messageThreadAnnotation returns the delivery/thread annotation prefix for a
-// message, e.g. "[[msg:#5, reply_to:#3, react_to:#5=❤️]] " or "" if absent.
-func messageThreadAnnotation(msg providers.Message) string {
-	parts := make([]string, 0, 3+len(msg.Reactions))
-	switch len(msg.MessageIDs) {
-	case 1:
-		parts = append(parts, fmt.Sprintf("msg:#%s", msg.MessageIDs[0]))
-	case 2, 3, 4, 5:
-		for _, messageID := range msg.MessageIDs {
-			if messageID == "" {
-				continue
-			}
-			parts = append(parts, fmt.Sprintf("msg:#%s", messageID))
-		}
-	default:
-		if len(msg.MessageIDs) > 5 {
-			parts = append(parts, fmt.Sprintf("msgs:%d", len(msg.MessageIDs)))
-		}
-	}
-	if msg.ReplyToMessageID != "" {
-		parts = append(parts, fmt.Sprintf("reply_to:#%s", msg.ReplyToMessageID))
-	}
-	if msg.Sender != nil {
-		if msg.Sender.Username != "" {
-			parts = append(parts, fmt.Sprintf("username:%s", msg.Sender.Username))
-		}
-		fullName := strings.TrimSpace(msg.Sender.FirstName + " " + msg.Sender.LastName)
-		if fullName != "" {
-			parts = append(parts, fmt.Sprintf("name:%s", fullName))
-		}
-	}
-	for _, reaction := range msg.Reactions {
-		if reaction.TargetMessageID == "" || reaction.Emoji == "" {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("react_to:#%s=%s", reaction.TargetMessageID, reaction.Emoji))
-	}
-	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
-		sourceKind != providers.MessageSourceChannel && sourceKind != providers.MessageSourceAssistant {
-		parts = append(parts, fmt.Sprintf("source:%s", sourceKind))
-	}
-	if triggerKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerKind]); triggerKind != "" {
-		triggerLabel := triggerKind
-		if triggerID := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerID]); triggerID != "" {
-			triggerLabel += "#" + triggerID
-		}
-		parts = append(parts, fmt.Sprintf("trigger:%s", triggerLabel))
-	}
-	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
-		sourceKind != providers.MessageSourceChannel {
-		if channel := strings.TrimSpace(msg.Metadata[providers.MessageMetaChannel]); channel != "" {
-			parts = append(parts, fmt.Sprintf("via:%s", channel))
-		}
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("[[%s]] ", strings.Join(parts, ", "))
 }
