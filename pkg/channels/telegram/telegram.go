@@ -39,6 +39,11 @@ var (
 	reListItem   = regexp.MustCompile(`^[-*]\s+`)
 	reCodeBlock  = regexp.MustCompile("```[\\w]*\\n?([\\s\\S]*?)```")
 	reInlineCode = regexp.MustCompile("`([^`]+)`")
+
+	// HTML tags that LLM may emit directly instead of markdown.
+	reHTMLBold   = regexp.MustCompile(`(?i)<(?:b|strong)>([\s\S]*?)</(?:b|strong)>`)
+	reHTMLItalic = regexp.MustCompile(`(?i)<(?:i|em)>([\s\S]*?)</(?:i|em)>`)
+	reHTMLStrike = regexp.MustCompile(`(?i)<(?:s|strike|del)>([\s\S]*?)</(?:s|strike|del)>`)
 )
 
 type TelegramChannel struct {
@@ -943,6 +948,12 @@ func markdownToTelegramHTML(text string) string {
 	text = reHeading.ReplaceAllString(text, "$1")
 
 	text = reBlockquote.ReplaceAllString(text, "$1")
+
+	// If LLM emitted HTML tags directly, convert them to markdown so the
+	// normal pipeline can re-emit proper HTML after escapeHTML runs.
+	text = reHTMLBold.ReplaceAllString(text, "**$1**")
+	text = reHTMLItalic.ReplaceAllString(text, "_$1_")
+	text = reHTMLStrike.ReplaceAllString(text, "~~$1~~")
 
 	text = escapeHTML(text)
 
