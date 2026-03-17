@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -12,22 +13,27 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
-func newTestCronTool(t *testing.T, mutateCfg ...func(*config.Config)) *CronTool {
+func newTestCronToolWithConfig(t *testing.T, cfg *config.Config) *CronTool {
 	t.Helper()
 	storePath := filepath.Join(t.TempDir(), "cron.json")
 	cronService := cron.NewCronService(storePath, nil)
 	msgBus := bus.NewMessageBus()
+	tool, err := NewCronTool(cronService, nil, msgBus, t.TempDir(), true, 0, cfg)
+	if err != nil {
+		t.Fatalf("NewCronTool() error: %v", err)
+	}
+	return tool
+}
+
+func newTestCronTool(t *testing.T, mutateCfg ...func(*config.Config)) *CronTool {
+	t.Helper()
 	cfg := config.DefaultConfig()
 	for _, mutate := range mutateCfg {
 		if mutate != nil {
 			mutate(cfg)
 		}
 	}
-	tool, err := NewCronTool(cronService, nil, msgBus, t.TempDir(), true, 0, cfg)
-	if err != nil {
-		t.Fatalf("NewCronTool() error: %v", err)
-	}
-	return tool
+	return newTestCronToolWithConfig(t, cfg)
 }
 
 // TestCronTool_CommandBlockedFromRemoteChannel verifies command scheduling is restricted to internal channels
@@ -52,11 +58,30 @@ func TestCronTool_CommandBlockedFromRemoteChannel(t *testing.T) {
 	}
 }
 
-// TestCronTool_CommandRequiresConfirm verifies command_confirm=true is required
-func TestCronTool_CommandRequiresConfirm(t *testing.T) {
-	tool := newTestCronTool(t, func(cfg *config.Config) {
-		cfg.Tools.Exec.AllowRemote = false
+func TestCronTool_CommandDoesNotRequireConfirmByDefault(t *testing.T) {
+	tool := newTestCronTool(t)
+	ctx := WithToolContext(context.Background(), "cli", "direct")
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "check disk",
+		"command":    "df -h",
+		"at_seconds": float64(60),
 	})
+
+	if result.IsError {
+		t.Fatalf("expected command scheduling without confirm to succeed by default, got: %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "Cron job added") {
+		t.Errorf("expected 'Cron job added', got: %s", result.ForLLM)
+	}
+}
+
+
+func TestCronTool_CommandRequiresConfirmWhenAllowCommandDisabled(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.AllowCommand = false
+
+	tool := newTestCronToolWithConfig(t, cfg)
 	ctx := WithToolContext(context.Background(), "cli", "direct")
 	result := tool.Execute(ctx, map[string]any{
 		"action":     "add",
@@ -66,10 +91,57 @@ func TestCronTool_CommandRequiresConfirm(t *testing.T) {
 	})
 
 	if !result.IsError {
-		t.Fatal("expected error when command_confirm is missing")
+		t.Fatal("expected command scheduling to require confirm when allow_command is disabled")
 	}
 	if !strings.Contains(result.ForLLM, "command_confirm=true") {
-		t.Errorf("expected 'command_confirm=true' message, got: %s", result.ForLLM)
+		t.Errorf("expected command_confirm requirement message, got: %s", result.ForLLM)
+	}
+}
+
+func TestCronTool_CommandAllowedWithConfirmWhenAllowCommandDisabled(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.AllowCommand = false
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	ctx := WithToolContext(context.Background(), "cli", "direct")
+	result := tool.Execute(ctx, map[string]any{
+		"action":          "add",
+		"message":         "check disk",
+		"command":         "df -h",
+		"command_confirm": true,
+		"at_seconds":      float64(60),
+	})
+
+	if result.IsError {
+		t.Fatalf(
+			"expected command scheduling with confirm to succeed when allow_command is disabled, got: %s",
+			result.ForLLM,
+		)
+	}
+	if !strings.Contains(result.ForLLM, "Cron job added") {
+		t.Errorf("expected 'Cron job added', got: %s", result.ForLLM)
+	}
+}
+
+func TestCronTool_CommandBlockedWhenExecDisabled(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Exec.Enabled = false
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	ctx := WithToolContext(context.Background(), "cli", "direct")
+	result := tool.Execute(ctx, map[string]any{
+		"action":          "add",
+		"message":         "check disk",
+		"command":         "df -h",
+		"command_confirm": true,
+		"at_seconds":      float64(60),
+	})
+
+	if !result.IsError {
+		t.Fatal("expected command scheduling to be blocked when exec is disabled")
+	}
+	if !strings.Contains(result.ForLLM, "command execution is disabled") {
+		t.Errorf("expected exec disabled message, got: %s", result.ForLLM)
 	}
 }
 
@@ -320,6 +392,32 @@ func TestCronTool_ExecuteJobLegacyDeliverTrueMapsToDirectMode(t *testing.T) {
 	}
 	if exec.msg.Metadata[providers.MessageMetaDispatch] != cron.ModeDirect {
 		t.Fatalf("dispatch mode=%q", exec.msg.Metadata[providers.MessageMetaDispatch])
+	}
+}
+
+func TestCronTool_ExecuteJobPublishesErrorWhenExecDisabled(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Exec.Enabled = false
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	job := &cron.CronJob{}
+	job.Payload.Channel = "cli"
+	job.Payload.To = "direct"
+	job.Payload.Command = "df -h"
+
+	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
+		t.Fatalf("ExecuteJob() = %q, want ok", got)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	msg, ok := tool.msgBus.SubscribeOutbound(ctx)
+	if !ok {
+		t.Fatal("expected outbound message")
+	}
+	if !strings.Contains(msg.Content, "command execution is disabled") {
+		t.Fatalf("expected exec disabled message, got: %s", msg.Content)
 	}
 }
 

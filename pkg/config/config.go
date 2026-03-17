@@ -662,8 +662,9 @@ func (c *ModelConfig) Validate() error {
 }
 
 type GatewayConfig struct {
-	Host string `json:"host" env:"PICOCLAW_GATEWAY_HOST"`
-	Port int    `json:"port" env:"PICOCLAW_GATEWAY_PORT"`
+	Host      string `json:"host"       env:"PICOCLAW_GATEWAY_HOST"`
+	Port      int    `json:"port"       env:"PICOCLAW_GATEWAY_PORT"`
+	HotReload bool   `json:"hot_reload" env:"PICOCLAW_GATEWAY_HOT_RELOAD"`
 }
 
 type ToolDiscoveryConfig struct {
@@ -736,8 +737,9 @@ type WebToolsConfig struct {
 }
 
 type CronToolsConfig struct {
-	ToolConfig         `    envPrefix:"PICOCLAW_TOOLS_CRON_"`
-	ExecTimeoutMinutes int `                                 env:"PICOCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES" json:"exec_timeout_minutes"` // 0 means no timeout
+	ToolConfig         `     envPrefix:"PICOCLAW_TOOLS_CRON_"`
+	ExecTimeoutMinutes int  `                                 env:"PICOCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES" json:"exec_timeout_minutes"` // 0 means no timeout
+	AllowCommand       bool `                                 env:"PICOCLAW_TOOLS_CRON_ALLOW_COMMAND"        json:"allow_command"`
 }
 
 type ExecConfig struct {
@@ -788,6 +790,7 @@ type ToolsConfig struct {
 	ReadFile        ReadFileToolConfig `json:"read_file"                                                envPrefix:"PICOCLAW_TOOLS_READ_FILE_"`
 	SendFile        ToolConfig         `json:"send_file"                                                envPrefix:"PICOCLAW_TOOLS_SEND_FILE_"`
 	Spawn           ToolConfig         `json:"spawn"                                                    envPrefix:"PICOCLAW_TOOLS_SPAWN_"`
+	SpawnStatus     ToolConfig         `json:"spawn_status"                                             envPrefix:"PICOCLAW_TOOLS_SPAWN_STATUS_"`
 	SPI             ToolConfig         `json:"spi"                                                      envPrefix:"PICOCLAW_TOOLS_SPI_"`
 	Subagent        ToolConfig         `json:"subagent"                                                 envPrefix:"PICOCLAW_TOOLS_SUBAGENT_"`
 	WebFetch        ToolConfig         `json:"web_fetch"                                                envPrefix:"PICOCLAW_TOOLS_WEB_FETCH_"`
@@ -1164,6 +1167,8 @@ func (t *ToolsConfig) IsToolEnabled(name string) bool {
 		return t.ReadFile.Enabled
 	case "spawn":
 		return t.Spawn.Enabled
+	case "spawn_status":
+		return t.SpawnStatus.Enabled
 	case "spi":
 		return t.SPI.Enabled
 	case "subagent":
