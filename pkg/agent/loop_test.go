@@ -131,6 +131,68 @@ func TestProcessMessage_IncludesCurrentSenderInDynamicContext(t *testing.T) {
 	}
 }
 
+func TestProcessMessage_AssistantSavedOnDelivered(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Model:             "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &recordingProvider{}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	sessionKey := "agent:test-delivery"
+	response, err := al.processMessage(context.Background(), bus.InboundMessage{
+		Channel:    "telegram",
+		SenderID:   "telegram:123",
+		ChatID:     "chat-1",
+		Content:    "hello",
+		SessionKey: sessionKey,
+		MessageID:  "in-42",
+	})
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("No default agent found")
+	}
+
+	history := defaultAgent.Sessions.GetHistory(sessionKey)
+	if len(history) != 1 {
+		t.Fatalf("expected only user message before delivery, got %d", len(history))
+	}
+
+	if response.OnDelivered == nil {
+		t.Fatal("expected OnDelivered callback")
+	}
+	response.OnDelivered([]string{"out-99"})
+
+	history = defaultAgent.Sessions.GetHistory(sessionKey)
+	if len(history) != 2 {
+		t.Fatalf("expected 2 messages after delivery, got %d", len(history))
+	}
+	if history[1].Role != "assistant" {
+		t.Fatalf("expected assistant message, got %+v", history[1])
+	}
+	if len(history[1].MessageIDs) != 1 || history[1].MessageIDs[0] != "out-99" {
+		t.Fatalf("expected assistant message_ids [out-99], got %v", history[1].MessageIDs)
+	}
+}
+
 func TestRecordLastChannel(t *testing.T) {
 	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
@@ -647,7 +709,7 @@ func (h testHelper) executeAndGetResponse(
 	// Simulate delivery: in production Run() publishes to bus and the channel
 	// calls OnDelivered after sending. In tests we call it directly.
 	if response.OnDelivered != nil {
-		response.OnDelivered("")
+		response.OnDelivered(nil)
 	}
 	return response.Content
 }
@@ -1847,7 +1909,6 @@ func TestHandleReasoning(t *testing.T) {
 					t.Fatal("expected reasoning message to be dropped when bus is full, but it was published")
 				}
 			}
-
 		}
 	})
 }
@@ -2263,8 +2324,8 @@ func TestPublishOutboundWithHistoryPersistsOnDelivered(t *testing.T) {
 	if history[0].Role != "assistant" || history[0].Content != "hello from cron" {
 		t.Fatalf("unexpected history message: %+v", history[0])
 	}
-	if history[0].MessageID != "mid-123" {
-		t.Fatalf("message id=%q, want mid-123", history[0].MessageID)
+	if len(history[0].MessageIDs) != 1 || history[0].MessageIDs[0] != "mid-123" {
+		t.Fatalf("message ids=%v, want [mid-123]", history[0].MessageIDs)
 	}
 	if history[0].Metadata[providers.MessageMetaSourceKind] != providers.MessageSourceCron {
 		t.Fatalf("source kind=%q", history[0].Metadata[providers.MessageMetaSourceKind])
@@ -2368,8 +2429,8 @@ func TestAdvancedMessageManager_SendPlaceholderPersistsHistory(t *testing.T) {
 	if history[0].Role != "assistant" {
 		t.Fatalf("history role=%q, want assistant", history[0].Role)
 	}
-	if history[0].MessageID != "550" {
-		t.Fatalf("message id=%q, want 550", history[0].MessageID)
+	if len(history[0].MessageIDs) != 1 || history[0].MessageIDs[0] != "550" {
+		t.Fatalf("message ids=%v, want [550]", history[0].MessageIDs)
 	}
 	if !strings.Contains(history[0].Content, "Execution Plan") {
 		t.Fatalf("expected persisted content to contain plan, got %q", history[0].Content)
@@ -2438,8 +2499,8 @@ func TestAdvancedMessageManager_EditMessageUpdatesPersistedHistory(t *testing.T)
 	if len(history) != 1 {
 		t.Fatalf("history len=%d, want 1", len(history))
 	}
-	if history[0].MessageID != "550" {
-		t.Fatalf("message id=%q, want 550", history[0].MessageID)
+	if len(history[0].MessageIDs) != 1 || history[0].MessageIDs[0] != "550" {
+		t.Fatalf("message ids=%v, want [550]", history[0].MessageIDs)
 	}
 	if !strings.Contains(history[0].Content, "done") {
 		t.Fatalf("expected updated plan content in history, got %q", history[0].Content)

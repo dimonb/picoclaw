@@ -355,7 +355,15 @@ func TestCronService_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for j := range iterations {
 				at := time.Now().Add(time.Hour).UnixMilli()
-				cs.AddJob(fmt.Sprintf("Job-%d-%d", id, j), CronSchedule{Kind: "at", AtMS: &at}, "", ModeAgent, "", "", "")
+				cs.AddJob(
+					fmt.Sprintf("Job-%d-%d", id, j),
+					CronSchedule{Kind: "at", AtMS: &at},
+					"",
+					ModeAgent,
+					"",
+					"",
+					"",
+				)
 				time.Sleep(100 * time.Microsecond)
 			}
 		}(i)

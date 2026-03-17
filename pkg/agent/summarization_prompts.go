@@ -16,54 +16,6 @@ type compactionNoteMetadata struct {
 	OmittedMessages bool
 }
 
-// messageThreadAnnotation returns the delivery/thread annotation prefix for a
-// message, e.g. "[msg:#5, reply_to:#3, from:@alice, react_to:#5=❤️] " or "" if absent.
-func messageThreadAnnotation(msg providers.Message) string {
-	parts := make([]string, 0, 3+len(msg.Reactions))
-	if msg.MessageID != "" {
-		parts = append(parts, fmt.Sprintf("msg:#%s", msg.MessageID))
-	}
-	if msg.ReplyToMessageID != "" {
-		parts = append(parts, fmt.Sprintf("reply_to:#%s", msg.ReplyToMessageID))
-	}
-	if msg.Sender != nil {
-		if msg.Sender.Username != "" {
-			parts = append(parts, fmt.Sprintf("username:%s", msg.Sender.Username))
-		}
-		fullName := strings.TrimSpace(msg.Sender.FirstName + " " + msg.Sender.LastName)
-		if fullName != "" {
-			parts = append(parts, fmt.Sprintf("name:%s", fullName))
-		}
-	}
-	for _, reaction := range msg.Reactions {
-		if reaction.TargetMessageID == "" || reaction.Emoji == "" {
-			continue
-		}
-		parts = append(parts, fmt.Sprintf("react_to:#%s=%s", reaction.TargetMessageID, reaction.Emoji))
-	}
-	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
-		sourceKind != providers.MessageSourceChannel && sourceKind != providers.MessageSourceAssistant {
-		parts = append(parts, fmt.Sprintf("source:%s", sourceKind))
-	}
-	if triggerKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerKind]); triggerKind != "" {
-		triggerLabel := triggerKind
-		if triggerID := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerID]); triggerID != "" {
-			triggerLabel += "#" + triggerID
-		}
-		parts = append(parts, fmt.Sprintf("trigger:%s", triggerLabel))
-	}
-	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
-		sourceKind != providers.MessageSourceChannel {
-		if channel := strings.TrimSpace(msg.Metadata[providers.MessageMetaChannel]); channel != "" {
-			parts = append(parts, fmt.Sprintf("via:%s", channel))
-		}
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return fmt.Sprintf("[%s] ", strings.Join(parts, ", "))
-}
-
 func formatConversationMessages(batch []providers.Message) string {
 	var sb strings.Builder
 	for _, m := range batch {

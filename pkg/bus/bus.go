@@ -79,7 +79,7 @@ func (mb *MessageBus) OutboundChan() <-chan OutboundMessage {
 }
 
 // SubscribeOutbound waits for the next outbound message, blocking until either
-// a message arrives or the context is cancelled. Returns (msg, true) on success
+// a message arrives or the context is canceled. Returns (msg, true) on success
 // or (zero, false) if the context expires or the bus is closed.
 func (mb *MessageBus) SubscribeOutbound(ctx context.Context) (OutboundMessage, bool) {
 	select {

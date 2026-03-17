@@ -76,7 +76,6 @@ func TestCronTool_CommandDoesNotRequireConfirmByDefault(t *testing.T) {
 	}
 }
 
-
 func TestCronTool_CommandRequiresConfirmWhenAllowCommandDisabled(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Tools.Cron.AllowCommand = false

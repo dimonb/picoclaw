@@ -241,12 +241,12 @@ func TestBuildRunningSummaryMergePromptIncludesConflictRules(t *testing.T) {
 func TestThreadAwareKeepCount_NoThreads(t *testing.T) {
 	t.Parallel()
 	history := []providers.Message{
-		{Role: "user", Content: "a", MessageID: "1"},
-		{Role: "assistant", Content: "b", MessageID: "2"},
-		{Role: "user", Content: "c", MessageID: "3"},
-		{Role: "assistant", Content: "d", MessageID: "4"},
-		{Role: "user", Content: "e", MessageID: "5"},
-		{Role: "assistant", Content: "f", MessageID: "6"},
+		{Role: "user", Content: "a", MessageIDs: []string{"1"}},
+		{Role: "assistant", Content: "b", MessageIDs: []string{"2"}},
+		{Role: "user", Content: "c", MessageIDs: []string{"3"}},
+		{Role: "assistant", Content: "d", MessageIDs: []string{"4"}},
+		{Role: "user", Content: "e", MessageIDs: []string{"5"}},
+		{Role: "assistant", Content: "f", MessageIDs: []string{"6"}},
 	}
 	// No reply threads — should keep exactly minKeep.
 	if got := threadAwareKeepCount(history, 4); got != 4 {
@@ -258,17 +258,17 @@ func TestThreadAwareKeepCount_ActiveThreadExtendsWindow(t *testing.T) {
 	t.Parallel()
 	// History: root at index 4 (#5), reply thread continues into kept window.
 	history := []providers.Message{
-		{Role: "user", Content: "old-1", MessageID: "1"},
-		{Role: "assistant", Content: "old-2", MessageID: "2"},
-		{Role: "user", Content: "old-3", MessageID: "3"},
-		{Role: "assistant", Content: "old-4", MessageID: "4"},
-		{Role: "user", Content: "thread root", MessageID: "5"},
-		{Role: "assistant", Content: "context", MessageID: "6"},
+		{Role: "user", Content: "old-1", MessageIDs: []string{"1"}},
+		{Role: "assistant", Content: "old-2", MessageIDs: []string{"2"}},
+		{Role: "user", Content: "old-3", MessageIDs: []string{"3"}},
+		{Role: "assistant", Content: "old-4", MessageIDs: []string{"4"}},
+		{Role: "user", Content: "thread root", MessageIDs: []string{"5"}},
+		{Role: "assistant", Content: "context", MessageIDs: []string{"6"}},
 		// Kept window starts here (last 4):
-		{Role: "user", Content: "follow-up on root", MessageID: "7", ReplyToMessageID: "5"},
-		{Role: "assistant", Content: "ok", MessageID: "8"},
-		{Role: "user", Content: "more", MessageID: "9"},
-		{Role: "assistant", Content: "done", MessageID: "10"},
+		{Role: "user", Content: "follow-up on root", MessageIDs: []string{"7"}, ReplyToMessageID: "5"},
+		{Role: "assistant", Content: "ok", MessageIDs: []string{"8"}},
+		{Role: "user", Content: "more", MessageIDs: []string{"9"}},
+		{Role: "assistant", Content: "done", MessageIDs: []string{"10"}},
 	}
 	// msg #7 replies to #5 which sits just outside the keep window, so keep should
 	// extend by one without exceeding the half-history cap.
@@ -303,18 +303,18 @@ func TestSummarizeSession_ThreadRootOlderThanHalfStillSummarizes(t *testing.T) {
 
 	sessionKey := "session-thread-root-old"
 	history := []providers.Message{
-		{Role: "user", Content: "root question", MessageID: "1"},
-		{Role: "assistant", Content: "answer", MessageID: "2"},
-		{Role: "user", Content: "follow-up 1", MessageID: "3", ReplyToMessageID: "1"},
-		{Role: "assistant", Content: "reply 1", MessageID: "4", ReplyToMessageID: "1"},
-		{Role: "user", Content: "follow-up 2", MessageID: "5", ReplyToMessageID: "1"},
-		{Role: "assistant", Content: "reply 2", MessageID: "6", ReplyToMessageID: "1"},
-		{Role: "user", Content: "follow-up 3", MessageID: "7", ReplyToMessageID: "1"},
-		{Role: "assistant", Content: "reply 3", MessageID: "8", ReplyToMessageID: "1"},
-		{Role: "user", Content: "follow-up 4", MessageID: "9", ReplyToMessageID: "1"},
-		{Role: "assistant", Content: "reply 4", MessageID: "10", ReplyToMessageID: "1"},
-		{Role: "user", Content: "follow-up 5", MessageID: "11", ReplyToMessageID: "1"},
-		{Role: "assistant", Content: "reply 5", MessageID: "12", ReplyToMessageID: "1"},
+		{Role: "user", Content: "root question", MessageIDs: []string{"1"}},
+		{Role: "assistant", Content: "answer", MessageIDs: []string{"2"}},
+		{Role: "user", Content: "follow-up 1", MessageIDs: []string{"3"}, ReplyToMessageID: "1"},
+		{Role: "assistant", Content: "reply 1", MessageIDs: []string{"4"}, ReplyToMessageID: "1"},
+		{Role: "user", Content: "follow-up 2", MessageIDs: []string{"5"}, ReplyToMessageID: "1"},
+		{Role: "assistant", Content: "reply 2", MessageIDs: []string{"6"}, ReplyToMessageID: "1"},
+		{Role: "user", Content: "follow-up 3", MessageIDs: []string{"7"}, ReplyToMessageID: "1"},
+		{Role: "assistant", Content: "reply 3", MessageIDs: []string{"8"}, ReplyToMessageID: "1"},
+		{Role: "user", Content: "follow-up 4", MessageIDs: []string{"9"}, ReplyToMessageID: "1"},
+		{Role: "assistant", Content: "reply 4", MessageIDs: []string{"10"}, ReplyToMessageID: "1"},
+		{Role: "user", Content: "follow-up 5", MessageIDs: []string{"11"}, ReplyToMessageID: "1"},
+		{Role: "assistant", Content: "reply 5", MessageIDs: []string{"12"}, ReplyToMessageID: "1"},
 	}
 	for _, msg := range history {
 		agent.Sessions.AddFullMessage(sessionKey, msg)
@@ -336,15 +336,15 @@ func TestSummarizeSession_ThreadRootOlderThanHalfStillSummarizes(t *testing.T) {
 func TestThreadAwareKeepCount_ThreadRootInKeepWindow(t *testing.T) {
 	t.Parallel()
 	history := []providers.Message{
-		{Role: "user", Content: "old stuff", MessageID: "1"},
-		{Role: "assistant", Content: "old reply", MessageID: "2"},
-		{Role: "user", Content: "old stuff", MessageID: "3"},
-		{Role: "assistant", Content: "old reply", MessageID: "4"},
+		{Role: "user", Content: "old stuff", MessageIDs: []string{"1"}},
+		{Role: "assistant", Content: "old reply", MessageIDs: []string{"2"}},
+		{Role: "user", Content: "old stuff", MessageIDs: []string{"3"}},
+		{Role: "assistant", Content: "old reply", MessageIDs: []string{"4"}},
 		// Root is already inside the keep window:
-		{Role: "user", Content: "root", MessageID: "5"},
-		{Role: "assistant", Content: "ok", MessageID: "6"},
-		{Role: "user", Content: "reply to root", MessageID: "7", ReplyToMessageID: "5"},
-		{Role: "assistant", Content: "done", MessageID: "8"},
+		{Role: "user", Content: "root", MessageIDs: []string{"5"}},
+		{Role: "assistant", Content: "ok", MessageIDs: []string{"6"}},
+		{Role: "user", Content: "reply to root", MessageIDs: []string{"7"}, ReplyToMessageID: "5"},
+		{Role: "assistant", Content: "done", MessageIDs: []string{"8"}},
 	}
 	// Parent #5 is already kept — no extension needed.
 	if got := threadAwareKeepCount(history, 4); got != 4 {
@@ -355,9 +355,9 @@ func TestThreadAwareKeepCount_ThreadRootInKeepWindow(t *testing.T) {
 func TestFormatConversationMessages_ThreadAnnotations(t *testing.T) {
 	t.Parallel()
 	batch := []providers.Message{
-		{Role: "user", Content: "hello", MessageID: "10"},
-		{Role: "assistant", Content: "hi", MessageID: "11"},
-		{Role: "user", Content: "follow-up", MessageID: "12", ReplyToMessageID: "10"},
+		{Role: "user", Content: "hello", MessageIDs: []string{"10"}},
+		{Role: "assistant", Content: "hi", MessageIDs: []string{"11"}},
+		{Role: "user", Content: "follow-up", MessageIDs: []string{"12"}, ReplyToMessageID: "10"},
 		{Role: "assistant", Content: "sure", ReplyToMessageID: "10"},
 		{Role: "user", Content: "plain"},
 	}

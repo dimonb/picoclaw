@@ -247,6 +247,27 @@ func TestSendMessageWithID_LongMessage_SingleCall(t *testing.T) {
 	assert.Len(t, caller.calls, 1, "pre-split message within limit should result in one SendMessage call")
 }
 
+func TestSendMessageWithIDs_ReturnsAllChunkIDsAfterHTMLResplit(t *testing.T) {
+	caller := &stubCaller{}
+	caller.callFn = func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+		return successResponseWithID(t, len(caller.calls)), nil
+	}
+	ch := newTestChannel(t, caller)
+
+	chunk := "[x](https://example.com/" + strings.Repeat("a", 20) + ") "
+	content := strings.Repeat(chunk, 120)
+
+	ids, err := ch.SendMessageWithIDs(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: content,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, ids, 2)
+	assert.Equal(t, []string{"1", "2"}, ids)
+	assert.Len(t, caller.calls, 2)
+}
+
 func TestSendMessageWithID_HTMLFallback_PerChunk(t *testing.T) {
 	callCount := 0
 	caller := &stubCaller{

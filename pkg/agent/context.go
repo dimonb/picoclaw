@@ -492,7 +492,10 @@ func formatCurrentSenderLine(senderID, senderDisplayName string) string {
 	}
 }
 
-func (cb *ContextBuilder) buildDynamicContext(channel, chatID, senderID, senderDisplayName string, messageMetadata map[string]string) string {
+func (cb *ContextBuilder) buildDynamicContext(
+	channel, chatID, senderID, senderDisplayName string,
+	messageMetadata map[string]string,
+) string {
 	now := time.Now().Format("2006-01-02 15:04 (Monday)")
 	rt := fmt.Sprintf("%s %s, Go %s", runtime.GOOS, runtime.GOARCH, runtime.Version())
 
@@ -685,7 +688,7 @@ func (cb *ContextBuilder) BuildMessages(
 			Metadata: providers.CloneMessageMetadata(messageMetadata),
 		}
 		if replyCtx != nil {
-			msg.MessageID = strings.TrimSpace(replyCtx.CurrentMessageID)
+			msg.MessageIDs = singleMessageIDs(strings.TrimSpace(replyCtx.CurrentMessageID))
 			msg.ReplyToMessageID = strings.TrimSpace(replyCtx.ParentMessageID)
 		}
 		if len(media) > 0 {
@@ -853,4 +856,64 @@ func (cb *ContextBuilder) GetSkillsInfo() map[string]any {
 		"available": len(allSkills),
 		"names":     skillNames,
 	}
+}
+
+// messageThreadAnnotation returns the delivery/thread annotation prefix for a
+// message, e.g. "[msg:#5, reply_to:#3, react_to:#5=❤️] " or "" if absent.
+func messageThreadAnnotation(msg providers.Message) string {
+	parts := make([]string, 0, 3+len(msg.Reactions))
+	switch len(msg.MessageIDs) {
+	case 1:
+		parts = append(parts, fmt.Sprintf("msg:#%s", msg.MessageIDs[0]))
+	case 2, 3, 4, 5:
+		for _, messageID := range msg.MessageIDs {
+			if messageID == "" {
+				continue
+			}
+			parts = append(parts, fmt.Sprintf("msg:#%s", messageID))
+		}
+	default:
+		if len(msg.MessageIDs) > 5 {
+			parts = append(parts, fmt.Sprintf("msgs:%d", len(msg.MessageIDs)))
+		}
+	}
+	if msg.ReplyToMessageID != "" {
+		parts = append(parts, fmt.Sprintf("reply_to:#%s", msg.ReplyToMessageID))
+	}
+	if msg.Sender != nil {
+		if msg.Sender.Username != "" {
+			parts = append(parts, fmt.Sprintf("username:%s", msg.Sender.Username))
+		}
+		fullName := strings.TrimSpace(msg.Sender.FirstName + " " + msg.Sender.LastName)
+		if fullName != "" {
+			parts = append(parts, fmt.Sprintf("name:%s", fullName))
+		}
+	}
+	for _, reaction := range msg.Reactions {
+		if reaction.TargetMessageID == "" || reaction.Emoji == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("react_to:#%s=%s", reaction.TargetMessageID, reaction.Emoji))
+	}
+	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
+		sourceKind != providers.MessageSourceChannel && sourceKind != providers.MessageSourceAssistant {
+		parts = append(parts, fmt.Sprintf("source:%s", sourceKind))
+	}
+	if triggerKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerKind]); triggerKind != "" {
+		triggerLabel := triggerKind
+		if triggerID := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerID]); triggerID != "" {
+			triggerLabel += "#" + triggerID
+		}
+		parts = append(parts, fmt.Sprintf("trigger:%s", triggerLabel))
+	}
+	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
+		sourceKind != providers.MessageSourceChannel {
+		if channel := strings.TrimSpace(msg.Metadata[providers.MessageMetaChannel]); channel != "" {
+			parts = append(parts, fmt.Sprintf("via:%s", channel))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("[%s] ", strings.Join(parts, ", "))
 }

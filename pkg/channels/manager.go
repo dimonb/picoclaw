@@ -183,8 +183,9 @@ func (m *Manager) CleanupState(ctx context.Context, channelName, chatID string) 
 }
 
 // preSend handles typing stop, reaction undo, and placeholder editing before sending a message.
-// Returns true if the message was edited into a placeholder (skip Send).
-func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMessage, ch Channel) bool {
+// Returns the delivered message IDs and true when delivery completed by editing
+// an existing placeholder, so the caller can skip a normal Send.
+func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMessage, ch Channel) ([]string, bool) {
 	key := name + ":" + msg.ChatID
 
 	// 1. Stop typing
@@ -221,18 +222,18 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 						)
 					}
 				}
-				return false
+				return nil, false
 			}
 			if editor, ok := ch.(MessageEditor); ok {
 				if err := editor.EditMessage(ctx, msg.ChatID, entry.id, msg.Content); err == nil {
-					return true // edited successfully, skip Send
+					return []string{entry.id}, true
 				}
 				// edit failed → fall through to normal Send
 			}
 		}
 	}
 
-	return false
+	return nil, false
 }
 
 func NewManager(cfg *config.Config, messageBus *bus.MessageBus, store media.MediaStore) (*Manager, error) {
@@ -559,24 +560,49 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 			if !ok {
 				return
 			}
-			maxLen := 0
-			if mlp, ok := w.ch.(MessageLengthProvider); ok {
-				maxLen = mlp.MaxMessageLength()
-			}
-			if maxLen > 0 && len([]rune(msg.Content)) > maxLen {
-				chunks := SplitMessage(msg.Content, maxLen)
-				for _, chunk := range chunks {
-					chunkMsg := msg
-					chunkMsg.Content = chunk
-					m.sendWithRetry(ctx, name, w, chunkMsg)
-				}
-			} else {
-				m.sendWithRetry(ctx, name, w, msg)
-			}
+			m.deliverOutbound(ctx, name, w, msg)
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+func (m *Manager) deliverOutbound(ctx context.Context, name string, w *channelWorker, msg bus.OutboundMessage) {
+	msgIDs, delivered := m.sendOutbound(ctx, name, w, msg)
+	if delivered && msg.OnDelivered != nil {
+		msg.OnDelivered(msgIDs)
+	}
+}
+
+func (m *Manager) sendOutbound(
+	ctx context.Context,
+	name string,
+	w *channelWorker,
+	msg bus.OutboundMessage,
+) ([]string, bool) {
+	maxLen := 0
+	if mlp, ok := w.ch.(MessageLengthProvider); ok {
+		maxLen = mlp.MaxMessageLength()
+	}
+
+	if maxLen > 0 && len([]rune(msg.Content)) > maxLen {
+		var messageIDs []string
+		for _, chunk := range SplitMessage(msg.Content, maxLen) {
+			chunkMsg := msg
+			chunkMsg.Content = chunk
+			chunkMsg.OnDelivered = nil
+			chunkIDs, delivered := m.sendWithRetry(ctx, name, w, chunkMsg)
+			if !delivered {
+				return nil, false
+			}
+			if len(chunkIDs) > 0 {
+				messageIDs = append(messageIDs, chunkIDs...)
+			}
+		}
+		return messageIDs, true
+	}
+
+	return m.sendWithRetry(ctx, name, w, msg)
 }
 
 // sendWithRetry sends a message through the channel with rate limiting and
@@ -584,41 +610,42 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 //   - ErrNotRunning / ErrSendFailed: permanent, no retry
 //   - ErrRateLimit: fixed delay retry
 //   - ErrTemporary / unknown: exponential backoff retry
-func (m *Manager) sendWithRetry(ctx context.Context, name string, w *channelWorker, msg bus.OutboundMessage) {
+func (m *Manager) sendWithRetry(
+	ctx context.Context,
+	name string,
+	w *channelWorker,
+	msg bus.OutboundMessage,
+) ([]string, bool) {
 	// Rate limit: wait for token
 	if err := w.limiter.Wait(ctx); err != nil {
 		// ctx canceled, shutting down
-		return
+		return nil, false
 	}
 
 	// Pre-send: stop typing and try to edit placeholder
-	if m.preSend(ctx, name, msg, w.ch) {
-		return // placeholder was edited successfully, skip Send
+	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
+		return msgIDs, true
 	}
 
-	// Use SendMessageWithID when available so we can capture the platform
-	// message ID and deliver it to the OnDelivered callback.
-	sender, hasSyncSender := w.ch.(SyncSender)
-
 	var lastErr error
+	var msgIDs []string
+	messageIDsSender, hasMessageIDsSender := w.ch.(MessageIDsSender)
+	syncSender, hasSyncSender := w.ch.(SyncSender)
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		if hasSyncSender {
-			var msgID string
-			msgID, lastErr = sender.SendMessageWithID(ctx, msg)
-			if lastErr == nil {
-				if msg.OnDelivered != nil {
-					msg.OnDelivered(msgID)
-				}
-				return
+		if hasMessageIDsSender {
+			msgIDs, lastErr = messageIDsSender.SendMessageWithIDs(ctx, msg)
+		} else if hasSyncSender {
+			msgIDs = nil
+			msgID, err := syncSender.SendMessageWithID(ctx, msg)
+			lastErr = err
+			if lastErr == nil && msgID != "" {
+				msgIDs = []string{msgID}
 			}
 		} else {
 			lastErr = w.ch.Send(ctx, msg)
-			if lastErr == nil {
-				if msg.OnDelivered != nil {
-					msg.OnDelivered("")
-				}
-				return
-			}
+		}
+		if lastErr == nil {
+			return msgIDs, true
 		}
 
 		// Permanent failures — don't retry
@@ -637,7 +664,7 @@ func (m *Manager) sendWithRetry(ctx context.Context, name string, w *channelWork
 			case <-time.After(rateLimitDelay):
 				continue
 			case <-ctx.Done():
-				return
+				return nil, false
 			}
 		}
 
@@ -646,7 +673,7 @@ func (m *Manager) sendWithRetry(ctx context.Context, name string, w *channelWork
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
-			return
+			return nil, false
 		}
 	}
 
@@ -657,6 +684,8 @@ func (m *Manager) sendWithRetry(ctx context.Context, name string, w *channelWork
 		"error":   lastErr.Error(),
 		"retries": maxRetries,
 	})
+
+	return nil, false
 }
 
 func dispatchLoop[M any](
@@ -938,19 +967,7 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 		return fmt.Errorf("channel %s has no active worker", msg.Channel)
 	}
 
-	maxLen := 0
-	if mlp, ok := w.ch.(MessageLengthProvider); ok {
-		maxLen = mlp.MaxMessageLength()
-	}
-	if maxLen > 0 && len([]rune(msg.Content)) > maxLen {
-		for _, chunk := range SplitMessage(msg.Content, maxLen) {
-			chunkMsg := msg
-			chunkMsg.Content = chunk
-			m.sendWithRetry(ctx, msg.Channel, w, chunkMsg)
-		}
-	} else {
-		m.sendWithRetry(ctx, msg.Channel, w, msg)
-	}
+	m.deliverOutbound(ctx, msg.Channel, w, msg)
 	return nil
 }
 

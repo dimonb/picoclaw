@@ -81,7 +81,7 @@ type agentResponse struct {
 	Reactions         []providers.MessageReaction
 	SuppressTextReply bool
 	HandledExternally bool
-	OnDelivered       func(msgID string) // called after confirmed delivery
+	OnDelivered       func(msgIDs []string)
 	OnSilentDelivered func(reactions []providers.MessageReaction)
 }
 
@@ -93,6 +93,35 @@ func (r agentResponse) outboundMessage(channel, chatID string) bus.OutboundMessa
 		ReplyToMessageID: r.ReplyToMessageID,
 		OnDelivered:      r.OnDelivered,
 	}
+}
+
+func singleMessageIDs(msgID string) []string {
+	if msgID == "" {
+		return nil
+	}
+	return []string{msgID}
+}
+
+func cloneMessageIDs(msgIDs []string) []string {
+	if len(msgIDs) == 0 {
+		return nil
+	}
+	cloned := make([]string, len(msgIDs))
+	copy(cloned, msgIDs)
+	return cloned
+}
+
+func messageHasID(msg providers.Message, messageID string) bool {
+	messageID = strings.TrimSpace(messageID)
+	if messageID == "" {
+		return false
+	}
+	for _, candidate := range msg.MessageIDs {
+		if strings.TrimSpace(candidate) == messageID {
+			return true
+		}
+	}
+	return false
 }
 
 func (r agentResponse) hasTextReply() bool {
@@ -436,7 +465,7 @@ func (al *AgentLoop) upsertAdvancedToolMessage(
 			if history[i].Role != "assistant" {
 				continue
 			}
-			if strings.TrimSpace(history[i].MessageID) != messageID {
+			if !messageHasID(history[i], messageID) {
 				continue
 			}
 			history[i].Content = content
@@ -447,9 +476,9 @@ func (al *AgentLoop) upsertAdvancedToolMessage(
 	}
 
 	agent.Sessions.AddFullMessage(sessionKey, providers.Message{
-		Role:      "assistant",
-		Content:   content,
-		MessageID: messageID,
+		Role:       "assistant",
+		Content:    content,
+		MessageIDs: singleMessageIDs(messageID),
 	})
 	_ = agent.Sessions.Save(sessionKey)
 }
@@ -616,9 +645,9 @@ func (al *AgentLoop) PublishOutboundWithHistory(
 		Content:          msg.Content,
 		ReplyToMessageID: msg.ReplyToMessageID,
 	}
-	out.OnDelivered = func(msgID string) {
+	out.OnDelivered = func(msgIDs []string) {
 		delivered := msg
-		delivered.MessageID = msgID
+		delivered.MessageIDs = cloneMessageIDs(msgIDs)
 		delivered.Metadata = providers.CloneMessageMetadata(msg.Metadata)
 		agent.Sessions.AddFullMessage(sessionKey, delivered)
 		agent.Sessions.Save(sessionKey)
@@ -962,7 +991,13 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 	}
 
 	response, err := al.processMessage(ctx, msg)
-	return response.Content, err
+	if err != nil {
+		return "", err
+	}
+	if response.OnDelivered != nil {
+		response.OnDelivered(nil)
+	}
+	return response.Content, nil
 }
 
 // ProcessHeartbeat processes a heartbeat request without session history.
@@ -985,7 +1020,13 @@ func (al *AgentLoop) ProcessHeartbeat(
 		SendResponse:    false,
 		NoHistory:       true, // Don't load session history for heartbeat
 	})
-	return response.Content, err
+	if err != nil {
+		return "", err
+	}
+	if response.OnDelivered != nil {
+		response.OnDelivered(nil)
+	}
+	return response.Content, nil
 }
 
 func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (agentResponse, error) {
@@ -1209,7 +1250,6 @@ func (al *AgentLoop) runAgentLoop(
 	// Hidden tool discovery must stay request-scoped so concurrent sessions do
 	// not age out each other's unlocked tools.
 	ctx = tools.WithHiddenToolState(ctx)
-
 	// 0. Record last channel for heartbeat notifications (skip internal channels and cli)
 	if opts.Channel != "" && opts.ChatID != "" {
 		if !constants.IsInternalChannel(opts.Channel) {
@@ -1261,7 +1301,7 @@ func (al *AgentLoop) runAgentLoop(
 		userMsg.Media = append([]string(nil), opts.Media...)
 	}
 	if opts.ReplyContext != nil {
-		userMsg.MessageID = opts.ReplyContext.CurrentMessageID
+		userMsg.MessageIDs = singleMessageIDs(opts.ReplyContext.CurrentMessageID)
 		userMsg.ReplyToMessageID = opts.ReplyContext.ParentMessageID
 	}
 	agent.Sessions.AddFullMessage(opts.SessionKey, userMsg)
@@ -1332,7 +1372,7 @@ func (al *AgentLoop) runAgentLoop(
 		channel := opts.Channel
 		chatID := opts.ChatID
 
-		response.OnDelivered = func(msgID string) {
+		response.OnDelivered = func(msgIDs []string) {
 			deliveredReactions := reactions
 			if len(reactions) > 0 {
 				reactCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1343,7 +1383,7 @@ func (al *AgentLoop) runAgentLoop(
 				Role:             "assistant",
 				Content:          content,
 				ReplyToMessageID: replyTo,
-				MessageID:        msgID,
+				MessageIDs:       cloneMessageIDs(msgIDs),
 				Reactions:        deliveredReactions,
 				Metadata:         outboundMessageMetadata(opts.Channel, opts.ChatID, opts.MessageMetadata),
 			}
@@ -1963,8 +2003,16 @@ func (al *AgentLoop) runLLMIteration(
 				newHistory := snapshot.History
 				newSummary := snapshot.Summary
 				messages = agent.ContextBuilder.BuildMessages(
-					newHistory, newSummary, "",
-					nil, opts.Channel, opts.ChatID, opts.ReplyContext, opts.SenderID, opts.SenderDisplayName, opts.MessageMetadata,
+					newHistory,
+					newSummary,
+					"",
+					nil,
+					opts.Channel,
+					opts.ChatID,
+					opts.ReplyContext,
+					opts.SenderID,
+					opts.SenderDisplayName,
+					opts.MessageMetadata,
 				)
 				continue
 			}
@@ -2781,8 +2829,11 @@ func threadAwareKeepCount(history []providers.Message, minKeep int) int {
 		// Build a set of message IDs in the keep window.
 		keptIDs := make(map[string]bool, keep)
 		for _, m := range history[cutoff:] {
-			if m.MessageID != "" {
-				keptIDs[m.MessageID] = true
+			for _, messageID := range m.MessageIDs {
+				if messageID == "" {
+					continue
+				}
+				keptIDs[messageID] = true
 			}
 		}
 
@@ -2799,7 +2850,7 @@ func threadAwareKeepCount(history []providers.Message, minKeep int) int {
 			// from that point forward into the keep window, capped so long
 			// threads still allow compaction.
 			for i := cutoff - 1; i >= 0; i-- {
-				if history[i].MessageID == m.ReplyToMessageID {
+				if messageHasID(history[i], m.ReplyToMessageID) {
 					candidate := len(history) - i
 					if candidate > maxKeep {
 						candidate = maxKeep

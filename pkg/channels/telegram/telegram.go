@@ -210,17 +210,26 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 
 // SendMessageWithID implements an optional interface for AgentLoop to send a message synchronously and get the MessageID.
 func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (string, error) {
+	ids, err := c.SendMessageWithIDs(ctx, msg)
+	if err != nil {
+		return "", err
+	}
+	return strings.Join(ids, ","), nil
+}
+
+// SendMessageWithIDs implements channels.MessageIDsSender.
+func (c *TelegramChannel) SendMessageWithIDs(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
-		return "", channels.ErrNotRunning
+		return nil, channels.ErrNotRunning
 	}
 
 	chatID, threadID, err := parseTelegramChatID(msg.ChatID)
 	if err != nil {
-		return "", fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed)
+		return nil, fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed)
 	}
 
 	if msg.Content == "" {
-		return "", nil
+		return nil, nil
 	}
 
 	// The Manager already splits messages to ≤4000 chars (WithMaxMessageLength),
@@ -228,7 +237,7 @@ func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.Outboun
 	// check if HTML expansion pushes it beyond Telegram's 4096-char API limit.
 	replyToID := msg.ReplyToMessageID
 	queue := []string{msg.Content}
-	ids := make([]string, 0)
+	var messageIDs []string
 	for len(queue) > 0 {
 		chunk := queue[0]
 		queue = queue[1:]
@@ -250,14 +259,14 @@ func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.Outboun
 
 		msgID, err := c.sendHTMLChunk(ctx, chatID, threadID, replyToID, htmlContent, chunk)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		ids = append(ids, strconv.Itoa(msgID))
+		messageIDs = append(messageIDs, msgID)
 		// Only the first chunk should be a reply; subsequent chunks are normal messages.
 		replyToID = ""
 	}
 
-	return strings.Join(ids, ","), nil
+	return messageIDs, nil
 }
 
 // sendHTMLChunk sends a single HTML message, falling back to the original
@@ -268,7 +277,7 @@ func (c *TelegramChannel) sendHTMLChunk(
 	threadID int,
 	replyToMessageID string,
 	htmlContent, mdFallback string,
-) (int, error) {
+) (string, error) {
 	tgMsg := tu.Message(tu.ID(chatID), htmlContent)
 	tgMsg.ParseMode = telego.ModeHTML
 	tgMsg.MessageThreadID = threadID
@@ -285,10 +294,10 @@ func (c *TelegramChannel) sendHTMLChunk(
 		tgMsg.ParseMode = ""
 		msg, err = c.bot.SendMessage(ctx, tgMsg)
 		if err != nil {
-			return 0, fmt.Errorf("telegram send: %w", channels.ErrTemporary)
+			return "", fmt.Errorf("telegram send: %w", channels.ErrTemporary)
 		}
 	}
-	return msg.MessageID, nil
+	return strconv.Itoa(msg.MessageID), nil
 }
 
 type telegramNamedReader struct {
@@ -589,6 +598,7 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 		PlatformID:  platformID,
 		CanonicalID: identity.BuildCanonicalID("telegram", platformID),
 		Username:    user.Username,
+		DisplayName: user.FirstName,
 		FirstName:   user.FirstName,
 		LastName:    user.LastName,
 	}

@@ -268,7 +268,18 @@ func TestBuildMessages_CurrentSenderDynamicContext(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msgs := cb.BuildMessages(nil, "", "hello", nil, "discord", "chat1", nil, tt.senderID, tt.senderDisplayName, nil)
+			msgs := cb.BuildMessages(
+				nil,
+				"",
+				"hello",
+				nil,
+				"discord",
+				"chat1",
+				nil,
+				tt.senderID,
+				tt.senderDisplayName,
+				nil,
+			)
 			sys := msgs[0].Content
 
 			if tt.wantSection {
