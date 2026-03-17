@@ -41,6 +41,23 @@ func messageThreadAnnotation(msg providers.Message) string {
 		}
 		parts = append(parts, fmt.Sprintf("react_to:#%s=%s", reaction.TargetMessageID, reaction.Emoji))
 	}
+	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
+		sourceKind != providers.MessageSourceChannel && sourceKind != providers.MessageSourceAssistant {
+		parts = append(parts, fmt.Sprintf("source:%s", sourceKind))
+	}
+	if triggerKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerKind]); triggerKind != "" {
+		triggerLabel := triggerKind
+		if triggerID := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerID]); triggerID != "" {
+			triggerLabel += "#" + triggerID
+		}
+		parts = append(parts, fmt.Sprintf("trigger:%s", triggerLabel))
+	}
+	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
+		sourceKind != providers.MessageSourceChannel {
+		if channel := strings.TrimSpace(msg.Metadata[providers.MessageMetaChannel]); channel != "" {
+			parts = append(parts, fmt.Sprintf("via:%s", channel))
+		}
+	}
 	if len(parts) == 0 {
 		return ""
 	}
@@ -84,7 +101,7 @@ Prioritize:
 
 Omit small talk, repetition, exploratory dead ends, and wording that does not change future behavior.
 If newer statements conflict with older ones, prefer the newer statement and note the change briefly.
-Messages may carry [msg:#ID], [reply_to:#PARENT], and [react_to:#ID=EMOJI] annotations showing thread structure and silent acknowledgements. If a reply
+Messages may carry [msg:#ID], [reply_to:#PARENT], [react_to:#ID=EMOJI], [source:KIND], [trigger:KIND#ID], and [via:CHANNEL] annotations showing thread structure, delivery path, and automation triggers. If a reply
 thread is active or unresolved, note it briefly as "thread rooted at #ID about <topic>" in Open Loops.
 Do not invent facts.
 Write in the dominant language of the conversation.

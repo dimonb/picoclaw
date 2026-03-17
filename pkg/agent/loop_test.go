@@ -2129,7 +2129,17 @@ func TestPublishOutboundWithHistoryPersistsOnDelivered(t *testing.T) {
 	al.SetChannelManager(cm)
 
 	sessionKey := "agent:main:telegram:group:-1003717341079/17"
-	msg := providers.Message{Role: "assistant", Content: "hello from cron"}
+	msg := providers.Message{
+		Role:    "assistant",
+		Content: "hello from cron",
+		Metadata: map[string]string{
+			providers.MessageMetaSourceKind:  providers.MessageSourceCron,
+			providers.MessageMetaChannel:     "telegram",
+			providers.MessageMetaTriggerKind: providers.MessageTriggerCron,
+			providers.MessageMetaTriggerID:   "job-1",
+			providers.MessageMetaDispatch:    providers.DispatchModeDirect,
+		},
+	}
 	if err := al.PublishOutboundWithHistory(
 		context.Background(), sessionKey, "telegram", "-1003717341079/17", msg,
 	); err != nil {
@@ -2148,6 +2158,54 @@ func TestPublishOutboundWithHistoryPersistsOnDelivered(t *testing.T) {
 	}
 	if history[0].MessageID != "mid-123" {
 		t.Fatalf("message id=%q, want mid-123", history[0].MessageID)
+	}
+	if history[0].Metadata[providers.MessageMetaSourceKind] != providers.MessageSourceCron {
+		t.Fatalf("source kind=%q", history[0].Metadata[providers.MessageMetaSourceKind])
+	}
+	if history[0].Metadata[providers.MessageMetaTriggerID] != "job-1" {
+		t.Fatalf("trigger id=%q", history[0].Metadata[providers.MessageMetaTriggerID])
+	}
+}
+
+func TestProcessDirectWithMessagePersistsInboundMetadata(t *testing.T) {
+	al, _, _, _, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+
+	sessionKey := "agent:main:telegram:group:-1003717341079/17"
+	_, err := al.ProcessDirectWithMessage(context.Background(), bus.InboundMessage{
+		Channel:    "telegram",
+		SenderID:   "cron",
+		ChatID:     "-1003717341079/17",
+		Content:    "check the build",
+		SessionKey: sessionKey,
+		Metadata: map[string]string{
+			providers.MessageMetaSourceKind:  providers.MessageSourceCron,
+			providers.MessageMetaChannel:     "telegram",
+			providers.MessageMetaTriggerKind: providers.MessageTriggerCron,
+			providers.MessageMetaTriggerID:   "job-42",
+			providers.MessageMetaDispatch:    providers.DispatchModeAgent,
+		},
+	})
+	if err != nil {
+		t.Fatalf("ProcessDirectWithMessage error: %v", err)
+	}
+
+	agent := al.GetRegistry().GetDefaultAgent()
+	history := agent.Sessions.GetHistory(sessionKey)
+	if len(history) == 0 {
+		t.Fatal("expected persisted history")
+	}
+	if history[0].Role != "user" {
+		t.Fatalf("role=%q, want user", history[0].Role)
+	}
+	if history[0].Metadata[providers.MessageMetaSourceKind] != providers.MessageSourceCron {
+		t.Fatalf("source kind=%q", history[0].Metadata[providers.MessageMetaSourceKind])
+	}
+	if history[0].Metadata[providers.MessageMetaTriggerID] != "job-42" {
+		t.Fatalf("trigger id=%q", history[0].Metadata[providers.MessageMetaTriggerID])
+	}
+	if history[0].Metadata[providers.MessageMetaDispatch] != providers.DispatchModeAgent {
+		t.Fatalf("dispatch mode=%q", history[0].Metadata[providers.MessageMetaDispatch])
 	}
 }
 

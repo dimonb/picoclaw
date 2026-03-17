@@ -82,7 +82,7 @@ func TestSingleSystemMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msgs := cb.BuildMessages(tt.history, tt.summary, tt.message, nil, "test", "chat1", nil, nil)
+			msgs := cb.BuildMessages(tt.history, tt.summary, tt.message, nil, "test", "chat1", nil, nil, nil)
 
 			systemCount := 0
 			for _, m := range msgs {
@@ -145,6 +145,7 @@ func TestBuildMessages_TelegramReplyRoutingContext(t *testing.T) {
 			ParentMessageID:  "905",
 		},
 		nil,
+		nil,
 	)
 
 	sys := msgs[0].Content
@@ -171,6 +172,57 @@ func TestBuildMessages_TelegramReplyRoutingContext(t *testing.T) {
 		"never invent or guess Telegram message IDs",
 	) {
 		t.Fatal("system prompt missing guidance against guessing message IDs")
+	}
+}
+
+func TestBuildMessages_CronTriggerContext(t *testing.T) {
+	tmpDir := setupWorkspace(t, map[string]string{
+		"IDENTITY.md": "# Identity\nTest agent.",
+	})
+	defer os.RemoveAll(tmpDir)
+
+	cb := NewContextBuilder(tmpDir)
+	msgs := cb.BuildMessages(
+		nil,
+		"",
+		"check the build",
+		nil,
+		"telegram",
+		"-1003717341079/17",
+		nil,
+		nil,
+		map[string]string{
+			providers.MessageMetaSourceKind:  providers.MessageSourceCron,
+			providers.MessageMetaChannel:     "telegram",
+			providers.MessageMetaTriggerKind: providers.MessageTriggerCron,
+			providers.MessageMetaTriggerID:   "job-42",
+			providers.MessageMetaDispatch:    providers.DispatchModeAgent,
+		},
+	)
+
+	sys := msgs[0].Content
+	if !strings.Contains(sys, "## Current Trigger") {
+		t.Fatal("system prompt missing current trigger section")
+	}
+	if !strings.Contains(sys, "Type: cron") {
+		t.Fatal("system prompt missing cron trigger type")
+	}
+	if !strings.Contains(sys, "Trigger ID: job-42") {
+		t.Fatal("system prompt missing cron trigger id")
+	}
+	if !strings.Contains(sys, "triggered automatically by a scheduled cron job") {
+		t.Fatal("system prompt missing cron automation guidance")
+	}
+
+	user := msgs[len(msgs)-1]
+	if !strings.Contains(user.Content, "source:cron") {
+		t.Fatalf("user message missing source annotation: %q", user.Content)
+	}
+	if !strings.Contains(user.Content, "trigger:cron#job-42") {
+		t.Fatalf("user message missing trigger annotation: %q", user.Content)
+	}
+	if !strings.Contains(user.Content, "via:telegram") {
+		t.Fatalf("user message missing transport annotation: %q", user.Content)
 	}
 }
 
@@ -624,7 +676,7 @@ func TestConcurrentBuildSystemPromptWithCache(t *testing.T) {
 				}
 
 				// Also exercise BuildMessages concurrently
-				msgs := cb.BuildMessages(nil, "", "hello", nil, "test", "chat", nil, nil)
+				msgs := cb.BuildMessages(nil, "", "hello", nil, "test", "chat", nil, nil, nil)
 				if len(msgs) < 2 {
 					errs <- "BuildMessages returned fewer than 2 messages"
 					return
@@ -712,6 +764,6 @@ func BenchmarkBuildMessagesWithCache(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = cb.BuildMessages(history, "summary", "new message", nil, "cli", "test", nil, nil)
+		_ = cb.BuildMessages(history, "summary", "new message", nil, "cli", "test", nil, nil, nil)
 	}
 }

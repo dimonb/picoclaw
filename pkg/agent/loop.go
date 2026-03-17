@@ -70,6 +70,7 @@ type processOptions struct {
 	NoHistory       bool     // If true, don't load session history (for heartbeat)
 	ReplyContext    *ReplyContextInfo
 	Sender          *providers.MessageSender // Author identity (nil for system/automated messages)
+	MessageMetadata map[string]string
 }
 
 type agentResponse struct {
@@ -587,6 +588,7 @@ func (al *AgentLoop) PublishOutboundWithHistory(
 	out.OnDelivered = func(msgID string) {
 		delivered := msg
 		delivered.MessageID = msgID
+		delivered.Metadata = providers.CloneMessageMetadata(msg.Metadata)
 		agent.Sessions.AddFullMessage(sessionKey, delivered)
 		agent.Sessions.Save(sessionKey)
 	}
@@ -897,6 +899,21 @@ func (al *AgentLoop) ProcessDirect(
 	return al.ProcessDirectWithChannel(ctx, content, sessionKey, "cli", "direct")
 }
 
+func (al *AgentLoop) ProcessDirectWithMessage(
+	ctx context.Context,
+	msg bus.InboundMessage,
+) (string, error) {
+	if err := al.ensureMCPInitialized(ctx); err != nil {
+		return "", err
+	}
+
+	response, err := al.processMessage(ctx, msg)
+	if err == nil {
+		al.deliverAgentResponse(ctx, msg.Channel, msg.ChatID, response)
+	}
+	return response.Content, err
+}
+
 func (al *AgentLoop) ProcessDirectWithChannel(
 	ctx context.Context,
 	content, sessionKey, channel, chatID string,
@@ -1017,7 +1034,8 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 			CurrentMessageID: msg.MessageID,
 			ParentMessageID:  inboundMetadata(msg, metadataKeyReplyToMessage),
 		},
-		Sender: messageSenderFromInbound(msg.Sender),
+		Sender:          messageSenderFromInbound(msg.Sender),
+		MessageMetadata: messageMetadataFromInbound(msg),
 	}
 
 	// context-dependent commands check their own Runtime fields and report
@@ -1140,6 +1158,12 @@ func (al *AgentLoop) processSystemMessage(
 		DefaultResponse: "Background task completed.",
 		EnableSummary:   false,
 		SendResponse:    false,
+		MessageMetadata: map[string]string{
+			providers.MessageMetaSourceKind: providers.MessageSourceSystem,
+			providers.MessageMetaChannel:    originChannel,
+			providers.MessageMetaChatID:     originChatID,
+			providers.MessageMetaSenderID:   msg.SenderID,
+		},
 	})
 }
 
@@ -1184,6 +1208,7 @@ func (al *AgentLoop) runAgentLoop(
 		opts.ChatID,
 		opts.ReplyContext,
 		opts.Sender,
+		opts.MessageMetadata,
 	)
 
 	// Resolve media:// refs: images→base64 data URLs, non-images→media refs in content
@@ -1193,9 +1218,10 @@ func (al *AgentLoop) runAgentLoop(
 
 	// 2. Save user message to session
 	userMsg := providers.Message{
-		Role:    "user",
-		Content: opts.UserMessage,
-		Sender:  opts.Sender,
+		Role:     "user",
+		Content:  opts.UserMessage,
+		Sender:   opts.Sender,
+		Metadata: providers.CloneMessageMetadata(opts.MessageMetadata),
 	}
 	if len(opts.Media) > 0 {
 		userMsg.Media = append([]string(nil), opts.Media...)
@@ -1285,6 +1311,7 @@ func (al *AgentLoop) runAgentLoop(
 				ReplyToMessageID: replyTo,
 				MessageID:        msgID,
 				Reactions:        deliveredReactions,
+				Metadata:         outboundMessageMetadata(opts.Channel, opts.ChatID, opts.MessageMetadata),
 			}
 			agentSessions.AddFullMessage(sessionKey, assistantMsg)
 			agentSessions.Save(sessionKey)
@@ -1307,6 +1334,7 @@ func (al *AgentLoop) runAgentLoop(
 				Role:             "assistant",
 				ReplyToMessageID: replyTo,
 				Reactions:        deliveredReactions,
+				Metadata:         outboundMessageMetadata(opts.Channel, opts.ChatID, opts.MessageMetadata),
 			}
 			agentSessions.AddFullMessage(sessionKey, assistantMsg)
 			agentSessions.Save(sessionKey)
@@ -1902,7 +1930,7 @@ func (al *AgentLoop) runLLMIteration(
 				newSummary := snapshot.Summary
 				messages = agent.ContextBuilder.BuildMessages(
 					newHistory, newSummary, "",
-					nil, opts.Channel, opts.ChatID, opts.ReplyContext, nil,
+					nil, opts.Channel, opts.ChatID, opts.ReplyContext, nil, opts.MessageMetadata,
 				)
 				continue
 			}
@@ -3222,6 +3250,69 @@ func extractParentPeer(msg bus.InboundMessage) *routing.RoutePeer {
 		return nil
 	}
 	return &routing.RoutePeer{Kind: parentKind, ID: parentID}
+}
+
+func messageMetadataFromInbound(msg bus.InboundMessage) map[string]string {
+	meta := map[string]string{}
+	if msg.Channel != "" {
+		meta[providers.MessageMetaChannel] = msg.Channel
+	}
+	if msg.ChatID != "" {
+		meta[providers.MessageMetaChatID] = msg.ChatID
+	}
+	if msg.SenderID != "" {
+		meta[providers.MessageMetaSenderID] = msg.SenderID
+	}
+	if msg.Peer.Kind != "" {
+		meta[providers.MessageMetaPeerKind] = msg.Peer.Kind
+	}
+	if msg.Peer.ID != "" {
+		meta[providers.MessageMetaPeerID] = msg.Peer.ID
+	}
+
+	sourceKind := strings.TrimSpace(inboundMetadata(msg, providers.MessageMetaSourceKind))
+	switch {
+	case sourceKind != "":
+		meta[providers.MessageMetaSourceKind] = sourceKind
+	case msg.Channel == "system":
+		meta[providers.MessageMetaSourceKind] = providers.MessageSourceSystem
+	case msg.SenderID != "" && msg.SenderID != "cron":
+		meta[providers.MessageMetaSourceKind] = providers.MessageSourceChannel
+	}
+
+	if triggerKind := strings.TrimSpace(inboundMetadata(msg, providers.MessageMetaTriggerKind)); triggerKind != "" {
+		meta[providers.MessageMetaTriggerKind] = triggerKind
+	}
+	if triggerID := strings.TrimSpace(inboundMetadata(msg, providers.MessageMetaTriggerID)); triggerID != "" {
+		meta[providers.MessageMetaTriggerID] = triggerID
+	}
+	if dispatchMode := strings.TrimSpace(inboundMetadata(msg, providers.MessageMetaDispatch)); dispatchMode != "" {
+		meta[providers.MessageMetaDispatch] = dispatchMode
+	}
+
+	return providers.CloneMessageMetadata(meta)
+}
+
+func outboundMessageMetadata(channel, chatID string, requestMetadata map[string]string) map[string]string {
+	meta := map[string]string{
+		providers.MessageMetaSourceKind: providers.MessageSourceAssistant,
+	}
+	if channel != "" {
+		meta[providers.MessageMetaChannel] = channel
+	}
+	if chatID != "" {
+		meta[providers.MessageMetaChatID] = chatID
+	}
+	if triggerKind := strings.TrimSpace(requestMetadata[providers.MessageMetaTriggerKind]); triggerKind != "" {
+		meta[providers.MessageMetaTriggerKind] = triggerKind
+	}
+	if triggerID := strings.TrimSpace(requestMetadata[providers.MessageMetaTriggerID]); triggerID != "" {
+		meta[providers.MessageMetaTriggerID] = triggerID
+	}
+	if dispatchMode := strings.TrimSpace(requestMetadata[providers.MessageMetaDispatch]); dispatchMode != "" {
+		meta[providers.MessageMetaDispatch] = dispatchMode
+	}
+	return providers.CloneMessageMetadata(meta)
 }
 
 // messageSenderFromInbound converts bus.SenderInfo into a MessageSender for storage.

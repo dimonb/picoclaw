@@ -476,7 +476,7 @@ func (cb *ContextBuilder) LoadBootstrapFiles() string {
 //
 // See: https://docs.anthropic.com/en/docs/build-with-claude/prompt-caching
 // See: https://platform.openai.com/docs/guides/prompt-caching
-func (cb *ContextBuilder) buildDynamicContext(channel, chatID string) string {
+func (cb *ContextBuilder) buildDynamicContext(channel, chatID string, messageMetadata map[string]string) string {
 	now := time.Now().Format("2006-01-02 15:04 (Monday)")
 	rt := fmt.Sprintf("%s %s, Go %s", runtime.GOOS, runtime.GOARCH, runtime.Version())
 
@@ -485,6 +485,20 @@ func (cb *ContextBuilder) buildDynamicContext(channel, chatID string) string {
 
 	if channel != "" && chatID != "" {
 		fmt.Fprintf(&sb, "\n\n## Current Session\nChannel: %s\nChat ID: %s", channel, chatID)
+	}
+
+	triggerKind := strings.TrimSpace(messageMetadata[providers.MessageMetaTriggerKind])
+	if triggerKind != "" {
+		fmt.Fprintf(&sb, "\n\n## Current Trigger\nType: %s", triggerKind)
+		if triggerID := strings.TrimSpace(messageMetadata[providers.MessageMetaTriggerID]); triggerID != "" {
+			fmt.Fprintf(&sb, "\nTrigger ID: %s", triggerID)
+		}
+		if sourceKind := strings.TrimSpace(messageMetadata[providers.MessageMetaSourceKind]); sourceKind != "" {
+			fmt.Fprintf(&sb, "\nSource: %s", sourceKind)
+		}
+		if triggerKind == providers.MessageTriggerCron {
+			fmt.Fprintf(&sb, "\nThis turn was triggered automatically by a scheduled cron job. The next user message is synthetic automation input for the bound session.")
+		}
 	}
 
 	return sb.String()
@@ -550,6 +564,7 @@ func (cb *ContextBuilder) BuildMessages(
 	channel, chatID string,
 	replyCtx *ReplyContextInfo,
 	sender *providers.MessageSender,
+	messageMetadata map[string]string,
 ) []providers.Message {
 	messages := []providers.Message{}
 
@@ -565,7 +580,7 @@ func (cb *ContextBuilder) BuildMessages(
 	staticPrompt := cb.BuildSystemPromptWithCache()
 
 	// Build short dynamic context (time, runtime, session) — changes per request
-	dynamicCtx := cb.buildDynamicContext(channel, chatID)
+	dynamicCtx := cb.buildDynamicContext(channel, chatID, messageMetadata)
 	replyRoutingCtx := buildTelegramDeliveryContext(channel, replyCtx, cb.telegramAllowedReactionEmoji)
 
 	// Compose a single system message: static (cached) + dynamic + optional summary.
@@ -643,9 +658,10 @@ func (cb *ContextBuilder) BuildMessages(
 	// Add current user message
 	if strings.TrimSpace(currentMessage) != "" {
 		msg := providers.Message{
-			Role:    "user",
-			Content: currentMessage,
-			Sender:  sender,
+			Role:     "user",
+			Content:  currentMessage,
+			Sender:   sender,
+			Metadata: providers.CloneMessageMetadata(messageMetadata),
 		}
 		if replyCtx != nil {
 			msg.MessageID = strings.TrimSpace(replyCtx.CurrentMessageID)
