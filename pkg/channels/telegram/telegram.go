@@ -165,23 +165,23 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 }
 
 func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	_, err := c.SendMessageWithID(ctx, msg)
+	_, err := c.SendMessageWithIDs(ctx, msg)
 	return err
 }
 
-// SendMessageWithID implements channels.MessageIDSender.
-func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (string, error) {
+// SendMessageWithIDs implements channels.MessageIDsSender.
+func (c *TelegramChannel) SendMessageWithIDs(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
-		return "", channels.ErrNotRunning
+		return nil, channels.ErrNotRunning
 	}
 
 	chatID, threadID, err := parseTelegramChatID(msg.ChatID)
 	if err != nil {
-		return "", fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed)
+		return nil, fmt.Errorf("invalid chat ID %s: %w", msg.ChatID, channels.ErrSendFailed)
 	}
 
 	if msg.Content == "" {
-		return "", nil
+		return nil, nil
 	}
 
 	// The Manager already splits messages to ≤4000 chars (WithMaxMessageLength),
@@ -189,7 +189,7 @@ func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.Outboun
 	// check if HTML expansion pushes it beyond Telegram's 4096-char API limit.
 	replyToID := msg.ReplyToMessageID
 	queue := []string{msg.Content}
-	firstID := ""
+	var messageIDs []string
 	for len(queue) > 0 {
 		chunk := queue[0]
 		queue = queue[1:]
@@ -211,16 +211,14 @@ func (c *TelegramChannel) SendMessageWithID(ctx context.Context, msg bus.Outboun
 
 		msgID, err := c.sendHTMLChunk(ctx, chatID, threadID, htmlContent, chunk, replyToID)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		if firstID == "" {
-			firstID = msgID
-		}
+		messageIDs = append(messageIDs, msgID)
 		// Only the first chunk should be a reply; subsequent chunks are normal messages.
 		replyToID = ""
 	}
 
-	return firstID, nil
+	return messageIDs, nil
 }
 
 // sendHTMLChunk sends a single HTML message, falling back to the original

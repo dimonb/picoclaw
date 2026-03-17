@@ -45,10 +45,10 @@ type PlaceholderRecorder interface {
 	RecordReactionUndo(channel, chatID string, undo func())
 }
 
-// MessageIDSender is implemented by channels that can return the platform
-// message ID for a delivered outbound text message.
-type MessageIDSender interface {
-	SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (messageID string, err error)
+// MessageIDsSender is implemented by channels that can return the platform
+// message IDs for a delivered outbound text message.
+type MessageIDsSender interface {
+	SendMessageWithIDs(ctx context.Context, msg bus.OutboundMessage) (messageIDs []string, err error)
 }
 
 // CommandRegistrarCapable is implemented by channels that can register

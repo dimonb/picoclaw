@@ -79,7 +79,7 @@ type Message struct {
 	SystemParts      []ContentBlock `json:"system_parts,omitempty"` // structured system blocks for cache-aware adapters
 	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
-	MessageID        string         `json:"message_id,omitempty"`          // Platform message ID
+	MessageIDs       []string       `json:"message_ids,omitempty"`         // Platform message IDs
 	ReplyToMessageID string         `json:"reply_to_message_id,omitempty"` // Parent message ID (for threading)
 	Sender           *MessageSender `json:"sender,omitempty"`              // Author identity (user messages only)
 }

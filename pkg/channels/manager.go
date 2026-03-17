@@ -143,9 +143,9 @@ func (m *Manager) RecordReactionUndo(channel, chatID string, undo func()) {
 }
 
 // preSend handles typing stop, reaction undo, and placeholder editing before sending a message.
-// Returns the delivered message ID and true when delivery completed by editing
+// Returns the delivered message IDs and true when delivery completed by editing
 // an existing placeholder, so the caller can skip a normal Send.
-func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMessage, ch Channel) (string, bool) {
+func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMessage, ch Channel) ([]string, bool) {
 	key := name + ":" + msg.ChatID
 
 	// 1. Stop typing
@@ -167,14 +167,14 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 		if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
 			if editor, ok := ch.(MessageEditor); ok {
 				if err := editor.EditMessage(ctx, msg.ChatID, entry.id, msg.Content); err == nil {
-					return entry.id, true
+					return []string{entry.id}, true
 				}
 				// edit failed → fall through to normal Send
 			}
 		}
 	}
 
-	return "", false
+	return nil, false
 }
 
 func NewManager(cfg *config.Config, messageBus *bus.MessageBus, store media.MediaStore) (*Manager, error) {
@@ -509,9 +509,9 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 }
 
 func (m *Manager) deliverOutbound(ctx context.Context, name string, w *channelWorker, msg bus.OutboundMessage) {
-	msgID, delivered := m.sendOutbound(ctx, name, w, msg)
+	msgIDs, delivered := m.sendOutbound(ctx, name, w, msg)
 	if delivered && msg.OnDelivered != nil {
-		msg.OnDelivered(msgID)
+		msg.OnDelivered(msgIDs)
 	}
 }
 
@@ -520,27 +520,27 @@ func (m *Manager) sendOutbound(
 	name string,
 	w *channelWorker,
 	msg bus.OutboundMessage,
-) (string, bool) {
+) ([]string, bool) {
 	maxLen := 0
 	if mlp, ok := w.ch.(MessageLengthProvider); ok {
 		maxLen = mlp.MaxMessageLength()
 	}
 
 	if maxLen > 0 && len([]rune(msg.Content)) > maxLen {
-		firstID := ""
+		var messageIDs []string
 		for _, chunk := range SplitMessage(msg.Content, maxLen) {
 			chunkMsg := msg
 			chunkMsg.Content = chunk
 			chunkMsg.OnDelivered = nil
-			msgID, delivered := m.sendWithRetry(ctx, name, w, chunkMsg)
+			chunkIDs, delivered := m.sendWithRetry(ctx, name, w, chunkMsg)
 			if !delivered {
-				return "", false
+				return nil, false
 			}
-			if firstID == "" {
-				firstID = msgID
+			if len(chunkIDs) > 0 {
+				messageIDs = append(messageIDs, chunkIDs...)
 			}
 		}
-		return firstID, true
+		return messageIDs, true
 	}
 
 	return m.sendWithRetry(ctx, name, w, msg)
@@ -556,30 +556,30 @@ func (m *Manager) sendWithRetry(
 	name string,
 	w *channelWorker,
 	msg bus.OutboundMessage,
-) (string, bool) {
+) ([]string, bool) {
 	// Rate limit: wait for token
 	if err := w.limiter.Wait(ctx); err != nil {
 		// ctx canceled, shutting down
-		return "", false
+		return nil, false
 	}
 
 	// Pre-send: stop typing and try to edit placeholder
-	if msgID, handled := m.preSend(ctx, name, msg, w.ch); handled {
-		return msgID, true
+	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
+		return msgIDs, true
 	}
 
 	var lastErr error
-	var msgID string
-	sender, hasMessageIDSender := w.ch.(MessageIDSender)
+	var msgIDs []string
+	sender, hasMessageIDsSender := w.ch.(MessageIDsSender)
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		msgID = ""
-		if hasMessageIDSender {
-			msgID, lastErr = sender.SendMessageWithID(ctx, msg)
+		msgIDs = nil
+		if hasMessageIDsSender {
+			msgIDs, lastErr = sender.SendMessageWithIDs(ctx, msg)
 		} else {
 			lastErr = w.ch.Send(ctx, msg)
 		}
 		if lastErr == nil {
-			return msgID, true
+			return msgIDs, true
 		}
 
 		// Permanent failures — don't retry
@@ -598,7 +598,7 @@ func (m *Manager) sendWithRetry(
 			case <-time.After(rateLimitDelay):
 				continue
 			case <-ctx.Done():
-				return "", false
+				return nil, false
 			}
 		}
 
@@ -607,7 +607,7 @@ func (m *Manager) sendWithRetry(
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
-			return "", false
+			return nil, false
 		}
 	}
 
@@ -619,7 +619,7 @@ func (m *Manager) sendWithRetry(
 		"retries": maxRetries,
 	})
 
-	return "", false
+	return nil, false
 }
 
 func dispatchLoop[M any](

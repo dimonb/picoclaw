@@ -177,7 +177,7 @@ func TestProcessMessage_AssistantSavedOnDelivered(t *testing.T) {
 	if response.OnDelivered == nil {
 		t.Fatal("expected OnDelivered callback")
 	}
-	response.OnDelivered("out-99")
+	response.OnDelivered([]string{"out-99"})
 
 	history = defaultAgent.Sessions.GetHistory(sessionKey)
 	if len(history) != 2 {
@@ -186,8 +186,8 @@ func TestProcessMessage_AssistantSavedOnDelivered(t *testing.T) {
 	if history[1].Role != "assistant" {
 		t.Fatalf("expected assistant message, got %+v", history[1])
 	}
-	if history[1].MessageID != "out-99" {
-		t.Fatalf("expected assistant message_id out-99, got %q", history[1].MessageID)
+	if len(history[1].MessageIDs) != 1 || history[1].MessageIDs[0] != "out-99" {
+		t.Fatalf("expected assistant message_ids [out-99], got %v", history[1].MessageIDs)
 	}
 }
 
@@ -516,7 +516,7 @@ func (h testHelper) executeAndGetResponse(tb testing.TB, ctx context.Context, ms
 		tb.Fatalf("processMessage failed: %v", err)
 	}
 	if response.OnDelivered != nil {
-		response.OnDelivered("")
+		response.OnDelivered(nil)
 	}
 	return response.Content
 }

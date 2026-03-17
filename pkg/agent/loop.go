@@ -75,7 +75,7 @@ type agentResponse struct {
 	Content     string
 	Channel     string
 	ChatID      string
-	OnDelivered func(msgID string)
+	OnDelivered func(msgIDs []string)
 }
 
 func (r agentResponse) outboundMessage(defaultChannel, defaultChatID string) bus.OutboundMessage {
@@ -93,6 +93,22 @@ func (r agentResponse) outboundMessage(defaultChannel, defaultChatID string) bus
 		Content:     r.Content,
 		OnDelivered: r.OnDelivered,
 	}
+}
+
+func singleMessageIDs(msgID string) []string {
+	if msgID == "" {
+		return nil
+	}
+	return []string{msgID}
+}
+
+func cloneMessageIDs(msgIDs []string) []string {
+	if len(msgIDs) == 0 {
+		return nil
+	}
+	cloned := make([]string, len(msgIDs))
+	copy(cloned, msgIDs)
+	return cloned
 }
 
 const (
@@ -347,7 +363,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 						})
 				} else {
 					if response.OnDelivered != nil {
-						response.OnDelivered("")
+						response.OnDelivered(nil)
 					}
 					logger.DebugCF(
 						"agent",
@@ -698,7 +714,7 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 		return "", err
 	}
 	if response.OnDelivered != nil {
-		response.OnDelivered("")
+		response.OnDelivered(nil)
 	}
 	return response.Content, nil
 }
@@ -727,7 +743,7 @@ func (al *AgentLoop) ProcessHeartbeat(
 		return "", err
 	}
 	if response.OnDelivered != nil {
-		response.OnDelivered("")
+		response.OnDelivered(nil)
 	}
 	return response.Content, nil
 }
@@ -961,7 +977,7 @@ func (al *AgentLoop) runAgentLoop(
 	userMsg := providers.Message{
 		Role:             "user",
 		Content:          opts.UserMessage,
-		MessageID:        opts.MessageID,
+		MessageIDs:       singleMessageIDs(opts.MessageID),
 		ReplyToMessageID: opts.ReplyToMessageID,
 		Sender:           opts.Sender,
 	}
@@ -986,11 +1002,11 @@ func (al *AgentLoop) runAgentLoop(
 		Channel: opts.Channel,
 		ChatID:  opts.ChatID,
 	}
-	response.OnDelivered = func(msgID string) {
+	response.OnDelivered = func(msgIDs []string) {
 		assistantMsg := providers.Message{
-			Role:      "assistant",
-			Content:   finalContent,
-			MessageID: msgID,
+			Role:       "assistant",
+			Content:    finalContent,
+			MessageIDs: cloneMessageIDs(msgIDs),
 		}
 		agent.Sessions.AddFullMessage(opts.SessionKey, assistantMsg)
 		agent.Sessions.Save(opts.SessionKey)

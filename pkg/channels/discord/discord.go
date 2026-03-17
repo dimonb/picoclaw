@@ -129,26 +129,30 @@ func (c *DiscordChannel) Stop(ctx context.Context) error {
 }
 
 func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	_, err := c.SendMessageWithID(ctx, msg)
+	_, err := c.SendMessageWithIDs(ctx, msg)
 	return err
 }
 
-// SendMessageWithID implements channels.MessageIDSender.
-func (c *DiscordChannel) SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (string, error) {
+// SendMessageWithIDs implements channels.MessageIDsSender.
+func (c *DiscordChannel) SendMessageWithIDs(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
-		return "", channels.ErrNotRunning
+		return nil, channels.ErrNotRunning
 	}
 
 	channelID := msg.ChatID
 	if channelID == "" {
-		return "", fmt.Errorf("channel ID is empty")
+		return nil, fmt.Errorf("channel ID is empty")
 	}
 
 	if len([]rune(msg.Content)) == 0 {
-		return "", nil
+		return nil, nil
 	}
 
-	return c.sendChunk(ctx, channelID, msg.Content, msg.ReplyToMessageID)
+	msgID, err := c.sendChunk(ctx, channelID, msg.Content, msg.ReplyToMessageID)
+	if err != nil {
+		return nil, err
+	}
+	return []string{msgID}, nil
 }
 
 // SendMedia implements the channels.MediaSender interface.

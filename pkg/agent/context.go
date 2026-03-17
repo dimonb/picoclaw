@@ -761,11 +761,20 @@ func (cb *ContextBuilder) GetSkillsInfo() map[string]any {
 // messageThreadAnnotation returns the thread annotation prefix for a message,
 // e.g. "[msg:#5, reply_to:#3] " or "" if the message has no threading IDs.
 func messageThreadAnnotation(msg providers.Message) string {
+	msgIDs := msg.MessageIDs
+	formattedIDs := strings.Join(msgIDs, ",#")
+	if formattedIDs != "" {
+		formattedIDs = "#" + formattedIDs
+	}
 	switch {
-	case msg.MessageID != "" && msg.ReplyToMessageID != "":
-		return fmt.Sprintf("[msg:#%s, reply_to:#%s] ", msg.MessageID, msg.ReplyToMessageID)
-	case msg.MessageID != "":
-		return fmt.Sprintf("[msg:#%s] ", msg.MessageID)
+	case len(msgIDs) > 1 && msg.ReplyToMessageID != "":
+		return fmt.Sprintf("[msgs:%s, reply_to:#%s] ", formattedIDs, msg.ReplyToMessageID)
+	case len(msgIDs) > 1:
+		return fmt.Sprintf("[msgs:%s] ", formattedIDs)
+	case len(msgIDs) == 1 && msg.ReplyToMessageID != "":
+		return fmt.Sprintf("[msg:%s, reply_to:#%s] ", formattedIDs, msg.ReplyToMessageID)
+	case len(msgIDs) == 1:
+		return fmt.Sprintf("[msg:%s] ", formattedIDs)
 	case msg.ReplyToMessageID != "":
 		return fmt.Sprintf("[reply_to:#%s] ", msg.ReplyToMessageID)
 	default:

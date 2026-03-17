@@ -32,11 +32,11 @@ type InboundMessage struct {
 }
 
 type OutboundMessage struct {
-	Channel          string             `json:"channel"`
-	ChatID           string             `json:"chat_id"`
-	Content          string             `json:"content"`
-	ReplyToMessageID string             `json:"reply_to_message_id,omitempty"`
-	OnDelivered      func(msgID string) `json:"-"`
+	Channel          string                `json:"channel"`
+	ChatID           string                `json:"chat_id"`
+	Content          string                `json:"content"`
+	ReplyToMessageID string                `json:"reply_to_message_id,omitempty"`
+	OnDelivered      func(msgIDs []string) `json:"-"`
 }
 
 // MediaPart describes a single media attachment to send.

@@ -109,19 +109,19 @@ func (c *SlackChannel) Stop(ctx context.Context) error {
 }
 
 func (c *SlackChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	_, err := c.SendMessageWithID(ctx, msg)
+	_, err := c.SendMessageWithIDs(ctx, msg)
 	return err
 }
 
-// SendMessageWithID implements channels.MessageIDSender.
-func (c *SlackChannel) SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (string, error) {
+// SendMessageWithIDs implements channels.MessageIDsSender.
+func (c *SlackChannel) SendMessageWithIDs(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
-		return "", channels.ErrNotRunning
+		return nil, channels.ErrNotRunning
 	}
 
 	channelID, threadTS := parseSlackChatID(msg.ChatID)
 	if channelID == "" {
-		return "", fmt.Errorf("invalid slack chat ID: %s", msg.ChatID)
+		return nil, fmt.Errorf("invalid slack chat ID: %s", msg.ChatID)
 	}
 
 	opts := []slack.MsgOption{
@@ -138,7 +138,7 @@ func (c *SlackChannel) SendMessageWithID(ctx context.Context, msg bus.OutboundMe
 
 	_, ts, err := c.api.PostMessageContext(ctx, channelID, opts...)
 	if err != nil {
-		return "", fmt.Errorf("slack send: %w", channels.ErrTemporary)
+		return nil, fmt.Errorf("slack send: %w", channels.ErrTemporary)
 	}
 
 	if ref, ok := c.pendingAcks.LoadAndDelete(msg.ChatID); ok {
@@ -154,7 +154,7 @@ func (c *SlackChannel) SendMessageWithID(ctx context.Context, msg bus.OutboundMe
 		"thread_ts":  threadTS,
 	})
 
-	return ts, nil
+	return []string{ts}, nil
 }
 
 // SendMedia implements the channels.MediaSender interface.

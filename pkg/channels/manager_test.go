@@ -18,7 +18,7 @@ import (
 type mockChannel struct {
 	BaseChannel
 	sendFn            func(ctx context.Context, msg bus.OutboundMessage) error
-	sendWithIDFn      func(ctx context.Context, msg bus.OutboundMessage) (string, error)
+	sendWithIDsFn     func(ctx context.Context, msg bus.OutboundMessage) ([]string, error)
 	sentMessages      []bus.OutboundMessage
 	placeholdersSent  int
 	editedMessages    int
@@ -30,15 +30,15 @@ func (m *mockChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	return m.sendFn(ctx, msg)
 }
 
-func (m *mockChannel) SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (string, error) {
+func (m *mockChannel) SendMessageWithIDs(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	m.sentMessages = append(m.sentMessages, msg)
-	if m.sendWithIDFn == nil {
+	if m.sendWithIDsFn == nil {
 		if m.sendFn == nil {
-			return "", nil
+			return nil, nil
 		}
-		return "", m.sendFn(ctx, msg)
+		return nil, m.sendFn(ctx, msg)
 	}
-	return m.sendWithIDFn(ctx, msg)
+	return m.sendWithIDsFn(ctx, msg)
 }
 
 func (m *mockChannel) Start(ctx context.Context) error { return nil }
@@ -114,12 +114,12 @@ func TestSendWithRetry_TemporaryThenSuccess(t *testing.T) {
 	}
 }
 
-func TestDeliverOutbound_CallsOnDeliveredWithMessageID(t *testing.T) {
+func TestDeliverOutbound_CallsOnDeliveredWithMessageIDs(t *testing.T) {
 	m := newTestManager()
 	ch := &mockChannel{
 		sendFn: nil,
-		sendWithIDFn: func(_ context.Context, _ bus.OutboundMessage) (string, error) {
-			return "msg-123", nil
+		sendWithIDsFn: func(_ context.Context, _ bus.OutboundMessage) ([]string, error) {
+			return []string{"msg-123"}, nil
 		},
 	}
 	w := &channelWorker{
@@ -127,20 +127,20 @@ func TestDeliverOutbound_CallsOnDeliveredWithMessageID(t *testing.T) {
 		limiter: rate.NewLimiter(rate.Inf, 1),
 	}
 
-	var deliveredID string
+	var deliveredIDs []string
 	msg := bus.OutboundMessage{
 		Channel: "test",
 		ChatID:  "1",
 		Content: "hello",
-		OnDelivered: func(msgID string) {
-			deliveredID = msgID
+		OnDelivered: func(msgIDs []string) {
+			deliveredIDs = append([]string(nil), msgIDs...)
 		},
 	}
 
 	m.deliverOutbound(context.Background(), "test", w, msg)
 
-	if deliveredID != "msg-123" {
-		t.Fatalf("expected delivered ID msg-123, got %q", deliveredID)
+	if len(deliveredIDs) != 1 || deliveredIDs[0] != "msg-123" {
+		t.Fatalf("expected delivered IDs [msg-123], got %v", deliveredIDs)
 	}
 }
 
@@ -164,20 +164,61 @@ func TestDeliverOutbound_CallsOnDeliveredWithPlaceholderID(t *testing.T) {
 
 	m.RecordPlaceholder("test", "123", "ph-456")
 
-	var deliveredID string
+	var deliveredIDs []string
 	msg := bus.OutboundMessage{
 		Channel: "test",
 		ChatID:  "123",
 		Content: "hello",
-		OnDelivered: func(msgID string) {
-			deliveredID = msgID
+		OnDelivered: func(msgIDs []string) {
+			deliveredIDs = append([]string(nil), msgIDs...)
 		},
 	}
 
 	m.deliverOutbound(context.Background(), "test", w, msg)
 
-	if deliveredID != "ph-456" {
-		t.Fatalf("expected delivered ID ph-456, got %q", deliveredID)
+	if len(deliveredIDs) != 1 || deliveredIDs[0] != "ph-456" {
+		t.Fatalf("expected delivered IDs [ph-456], got %v", deliveredIDs)
+	}
+}
+
+func TestDeliverOutbound_CallsOnDeliveredWithAllSplitMessageIDs(t *testing.T) {
+	m := newTestManager()
+	callCount := 0
+	ch := &mockChannel{
+		sendWithIDsFn: func(_ context.Context, msg bus.OutboundMessage) ([]string, error) {
+			callCount++
+			return []string{fmt.Sprintf("id-%d", callCount)}, nil
+		},
+	}
+	w := &channelWorker{
+		ch:      ch,
+		limiter: rate.NewLimiter(rate.Inf, 1),
+	}
+	ch.BaseChannel = *NewBaseChannel("test", nil, nil, nil, WithMaxMessageLength(5))
+
+	var deliveredIDs []string
+	msg := bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "1",
+		Content: "hello world",
+		OnDelivered: func(msgIDs []string) {
+			deliveredIDs = append([]string(nil), msgIDs...)
+		},
+	}
+
+	m.deliverOutbound(context.Background(), "test", w, msg)
+
+	if len(deliveredIDs) <= 1 {
+		t.Fatalf("expected multiple delivered IDs for split outbound, got %v", deliveredIDs)
+	}
+	if len(deliveredIDs) != callCount {
+		t.Fatalf("expected %d delivered IDs, got %v", callCount, deliveredIDs)
+	}
+	for i, deliveredID := range deliveredIDs {
+		expected := fmt.Sprintf("id-%d", i+1)
+		if deliveredID != expected {
+			t.Fatalf("expected delivered IDs in order, got %v", deliveredIDs)
+		}
 	}
 }
 
@@ -553,13 +594,13 @@ func TestPreSend_PlaceholderEditSuccess(t *testing.T) {
 	m.RecordPlaceholder("test", "123", "456")
 
 	msg := bus.OutboundMessage{Channel: "test", ChatID: "123", Content: "hello"}
-	msgID, edited := m.preSend(context.Background(), "test", msg, ch)
+	msgIDs, edited := m.preSend(context.Background(), "test", msg, ch)
 
 	if !edited {
 		t.Fatal("expected preSend to return true (placeholder edited)")
 	}
-	if msgID != "456" {
-		t.Fatalf("expected placeholder ID 456, got %q", msgID)
+	if len(msgIDs) != 1 || msgIDs[0] != "456" {
+		t.Fatalf("expected placeholder IDs [456], got %v", msgIDs)
 	}
 	if !editCalled {
 		t.Fatal("expected EditMessage to be called")
@@ -655,7 +696,7 @@ func TestPreSend_TypingAndPlaceholder(t *testing.T) {
 	m.RecordPlaceholder("test", "123", "456")
 
 	msg := bus.OutboundMessage{Channel: "test", ChatID: "123", Content: "hello"}
-	msgID, edited := m.preSend(context.Background(), "test", msg, ch)
+	msgIDs, edited := m.preSend(context.Background(), "test", msg, ch)
 
 	if !stopCalled {
 		t.Fatal("expected typing stop to be called")
@@ -666,8 +707,8 @@ func TestPreSend_TypingAndPlaceholder(t *testing.T) {
 	if !edited {
 		t.Fatal("expected preSend to return true")
 	}
-	if msgID != "456" {
-		t.Fatalf("expected placeholder ID 456, got %q", msgID)
+	if len(msgIDs) != 1 || msgIDs[0] != "456" {
+		t.Fatalf("expected placeholder IDs [456], got %v", msgIDs)
 	}
 }
 
@@ -919,7 +960,7 @@ func TestPreSendStillWorksWithWrappedTypes(t *testing.T) {
 	m.RecordPlaceholder("test", "chat1", "ph_id")
 
 	msg := bus.OutboundMessage{Channel: "test", ChatID: "chat1", Content: "response"}
-	msgID, edited := m.preSend(context.Background(), "test", msg, ch)
+	msgIDs, edited := m.preSend(context.Background(), "test", msg, ch)
 
 	if !stopCalled {
 		t.Fatal("expected typing stop to be called via wrapped type")
@@ -930,8 +971,8 @@ func TestPreSendStillWorksWithWrappedTypes(t *testing.T) {
 	if !edited {
 		t.Fatal("expected preSend to return true")
 	}
-	if msgID != "ph_id" {
-		t.Fatalf("expected placeholder ID ph_id, got %q", msgID)
+	if len(msgIDs) != 1 || msgIDs[0] != "ph_id" {
+		t.Fatalf("expected placeholder IDs [ph_id], got %v", msgIDs)
 	}
 }
 
