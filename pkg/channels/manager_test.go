@@ -18,6 +18,7 @@ import (
 type mockChannel struct {
 	BaseChannel
 	sendFn            func(ctx context.Context, msg bus.OutboundMessage) error
+	sendWithIDFn      func(ctx context.Context, msg bus.OutboundMessage) (string, error)
 	sentMessages      []bus.OutboundMessage
 	placeholdersSent  int
 	editedMessages    int
@@ -27,6 +28,17 @@ type mockChannel struct {
 func (m *mockChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
 	m.sentMessages = append(m.sentMessages, msg)
 	return m.sendFn(ctx, msg)
+}
+
+func (m *mockChannel) SendMessageWithID(ctx context.Context, msg bus.OutboundMessage) (string, error) {
+	m.sentMessages = append(m.sentMessages, msg)
+	if m.sendWithIDFn == nil {
+		if m.sendFn == nil {
+			return "", nil
+		}
+		return "", m.sendFn(ctx, msg)
+	}
+	return m.sendWithIDFn(ctx, msg)
 }
 
 func (m *mockChannel) Start(ctx context.Context) error { return nil }
@@ -99,6 +111,73 @@ func TestSendWithRetry_TemporaryThenSuccess(t *testing.T) {
 
 	if callCount != 3 {
 		t.Fatalf("expected 3 Send calls (2 failures + 1 success), got %d", callCount)
+	}
+}
+
+func TestDeliverOutbound_CallsOnDeliveredWithMessageID(t *testing.T) {
+	m := newTestManager()
+	ch := &mockChannel{
+		sendFn: nil,
+		sendWithIDFn: func(_ context.Context, _ bus.OutboundMessage) (string, error) {
+			return "msg-123", nil
+		},
+	}
+	w := &channelWorker{
+		ch:      ch,
+		limiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	var deliveredID string
+	msg := bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "1",
+		Content: "hello",
+		OnDelivered: func(msgID string) {
+			deliveredID = msgID
+		},
+	}
+
+	m.deliverOutbound(context.Background(), "test", w, msg)
+
+	if deliveredID != "msg-123" {
+		t.Fatalf("expected delivered ID msg-123, got %q", deliveredID)
+	}
+}
+
+func TestDeliverOutbound_CallsOnDeliveredWithPlaceholderID(t *testing.T) {
+	m := newTestManager()
+	ch := &mockMessageEditor{
+		mockChannel: mockChannel{
+			sendFn: func(_ context.Context, _ bus.OutboundMessage) error {
+				t.Fatal("Send should not be called when placeholder edit succeeds")
+				return nil
+			},
+		},
+		editFn: func(_ context.Context, _, _, _ string) error {
+			return nil
+		},
+	}
+	w := &channelWorker{
+		ch:      ch,
+		limiter: rate.NewLimiter(rate.Inf, 1),
+	}
+
+	m.RecordPlaceholder("test", "123", "ph-456")
+
+	var deliveredID string
+	msg := bus.OutboundMessage{
+		Channel: "test",
+		ChatID:  "123",
+		Content: "hello",
+		OnDelivered: func(msgID string) {
+			deliveredID = msgID
+		},
+	}
+
+	m.deliverOutbound(context.Background(), "test", w, msg)
+
+	if deliveredID != "ph-456" {
+		t.Fatalf("expected delivered ID ph-456, got %q", deliveredID)
 	}
 }
 
@@ -474,10 +553,13 @@ func TestPreSend_PlaceholderEditSuccess(t *testing.T) {
 	m.RecordPlaceholder("test", "123", "456")
 
 	msg := bus.OutboundMessage{Channel: "test", ChatID: "123", Content: "hello"}
-	edited := m.preSend(context.Background(), "test", msg, ch)
+	msgID, edited := m.preSend(context.Background(), "test", msg, ch)
 
 	if !edited {
 		t.Fatal("expected preSend to return true (placeholder edited)")
+	}
+	if msgID != "456" {
+		t.Fatalf("expected placeholder ID 456, got %q", msgID)
 	}
 	if !editCalled {
 		t.Fatal("expected EditMessage to be called")
@@ -504,7 +586,7 @@ func TestPreSend_PlaceholderEditFails_FallsThrough(t *testing.T) {
 	m.RecordPlaceholder("test", "123", "456")
 
 	msg := bus.OutboundMessage{Channel: "test", ChatID: "123", Content: "hello"}
-	edited := m.preSend(context.Background(), "test", msg, ch)
+	_, edited := m.preSend(context.Background(), "test", msg, ch)
 
 	if edited {
 		t.Fatal("expected preSend to return false when edit fails")
@@ -526,7 +608,7 @@ func TestPreSend_TypingStopCalled(t *testing.T) {
 	})
 
 	msg := bus.OutboundMessage{Channel: "test", ChatID: "123", Content: "hello"}
-	m.preSend(context.Background(), "test", msg, ch)
+	_, _ = m.preSend(context.Background(), "test", msg, ch)
 
 	if !stopCalled {
 		t.Fatal("expected typing stop func to be called")
@@ -543,7 +625,7 @@ func TestPreSend_NoRegisteredState(t *testing.T) {
 	}
 
 	msg := bus.OutboundMessage{Channel: "test", ChatID: "123", Content: "hello"}
-	edited := m.preSend(context.Background(), "test", msg, ch)
+	_, edited := m.preSend(context.Background(), "test", msg, ch)
 
 	if edited {
 		t.Fatal("expected preSend to return false with no registered state")
@@ -573,7 +655,7 @@ func TestPreSend_TypingAndPlaceholder(t *testing.T) {
 	m.RecordPlaceholder("test", "123", "456")
 
 	msg := bus.OutboundMessage{Channel: "test", ChatID: "123", Content: "hello"}
-	edited := m.preSend(context.Background(), "test", msg, ch)
+	msgID, edited := m.preSend(context.Background(), "test", msg, ch)
 
 	if !stopCalled {
 		t.Fatal("expected typing stop to be called")
@@ -583,6 +665,9 @@ func TestPreSend_TypingAndPlaceholder(t *testing.T) {
 	}
 	if !edited {
 		t.Fatal("expected preSend to return true")
+	}
+	if msgID != "456" {
+		t.Fatalf("expected placeholder ID 456, got %q", msgID)
 	}
 }
 
@@ -834,7 +919,7 @@ func TestPreSendStillWorksWithWrappedTypes(t *testing.T) {
 	m.RecordPlaceholder("test", "chat1", "ph_id")
 
 	msg := bus.OutboundMessage{Channel: "test", ChatID: "chat1", Content: "response"}
-	edited := m.preSend(context.Background(), "test", msg, ch)
+	msgID, edited := m.preSend(context.Background(), "test", msg, ch)
 
 	if !stopCalled {
 		t.Fatal("expected typing stop to be called via wrapped type")
@@ -844,6 +929,9 @@ func TestPreSendStillWorksWithWrappedTypes(t *testing.T) {
 	}
 	if !edited {
 		t.Fatal("expected preSend to return true")
+	}
+	if msgID != "ph_id" {
+		t.Fatalf("expected placeholder ID ph_id, got %q", msgID)
 	}
 }
 
