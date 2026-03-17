@@ -96,6 +96,7 @@ type CronService struct {
 	mu        sync.RWMutex
 	running   bool
 	stopChan  chan struct{}
+	wakeChan  chan struct{}
 	gronx     *gronx.Gronx
 }
 
@@ -104,6 +105,7 @@ func NewCronService(storePath string, onJob JobHandler) *CronService {
 		storePath: storePath,
 		onJob:     onJob,
 		gronx:     gronx.New(),
+		wakeChan:  make(chan struct{}),
 	}
 	// Initialize and load store on creation
 	cs.loadStore()
@@ -128,6 +130,9 @@ func (cs *CronService) Start() error {
 	}
 
 	cs.stopChan = make(chan struct{})
+	if cs.wakeChan == nil {
+		cs.wakeChan = make(chan struct{})
+	}
 	cs.running = true
 	go cs.runLoop(cs.stopChan)
 
@@ -150,14 +155,47 @@ func (cs *CronService) Stop() {
 }
 
 func (cs *CronService) runLoop(stopChan chan struct{}) {
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
+	timer := time.NewTimer(time.Hour)
+	if !timer.Stop() {
+		<-timer.C
+	}
+	defer timer.Stop()
 
 	for {
+		// every loop, recalculate the next wake time
+		cs.mu.RLock()
+		nextWake := cs.getNextWakeMS()
+		cs.mu.RUnlock()
+
+		var delay time.Duration
+		now := time.Now().UnixMilli()
+
+		if nextWake == nil {
+			// no jobs, sleep for a long time (or until a new job is added)
+			delay = time.Hour
+		} else {
+			diff := *nextWake - now
+			if diff <= 0 {
+				delay = 0
+			} else {
+				delay = time.Duration(diff) * time.Millisecond
+			}
+		}
+
+		timer.Reset(delay)
+
 		select {
 		case <-stopChan:
 			return
-		case <-ticker.C:
+		case <-cs.wakeChan: // wake on new job or update
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			continue
+		case <-timer.C:
 			cs.checkJobs()
 		}
 	}
@@ -295,22 +333,19 @@ func (cs *CronService) executeJobByID(jobID string) {
 }
 
 func (cs *CronService) computeNextRun(schedule *CronSchedule, nowMS int64) *int64 {
-	if schedule.Kind == "at" {
+	switch schedule.Kind {
+	case "at":
 		if schedule.AtMS != nil && *schedule.AtMS > nowMS {
 			return schedule.AtMS
 		}
 		return nil
-	}
-
-	if schedule.Kind == "every" {
+	case "every":
 		if schedule.EveryMS == nil || *schedule.EveryMS <= 0 {
 			return nil
 		}
 		next := nowMS + *schedule.EveryMS
 		return &next
-	}
-
-	if schedule.Kind == "cron" {
+	case "cron":
 		if schedule.Expr == "" {
 			return nil
 		}
@@ -325,9 +360,19 @@ func (cs *CronService) computeNextRun(schedule *CronSchedule, nowMS int64) *int6
 
 		nextMS := nextTime.UnixMilli()
 		return &nextMS
+	default:
+		log.Printf("[cron] unknown schedule kind '%s'", schedule.Kind)
+		return nil
 	}
+}
 
-	return nil
+// wake up the loop to re-evaluate next wake time immediately (e.g. after add/update/remove jobs)
+func (cs *CronService) notify() {
+	select {
+	case cs.wakeChan <- struct{}{}:
+	default:
+		// if the channel is full, it means the loop will wake up soon anyway, so we can skip sending
+	}
 }
 
 func (cs *CronService) recomputeNextRuns() {
@@ -445,6 +490,8 @@ func (cs *CronService) AddJob(
 		return nil, err
 	}
 
+	cs.notify()
+
 	return &job, nil
 }
 
@@ -456,6 +503,9 @@ func (cs *CronService) UpdateJob(job *CronJob) error {
 		if cs.store.Jobs[i].ID == job.ID {
 			cs.store.Jobs[i] = *job
 			cs.store.Jobs[i].UpdatedAtMS = time.Now().UnixMilli()
+
+			cs.notify()
+
 			return cs.saveStoreUnsafe()
 		}
 	}
@@ -486,6 +536,8 @@ func (cs *CronService) removeJobUnsafe(jobID string) bool {
 		}
 	}
 
+	cs.notify()
+
 	return removed
 }
 
@@ -508,6 +560,9 @@ func (cs *CronService) EnableJob(jobID string, enabled bool) *CronJob {
 			if err := cs.saveStoreUnsafe(); err != nil {
 				log.Printf("[cron] failed to save store after enable: %v", err)
 			}
+
+			cs.notify()
+
 			return job
 		}
 	}

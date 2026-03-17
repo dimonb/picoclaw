@@ -59,18 +59,20 @@ type AgentLoop struct {
 
 // processOptions configures how a message is processed
 type processOptions struct {
-	SessionKey      string   // Session identifier for history/context
-	Channel         string   // Target channel for tool execution
-	ChatID          string   // Target chat ID for tool execution
-	UserMessage     string   // User message content (may include prefix)
-	Media           []string // media:// refs from inbound message
-	DefaultResponse string   // Response when LLM returns empty
-	EnableSummary   bool     // Whether to trigger summarization
-	SendResponse    bool     // Whether to send response via bus
-	NoHistory       bool     // If true, don't load session history (for heartbeat)
-	ReplyContext    *ReplyContextInfo
-	Sender          *providers.MessageSender // Author identity (nil for system/automated messages)
-	MessageMetadata map[string]string
+	SessionKey        string   // Session identifier for history/context
+	Channel           string   // Target channel for tool execution
+	ChatID            string   // Target chat ID for tool execution
+	SenderID          string   // Current sender ID for dynamic context
+	SenderDisplayName string   // Current sender display name for dynamic context
+	UserMessage       string   // User message content (may include prefix)
+	Media             []string // media:// refs from inbound message
+	DefaultResponse   string   // Response when LLM returns empty
+	EnableSummary     bool     // Whether to trigger summarization
+	SendResponse      bool     // Whether to send response via bus
+	NoHistory         bool     // If true, don't load session history (for heartbeat)
+	ReplyContext      *ReplyContextInfo
+	Sender            *providers.MessageSender // Author identity (nil for system/automated messages)
+	MessageMetadata   map[string]string
 }
 
 type agentResponse struct {
@@ -196,7 +198,12 @@ func registerSharedTools(
 			}
 		}
 		if cfg.Tools.IsToolEnabled("web_fetch") {
-			fetchTool, err := tools.NewWebFetchToolWithProxy(50000, cfg.Tools.Web.Proxy, cfg.Tools.Web.FetchLimitBytes)
+			fetchTool, err := tools.NewWebFetchToolWithConfig(
+				50000,
+				cfg.Tools.Web.Proxy,
+				cfg.Tools.Web.FetchLimitBytes,
+				cfg.Tools.Web.PrivateHostWhitelist,
+			)
 			if err != nil {
 				logger.ErrorCF("agent", "Failed to create web fetch tool", map[string]any{"error": err.Error()})
 			} else {
@@ -303,12 +310,27 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			al.dispatcher.Wait()
 			return nil
-		default:
-			msg, ok := al.bus.ConsumeInbound(ctx)
+		case msg, ok := <-al.bus.InboundChan():
 			if !ok {
-				continue
+				return nil
 			}
+			// Process message
+			// TODO: Re-enable media cleanup after inbound media is properly consumed by the agent.
+			// Currently disabled because files are deleted before the LLM can access their content.
+			// defer func() {
+			// 	if al.mediaStore != nil && msg.MediaScope != "" {
+			// 		if releaseErr := al.mediaStore.ReleaseAll(msg.MediaScope); releaseErr != nil {
+			// 			logger.WarnCF("agent", "Failed to release media", map[string]any{
+			// 				"scope": msg.MediaScope,
+			// 				"error": releaseErr.Error(),
+			// 			})
+			// 		}
+			// 	}
+			// }()
+
 			al.dispatcher.Dispatch(ctx, msg)
+		default:
+			time.Sleep(time.Microsecond * 200)
 		}
 	}
 
@@ -1031,14 +1053,16 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		})
 
 	opts := processOptions{
-		SessionKey:      sessionKey,
-		Channel:         msg.Channel,
-		ChatID:          msg.ChatID,
-		UserMessage:     msg.Content,
-		Media:           msg.Media,
-		DefaultResponse: defaultResponse,
-		EnableSummary:   true,
-		SendResponse:    false,
+		SessionKey:        sessionKey,
+		Channel:           msg.Channel,
+		ChatID:            msg.ChatID,
+		SenderID:          msg.SenderID,
+		SenderDisplayName: msg.Sender.DisplayName,
+		UserMessage:       msg.Content,
+		Media:             msg.Media,
+		DefaultResponse:   defaultResponse,
+		EnableSummary:     true,
+		SendResponse:      false,
 		ReplyContext: &ReplyContextInfo{
 			CurrentMessageID: msg.MessageID,
 			ParentMessageID:  inboundMetadata(msg, metadataKeyReplyToMessage),
@@ -1216,7 +1240,8 @@ func (al *AgentLoop) runAgentLoop(
 		opts.Channel,
 		opts.ChatID,
 		opts.ReplyContext,
-		opts.Sender,
+		opts.SenderID,
+		opts.SenderDisplayName,
 		opts.MessageMetadata,
 	)
 
@@ -1939,7 +1964,7 @@ func (al *AgentLoop) runLLMIteration(
 				newSummary := snapshot.Summary
 				messages = agent.ContextBuilder.BuildMessages(
 					newHistory, newSummary, "",
-					nil, opts.Channel, opts.ChatID, opts.ReplyContext, nil, opts.MessageMetadata,
+					nil, opts.Channel, opts.ChatID, opts.ReplyContext, opts.SenderID, opts.SenderDisplayName, opts.MessageMetadata,
 				)
 				continue
 			}

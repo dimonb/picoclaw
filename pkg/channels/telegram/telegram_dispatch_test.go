@@ -37,10 +37,7 @@ func TestHandleMessage_DoesNotConsumeGenericCommandsLocally(t *testing.T) {
 		t.Fatalf("handleMessage error: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	inbound, ok := messageBus.ConsumeInbound(ctx)
+	inbound, ok := <-messageBus.InboundChan()
 	if !ok {
 		t.Fatal("expected inbound message to be forwarded")
 	}
@@ -95,7 +92,14 @@ func TestHandleMessage_ForumTopic_IsolatesChatAndAddsRoutingMetadata(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	inbound, ok := messageBus.ConsumeInbound(ctx)
+	inbound, ok := func() (bus.InboundMessage, bool) {
+		select {
+		case msg, ok := <-messageBus.InboundChan():
+			return msg, ok
+		case <-ctx.Done():
+			return bus.InboundMessage{}, false
+		}
+	}()
 	if !ok {
 		t.Fatal("expected inbound message to be forwarded")
 	}
@@ -148,7 +152,14 @@ func TestHandleMessage_NonForumGroup_IgnoresThreadID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	inbound, ok := messageBus.ConsumeInbound(ctx)
+	inbound, ok := func() (bus.InboundMessage, bool) {
+		select {
+		case msg, ok := <-messageBus.InboundChan():
+			return msg, ok
+		case <-ctx.Done():
+			return bus.InboundMessage{}, false
+		}
+	}()
 	if !ok {
 		t.Fatal("expected inbound message to be forwarded")
 	}
@@ -194,7 +205,14 @@ func TestHandleMessage_CapturesReplyToMessageID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	inbound, ok := messageBus.ConsumeInbound(ctx)
+	inbound, ok := func() (bus.InboundMessage, bool) {
+		select {
+		case msg, ok := <-messageBus.InboundChan():
+			return msg, ok
+		case <-ctx.Done():
+			return bus.InboundMessage{}, false
+		}
+	}()
 	if !ok {
 		t.Fatal("expected inbound message to be forwarded")
 	}
