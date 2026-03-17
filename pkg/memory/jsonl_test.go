@@ -153,6 +153,31 @@ func TestAddFullMessage_ToolCallID(t *testing.T) {
 	}
 }
 
+func TestGetHistory_ReadsLegacySingleMessageID(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	err := os.WriteFile(
+		store.jsonlPath("legacy"),
+		[]byte("{\"role\":\"assistant\",\"content\":\"hello\",\"message_id\":\"msg-123\"}\n"),
+		0o644,
+	)
+	if err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	history, err := store.GetHistory(ctx, "legacy")
+	if err != nil {
+		t.Fatalf("GetHistory: %v", err)
+	}
+	if len(history) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(history))
+	}
+	if len(history[0].MessageIDs) != 1 || history[0].MessageIDs[0] != "msg-123" {
+		t.Fatalf("expected message_ids [msg-123], got %v", history[0].MessageIDs)
+	}
+}
+
 func TestGetHistory_EmptySession(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()

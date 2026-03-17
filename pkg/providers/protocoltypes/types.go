@@ -1,5 +1,7 @@
 package protocoltypes
 
+import "encoding/json"
+
 type ToolCall struct {
 	ID               string         `json:"id"`
 	Type             string         `json:"type,omitempty"`
@@ -89,6 +91,25 @@ type Message struct {
 	Reactions        []MessageReaction `json:"reactions,omitempty"`
 	Sender           *MessageSender    `json:"sender,omitempty"` // Author identity (user messages only)
 	Metadata         map[string]string `json:"metadata,omitempty"`
+}
+
+// UnmarshalJSON preserves legacy single-ID session history lines by mapping
+// "message_id" to a single-element MessageIDs slice on read.
+func (m *Message) UnmarshalJSON(data []byte) error {
+	type alias Message
+	aux := struct {
+		*alias
+		LegacyMessageID string `json:"message_id,omitempty"`
+	}{
+		alias: (*alias)(m),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+	if len(m.MessageIDs) == 0 && aux.LegacyMessageID != "" {
+		m.MessageIDs = []string{aux.LegacyMessageID}
+	}
+	return nil
 }
 
 type ToolDefinition struct {
