@@ -193,6 +193,49 @@ func TestProcessMessage_AssistantSavedOnDelivered(t *testing.T) {
 	}
 }
 
+func TestProcessMessage_TelegramSilentNoTextReplyDoesNotFallback(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Model:             "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &simpleMockProvider{response: "[[text_reply=false]]"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	response, err := al.processMessage(context.Background(), bus.InboundMessage{
+		Channel:  "telegram",
+		SenderID: "telegram:123",
+		ChatID:   "chat-1",
+		Content:  "silently finish",
+	})
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+
+	if response.Content != "" {
+		t.Fatalf("expected empty response content, got %q", response.Content)
+	}
+	if !response.SuppressTextReply {
+		t.Fatal("expected SuppressTextReply=true")
+	}
+	if len(response.Reactions) != 0 {
+		t.Fatalf("expected no reactions, got %+v", response.Reactions)
+	}
+}
+
 func TestRecordLastChannel(t *testing.T) {
 	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()

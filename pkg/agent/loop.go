@@ -1341,17 +1341,9 @@ func (al *AgentLoop) runAgentLoop(
 		)
 		response.SuppressTextReply = false
 	}
-	if response.SuppressTextReply && len(response.Reactions) == 0 {
-		logger.WarnCF("agent", "Ignoring text_reply=false with no deliverable reactions", map[string]any{
-			"channel":        opts.Channel,
-			"chat_id":        opts.ChatID,
-			"session_key":    opts.SessionKey,
-			"raw_content":    utils.Truncate(finalContent, 160),
-			"content_len":    len(response.Content),
-			"reaction_count": 0,
-		})
-		response.SuppressTextReply = false
-	}
+	// Honor an explicit text_reply=false even when no reactions are present.
+	// In that case the model is asking for a silent completion, so we should
+	// not replace it with the generic fallback response.
 	if response.hasTextReply() == false {
 		response.Content = ""
 	}
