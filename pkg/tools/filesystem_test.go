@@ -9,8 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/sipeed/picoclaw/pkg/media"
 )
 
 // TestFilesystemTool_ReadFile_Success verifies successful file reading

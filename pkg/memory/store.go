@@ -21,6 +21,8 @@ type SummaryCompactionResult struct {
 
 // Store defines an interface for persistent session storage.
 // Each method is an atomic operation — there is no separate Save() call.
+//
+//nolint:interfacebloat
 type Store interface {
 	// AddMessage appends a simple text message to a session.
 	AddMessage(ctx context.Context, sessionKey, role, content string) error

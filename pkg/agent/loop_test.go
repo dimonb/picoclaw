@@ -2168,7 +2168,7 @@ func TestPublishOutboundWithHistoryPersistsOnDelivered(t *testing.T) {
 }
 
 func TestProcessDirectWithMessagePersistsInboundMetadata(t *testing.T) {
-	al, _, _, _, cleanup := newTestAgentLoop(t)
+	al, _, _, _, cleanup := newTestAgentLoop(t) //nolint:dogsled
 	defer cleanup()
 
 	sessionKey := "agent:main:telegram:group:-1003717341079/17"

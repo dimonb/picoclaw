@@ -559,8 +559,8 @@ func TestPersistentStoreRestoresRefsAfterRestart(t *testing.T) {
 	if resolvedMeta != meta {
 		t.Fatalf("resolved meta = %+v, want %+v", resolvedMeta, meta)
 	}
-	if _, err := os.Stat(store.metaPath(refID(ref))); err != nil {
-		t.Fatalf("expected metadata file to exist: %v", err)
+	if _, statErr := os.Stat(store.metaPath(refID(ref))); statErr != nil {
+		t.Fatalf("expected metadata file to exist: %v", statErr)
 	}
 
 	restarted := NewPersistentFileMediaStore(storeDir)
@@ -593,8 +593,8 @@ func TestPersistentStoreReleaseAllKeepsManagedFilesAndLazilyReloadsRef(t *testin
 	}
 	metaPath := store.metaPath(refID(ref))
 
-	if err := store.ReleaseAll("scope1"); err != nil {
-		t.Fatalf("ReleaseAll failed: %v", err)
+	if releaseErr := store.ReleaseAll("scope1"); releaseErr != nil {
+		t.Fatalf("ReleaseAll failed: %v", releaseErr)
 	}
 
 	store.mu.RLock()
@@ -604,14 +604,14 @@ func TestPersistentStoreReleaseAllKeepsManagedFilesAndLazilyReloadsRef(t *testin
 	}
 	store.mu.RUnlock()
 
-	if _, err := os.Stat(managedPath); err != nil {
-		t.Fatalf("managed blob should remain on disk: %v", err)
+	if _, statErr := os.Stat(managedPath); statErr != nil {
+		t.Fatalf("managed blob should remain on disk: %v", statErr)
 	}
-	if _, err := os.Stat(metaPath); err != nil {
-		t.Fatalf("managed metadata should remain on disk: %v", err)
+	if _, statErr := os.Stat(metaPath); statErr != nil {
+		t.Fatalf("managed metadata should remain on disk: %v", statErr)
 	}
-	if _, err := os.Stat(sourcePath); err != nil {
-		t.Fatalf("source file should remain intact: %v", err)
+	if _, statErr := os.Stat(sourcePath); statErr != nil {
+		t.Fatalf("source file should remain intact: %v", statErr)
 	}
 
 	reloadedPath, err := store.Resolve(ref)
@@ -658,14 +658,14 @@ func TestPersistentStoreCleanExpiredKeepsManagedFilesAndLazilyReloadsRef(t *test
 	}
 	store.mu.RUnlock()
 
-	if _, err := os.Stat(managedPath); err != nil {
-		t.Fatalf("managed blob should remain on disk: %v", err)
+	if _, statErr := os.Stat(managedPath); statErr != nil {
+		t.Fatalf("managed blob should remain on disk: %v", statErr)
 	}
-	if _, err := os.Stat(metaPath); err != nil {
-		t.Fatalf("managed metadata should remain on disk: %v", err)
+	if _, statErr := os.Stat(metaPath); statErr != nil {
+		t.Fatalf("managed metadata should remain on disk: %v", statErr)
 	}
-	if _, err := os.Stat(sourcePath); err != nil {
-		t.Fatalf("source file should remain intact: %v", err)
+	if _, statErr := os.Stat(sourcePath); statErr != nil {
+		t.Fatalf("source file should remain intact: %v", statErr)
 	}
 
 	reloadedPath, err := store.Resolve(ref)

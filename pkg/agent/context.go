@@ -497,7 +497,10 @@ func (cb *ContextBuilder) buildDynamicContext(channel, chatID string, messageMet
 			fmt.Fprintf(&sb, "\nSource: %s", sourceKind)
 		}
 		if triggerKind == providers.MessageTriggerCron {
-			fmt.Fprintf(&sb, "\nThis turn was triggered automatically by a scheduled cron job. The next user message is synthetic automation input for the bound session.")
+			fmt.Fprintf(
+				&sb,
+				"\nThis turn was triggered automatically by a scheduled cron job. The next user message is synthetic automation input for the bound session.",
+			)
 		}
 	}
 

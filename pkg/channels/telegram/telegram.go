@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-		"net/http"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -548,7 +548,9 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			params := &telego.SendDocumentParams{
 				ChatID:          tu.ID(chatID),
 				MessageThreadID: threadID,
-				Document: telego.InputFile{File: telegramNamedReader{Reader: file, filename: telegramDocumentFilename(part, localPath)}},
+				Document: telego.InputFile{
+					File: telegramNamedReader{Reader: file, filename: telegramDocumentFilename(part, localPath)},
+				},
 				Caption: part.Caption,
 			}
 			if replyParams, ok := telegramReplyParameters(msg.ReplyToMessageID); ok {

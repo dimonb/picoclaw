@@ -2497,7 +2497,7 @@ func (al *AgentLoop) summarizeSession(
 		"session_key":           sessionKey,
 		"messages_to_summarize": len(toSummarize),
 		"valid_messages":        len(validMessages),
-		"non_dialogue_skipped":  nonDialogueCount,
+		"non_dialog_skipped":    nonDialogueCount,
 		"oversized_skipped":     oversizedCount,
 		"max_message_tokens":    maxMessageTokens,
 	})
@@ -2506,7 +2506,7 @@ func (al *AgentLoop) summarizeSession(
 		logger.WarnCF("agent", "Summarization skipped: no valid user/assistant messages", map[string]any{
 			"session_key":           sessionKey,
 			"messages_to_summarize": len(toSummarize),
-			"non_dialogue_skipped":  nonDialogueCount,
+			"non_dialog_skipped":    nonDialogueCount,
 			"oversized_skipped":     oversizedCount,
 		})
 		return
@@ -2643,7 +2643,7 @@ func (al *AgentLoop) summarizeSession(
 		"summarized_messages":        len(validMessages),
 		"summary_chars":              len(finalSummary),
 		"oversized_skipped":          oversizedCount,
-		"non_dialogue_skipped":       nonDialogueCount,
+		"non_dialog_skipped":         nonDialogueCount,
 	})
 
 	meta := compactionNoteMetadata{

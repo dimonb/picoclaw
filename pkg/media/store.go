@@ -18,9 +18,9 @@ import (
 
 // MediaMeta holds metadata about a stored media file.
 type MediaMeta struct {
-	Filename    string
-	ContentType string
-	Source      string // "telegram", "discord", "tool:image-gen", etc.
+	Filename    string `json:"filename,omitempty"`
+	ContentType string `json:"content_type,omitempty"`
+	Source      string `json:"source,omitempty"` // "telegram", "discord", "tool:image-gen", etc.
 }
 
 // MediaStore manages the lifecycle of media files associated with processing scopes.
@@ -492,8 +492,8 @@ func copyFileAtomic(srcPath, dstPath string, perm os.FileMode) error {
 	defer srcFile.Close()
 
 	dir := filepath.Dir(dstPath)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create destination dir: %w", err)
+	if mkdirErr := os.MkdirAll(dir, 0o700); mkdirErr != nil {
+		return fmt.Errorf("create destination dir: %w", mkdirErr)
 	}
 
 	tmpFile, err := os.OpenFile(

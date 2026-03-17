@@ -105,7 +105,11 @@ func TestBuildParams_UserMessageWithMedia(t *testing.T) {
 	}
 }
 
-func assertUserMessageDocumentBlock(t *testing.T, dataURL, wantMediaType string, assertSource func(t *testing.T, document *anthropic.DocumentBlockParam)) {
+func assertUserMessageDocumentBlock(
+	t *testing.T,
+	dataURL, wantMediaType string,
+	assertSource func(t *testing.T, document *anthropic.DocumentBlockParam),
+) {
 	t.Helper()
 
 	params, err := buildParams([]Message{{
@@ -148,27 +152,37 @@ func assertUserMessageDocumentBlock(t *testing.T, dataURL, wantMediaType string,
 }
 
 func TestBuildParams_UserMessageWithPDFDocument(t *testing.T) {
-	assertUserMessageDocumentBlock(t, "data:application/pdf;base64,JVBERi0xLjQ=", "application/pdf", func(t *testing.T, document *anthropic.DocumentBlockParam) {
-		t.Helper()
-		if document.Source.OfBase64 == nil {
-			t.Fatalf("expected base64 document block, got %#v", document)
-		}
-		if document.Source.OfBase64.Data != "JVBERi0xLjQ=" {
-			t.Fatalf("base64 data = %q, want JVBERi0xLjQ=", document.Source.OfBase64.Data)
-		}
-	})
+	assertUserMessageDocumentBlock(
+		t,
+		"data:application/pdf;base64,JVBERi0xLjQ=",
+		"application/pdf",
+		func(t *testing.T, document *anthropic.DocumentBlockParam) {
+			t.Helper()
+			if document.Source.OfBase64 == nil {
+				t.Fatalf("expected base64 document block, got %#v", document)
+			}
+			if document.Source.OfBase64.Data != "JVBERi0xLjQ=" {
+				t.Fatalf("base64 data = %q, want JVBERi0xLjQ=", document.Source.OfBase64.Data)
+			}
+		},
+	)
 }
 
 func TestBuildParams_UserMessageWithTextDocument(t *testing.T) {
-	assertUserMessageDocumentBlock(t, "data:text/plain;base64,aGVsbG8gd29ybGQ=", "text/plain", func(t *testing.T, document *anthropic.DocumentBlockParam) {
-		t.Helper()
-		if document.Source.OfText == nil {
-			t.Fatalf("expected plain text document block, got %#v", document)
-		}
-		if document.Source.OfText.Data != "hello world" {
-			t.Fatalf("text data = %q, want hello world", document.Source.OfText.Data)
-		}
-	})
+	assertUserMessageDocumentBlock(
+		t,
+		"data:text/plain;base64,aGVsbG8gd29ybGQ=",
+		"text/plain",
+		func(t *testing.T, document *anthropic.DocumentBlockParam) {
+			t.Helper()
+			if document.Source.OfText == nil {
+				t.Fatalf("expected plain text document block, got %#v", document)
+			}
+			if document.Source.OfText.Data != "hello world" {
+				t.Fatalf("text data = %q, want hello world", document.Source.OfText.Data)
+			}
+		},
+	)
 }
 
 func TestBuildParams_WithTools(t *testing.T) {
