@@ -49,7 +49,6 @@ type AgentLoop struct {
 	cmdRegistry      *commands.Registry
 	mcp              mcpRuntime
 	steering         *steeringQueue
-	subTurnResults   sync.Map     // key: sessionKey (string), value: chan *tools.ToolResult
 	activeTurnStates sync.Map     // key: sessionKey (string), value: *turnState
 	subTurnCounter   atomic.Int64 // Counter for generating unique SubTurn IDs
 	mu               sync.RWMutex
@@ -1001,7 +1000,7 @@ func (al *AgentLoop) runAgentLoop(
 			session:              agent.Sessions,
 			initialHistoryLength: len(agent.Sessions.GetHistory("")), // Snapshot for rollback on hard abort
 			pendingResults:       make(chan *tools.ToolResult, 16),
-			concurrencySem:       make(chan struct{}, 5), // maxConcurrentSubTurns
+			concurrencySem:       make(chan struct{}, maxConcurrentSubTurns), // maxConcurrentSubTurns
 		}
 		ctx = withTurnState(ctx, rootTS)
 		ctx = WithAgentLoop(ctx, al) // Inject AgentLoop for tool access
@@ -1010,10 +1009,6 @@ func (al *AgentLoop) runAgentLoop(
 		// Register this root turn state so HardAbort can find it
 		al.activeTurnStates.Store(opts.SessionKey, rootTS)
 		defer al.activeTurnStates.Delete(opts.SessionKey)
-
-		// Ensure the parent's pending results channel is cleaned up when this root turn finishes
-		defer al.unregisterSubTurnResultChannel(rootTS.turnID)
-		al.registerSubTurnResultChannel(rootTS.turnID, rootTS.pendingResults)
 	}
 
 	// 0. Record last channel for heartbeat notifications (skip internal channels and cli)
@@ -1220,15 +1215,19 @@ func (al *AgentLoop) runLLMIteration(
 		// This is only relevant for SubTurns (turnState with parentTurnState != nil).
 		// If parent ended and this SubTurn is not Critical, exit gracefully.
 		if ts := turnStateFromContext(ctx); ts != nil && ts.IsParentEnded() {
-			logger.InfoCF("agent", "Parent turn ended, SubTurn continues or exits", map[string]any{
+			if !ts.critical {
+				logger.InfoCF("agent", "Parent turn ended, non-critical SubTurn exiting gracefully", map[string]any{
+					"agent_id":  agent.ID,
+					"iteration": iteration,
+					"turn_id":   ts.turnID,
+				})
+				break
+			}
+			logger.InfoCF("agent", "Parent turn ended, critical SubTurn continues running", map[string]any{
 				"agent_id":  agent.ID,
 				"iteration": iteration,
 				"turn_id":   ts.turnID,
 			})
-			// For now, we continue running. The Critical flag check is handled
-			// at SubTurnConfig level in spawnSubTurn. Here we just log and continue.
-			// If this SubTurn should exit gracefully, it would have been cancelled
-			// by its own timeout or the caller would have handled it.
 		}
 
 		// Inject pending steering messages into the conversation context
