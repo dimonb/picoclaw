@@ -313,7 +313,7 @@ func (r telegramNamedReader) Name() string {
 	return r.filename
 }
 
-func telegramDocumentFilename(part bus.MediaPart, fallbackPath string) string {
+func telegramMediaFilename(part bus.MediaPart, fallbackPath string) string {
 	name := strings.TrimSpace(part.Filename)
 	if name == "" {
 		name = filepath.Base(fallbackPath)
@@ -323,6 +323,15 @@ func telegramDocumentFilename(part bus.MediaPart, fallbackPath string) string {
 		return "document"
 	}
 	return name
+}
+
+func telegramInputFile(file *os.File, part bus.MediaPart, fallbackPath string) telego.InputFile {
+	return telego.InputFile{
+		File: telegramNamedReader{
+			Reader:   file,
+			filename: telegramMediaFilename(part, fallbackPath),
+		},
+	}
 }
 
 func telegramReplyParameters(replyToMessageID string) (*telego.ReplyParameters, bool) {
@@ -501,13 +510,19 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 	}
 
 	for _, part := range msg.Parts {
-		localPath, err := store.Resolve(part.Ref)
+		localPath, meta, err := store.ResolveWithMeta(part.Ref)
 		if err != nil {
 			logger.ErrorCF("telegram", "Failed to resolve media ref", map[string]any{
 				"ref":   part.Ref,
 				"error": err.Error(),
 			})
 			continue
+		}
+		if strings.TrimSpace(part.Filename) == "" {
+			part.Filename = strings.TrimSpace(meta.Filename)
+		}
+		if strings.TrimSpace(part.ContentType) == "" {
+			part.ContentType = strings.TrimSpace(meta.ContentType)
 		}
 
 		file, err := os.Open(localPath)
@@ -524,7 +539,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			params := &telego.SendPhotoParams{
 				ChatID:          tu.ID(chatID),
 				MessageThreadID: threadID,
-				Photo:           telego.InputFile{File: file},
+				Photo:           telegramInputFile(file, part, localPath),
 				Caption:         part.Caption,
 			}
 			if replyParams, ok := telegramReplyParameters(msg.ReplyToMessageID); ok {
@@ -535,7 +550,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			params := &telego.SendAudioParams{
 				ChatID:          tu.ID(chatID),
 				MessageThreadID: threadID,
-				Audio:           telego.InputFile{File: file},
+				Audio:           telegramInputFile(file, part, localPath),
 				Caption:         part.Caption,
 			}
 			if replyParams, ok := telegramReplyParameters(msg.ReplyToMessageID); ok {
@@ -546,7 +561,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			params := &telego.SendVideoParams{
 				ChatID:          tu.ID(chatID),
 				MessageThreadID: threadID,
-				Video:           telego.InputFile{File: file},
+				Video:           telegramInputFile(file, part, localPath),
 				Caption:         part.Caption,
 			}
 			if replyParams, ok := telegramReplyParameters(msg.ReplyToMessageID); ok {
@@ -557,10 +572,8 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			params := &telego.SendDocumentParams{
 				ChatID:          tu.ID(chatID),
 				MessageThreadID: threadID,
-				Document: telego.InputFile{
-					File: telegramNamedReader{Reader: file, filename: telegramDocumentFilename(part, localPath)},
-				},
-				Caption: part.Caption,
+				Document:        telegramInputFile(file, part, localPath),
+				Caption:         part.Caption,
 			}
 			if replyParams, ok := telegramReplyParameters(msg.ReplyToMessageID); ok {
 				params.ReplyParameters = replyParams

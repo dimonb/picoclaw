@@ -39,7 +39,14 @@ func (s *stubCaller) Call(ctx context.Context, url string, data *ta.RequestData)
 }
 
 // stubConstructor implements ta.RequestConstructor for testing.
-type stubConstructor struct{}
+type stubMultipartCall struct {
+	Parameters map[string]string
+	FileNames  map[string]string
+}
+
+type stubConstructor struct {
+	multipartCalls []stubMultipartCall
+}
 
 func (s *stubConstructor) JSONRequest(parameters any) (*ta.RequestData, error) {
 	body, err := json.Marshal(parameters)
@@ -56,6 +63,21 @@ func (s *stubConstructor) MultipartRequest(
 	parameters map[string]string,
 	files map[string]ta.NamedReader,
 ) (*ta.RequestData, error) {
+	filenames := make(map[string]string, len(files))
+	for field, file := range files {
+		if file == nil {
+			continue
+		}
+		filenames[field] = file.Name()
+	}
+	copiedParams := make(map[string]string, len(parameters))
+	for k, v := range parameters {
+		copiedParams[k] = v
+	}
+	s.multipartCalls = append(s.multipartCalls, stubMultipartCall{
+		Parameters: copiedParams,
+		FileNames:  filenames,
+	})
 	body, err := json.Marshal(parameters)
 	if err != nil {
 		return nil, err
@@ -86,11 +108,15 @@ func successBoolResponse(t *testing.T) *ta.Response {
 
 // newTestChannel creates a TelegramChannel with a mocked bot for unit testing.
 func newTestChannel(t *testing.T, caller *stubCaller) *TelegramChannel {
+	return newTestChannelWithConstructor(t, caller, &stubConstructor{})
+}
+
+func newTestChannelWithConstructor(t *testing.T, caller *stubCaller, constructor *stubConstructor) *TelegramChannel {
 	t.Helper()
 
 	bot, err := telego.NewBot(testToken,
 		telego.WithAPICaller(caller),
-		telego.WithRequestConstructor(&stubConstructor{}),
+		telego.WithRequestConstructor(constructor),
 		telego.WithDiscardLogger(),
 	)
 	require.NoError(t, err)
@@ -492,6 +518,44 @@ func TestSendMedia_ForumTopic_UsesThreadID(t *testing.T) {
 	require.Len(t, caller.calls, 1)
 	body := decodeCallBody(t, caller.calls[0])
 	assert.Equal(t, "42", fmt.Sprint(body["message_thread_id"]))
+}
+
+func TestSendMedia_AudioUsesStoredFilenameInMultipart(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return successResponse(t), nil
+		},
+	}
+	constructor := &stubConstructor{}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpFile, err := os.CreateTemp(t.TempDir(), "telegram-media-*.blob")
+	require.NoError(t, err)
+	_, err = tmpFile.WriteString("hello")
+	require.NoError(t, err)
+	require.NoError(t, tmpFile.Close())
+
+	ref, err := store.Store(tmpFile.Name(), media.MediaMeta{
+		Filename:    "voice.ogg",
+		ContentType: "audio/ogg",
+	}, "test-scope")
+	require.NoError(t, err)
+
+	err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{{
+			Type: "audio",
+			Ref:  ref,
+		}},
+	})
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	require.Len(t, constructor.multipartCalls, 1)
+	assert.Contains(t, caller.calls[0].URL, "/sendAudio")
+	assert.Equal(t, "voice.ogg", constructor.multipartCalls[0].FileNames["audio"])
 }
 
 func TestSendMessageWithID_NotRunning(t *testing.T) {
