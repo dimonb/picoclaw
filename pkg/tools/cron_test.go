@@ -154,19 +154,51 @@ func TestCronTool_NonCommandJobAllowedFromRemoteChannel(t *testing.T) {
 	}
 }
 
-type stubJobExecutor struct {
-	called     bool
-	sessionKey string
-	channel    string
-	chatID     string
-	msg        providers.Message
+func TestCronTool_AddJobDefaultsToAgentModeAndBindsSession(t *testing.T) {
+	tool := newTestCronTool(t)
+	ctx := WithToolSessionKey(
+		WithToolContext(context.Background(), "telegram", "-1003717341079/17"),
+		"agent:main:telegram:group:-1003717341079/17",
+	)
+
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "check actions",
+		"at_seconds": float64(60),
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+
+	jobs := tool.cronService.ListJobs(false)
+	if len(jobs) != 1 {
+		t.Fatalf("jobs len=%d, want 1", len(jobs))
+	}
+	if jobs[0].Payload.Mode != cron.ModeAgent {
+		t.Fatalf("mode=%q, want %q", jobs[0].Payload.Mode, cron.ModeAgent)
+	}
+	if jobs[0].Payload.SessionKey != "agent:main:telegram:group:-1003717341079/17" {
+		t.Fatalf("session_key=%q", jobs[0].Payload.SessionKey)
+	}
 }
 
-func (s *stubJobExecutor) ProcessDirectWithChannel(
+type stubJobExecutor struct {
+	published      bool
+	processed      bool
+	sessionKey     string
+	channel        string
+	chatID         string
+	msg            providers.Message
+	inboundMessage bus.InboundMessage
+}
+
+func (s *stubJobExecutor) ProcessDirectWithMessage(
 	ctx context.Context,
-	content, sessionKey, channel, chatID string,
+	msg bus.InboundMessage,
 ) (string, error) {
-	return "", nil
+	s.processed = true
+	s.inboundMessage = msg
+	return "processed", nil
 }
 
 func (s *stubJobExecutor) PublishOutboundWithHistory(
@@ -174,7 +206,7 @@ func (s *stubJobExecutor) PublishOutboundWithHistory(
 	sessionKey, channel, chatID string,
 	msg providers.Message,
 ) error {
-	s.called = true
+	s.published = true
 	s.sessionKey = sessionKey
 	s.channel = channel
 	s.chatID = chatID
@@ -182,7 +214,7 @@ func (s *stubJobExecutor) PublishOutboundWithHistory(
 	return nil
 }
 
-func TestCronTool_ExecuteJobDeliverTruePublishesWithHistory(t *testing.T) {
+func TestCronTool_ExecuteJobDirectModePublishesWithHistory(t *testing.T) {
 	tool := newTestCronTool(t)
 	exec := &stubJobExecutor{}
 	tool.executor = exec
@@ -190,10 +222,11 @@ func TestCronTool_ExecuteJobDeliverTruePublishesWithHistory(t *testing.T) {
 		ID:   "job1",
 		Name: "reminder",
 		Payload: cron.CronPayload{
-			Message: "hello from cron",
-			Deliver: true,
-			Channel: "telegram",
-			To:      "-1003717341079/17",
+			Message:    "hello from cron",
+			Mode:       cron.ModeDirect,
+			Channel:    "telegram",
+			To:         "-1003717341079/17",
+			SessionKey: "agent:main:telegram:group:-1003717341079/17",
 		},
 	}
 
@@ -201,7 +234,7 @@ func TestCronTool_ExecuteJobDeliverTruePublishesWithHistory(t *testing.T) {
 	if got != "ok" {
 		t.Fatalf("ExecuteJob()=%q, want ok", got)
 	}
-	if !exec.called {
+	if !exec.published {
 		t.Fatal("expected PublishOutboundWithHistory to be called")
 	}
 	if exec.channel != "telegram" || exec.chatID != "-1003717341079/17" {
@@ -214,4 +247,80 @@ func TestCronTool_ExecuteJobDeliverTruePublishesWithHistory(t *testing.T) {
 	if exec.sessionKey != wantSession {
 		t.Fatalf("sessionKey=%q, want %q", exec.sessionKey, wantSession)
 	}
+	if exec.msg.Metadata[providers.MessageMetaSourceKind] != providers.MessageSourceCron {
+		t.Fatalf("source kind=%q", exec.msg.Metadata[providers.MessageMetaSourceKind])
+	}
+	if exec.msg.Metadata[providers.MessageMetaDispatch] != cron.ModeDirect {
+		t.Fatalf("dispatch mode=%q", exec.msg.Metadata[providers.MessageMetaDispatch])
+	}
 }
+
+func TestCronTool_ExecuteJobAgentModeUsesStoredSessionKeyAndMetadata(t *testing.T) {
+	tool := newTestCronTool(t)
+	exec := &stubJobExecutor{}
+	tool.executor = exec
+	job := &cron.CronJob{
+		ID:   "job2",
+		Name: "check actions",
+		Payload: cron.CronPayload{
+			Message:    "check the actions and report",
+			Mode:       cron.ModeAgent,
+			Channel:    "telegram",
+			To:         "-1003717341079/17",
+			SessionKey: "agent:main:telegram:group:-1003717341079/17",
+		},
+	}
+
+	got := tool.ExecuteJob(context.Background(), job)
+	if got != "ok" {
+		t.Fatalf("ExecuteJob()=%q, want ok", got)
+	}
+	if !exec.processed {
+		t.Fatal("expected ProcessDirectWithMessage to be called")
+	}
+	if exec.inboundMessage.SessionKey != "agent:main:telegram:group:-1003717341079/17" {
+		t.Fatalf("sessionKey=%q", exec.inboundMessage.SessionKey)
+	}
+	if exec.inboundMessage.Metadata[providers.MessageMetaSourceKind] != providers.MessageSourceCron {
+		t.Fatalf("source kind=%q", exec.inboundMessage.Metadata[providers.MessageMetaSourceKind])
+	}
+	if exec.inboundMessage.Metadata[providers.MessageMetaTriggerKind] != providers.MessageTriggerCron {
+		t.Fatalf("trigger kind=%q", exec.inboundMessage.Metadata[providers.MessageMetaTriggerKind])
+	}
+	if exec.inboundMessage.Metadata[providers.MessageMetaTriggerID] != "job2" {
+		t.Fatalf("trigger id=%q", exec.inboundMessage.Metadata[providers.MessageMetaTriggerID])
+	}
+	if exec.inboundMessage.Metadata[providers.MessageMetaDispatch] != cron.ModeAgent {
+		t.Fatalf("dispatch mode=%q", exec.inboundMessage.Metadata[providers.MessageMetaDispatch])
+	}
+}
+
+func TestCronTool_ExecuteJobLegacyDeliverTrueMapsToDirectMode(t *testing.T) {
+	tool := newTestCronTool(t)
+	exec := &stubJobExecutor{}
+	tool.executor = exec
+	job := &cron.CronJob{
+		ID:   "job3",
+		Name: "legacy reminder",
+		Payload: cron.CronPayload{
+			Message:    "legacy direct reminder",
+			Deliver:    boolPtr(true),
+			Channel:    "telegram",
+			To:         "-1003717341079",
+			SessionKey: "agent:main:telegram:group:-1003717341079",
+		},
+	}
+
+	got := tool.ExecuteJob(context.Background(), job)
+	if got != "ok" {
+		t.Fatalf("ExecuteJob()=%q, want ok", got)
+	}
+	if !exec.published {
+		t.Fatal("expected PublishOutboundWithHistory to be called for legacy deliver=true")
+	}
+	if exec.msg.Metadata[providers.MessageMetaDispatch] != cron.ModeDirect {
+		t.Fatalf("dispatch mode=%q", exec.msg.Metadata[providers.MessageMetaDispatch])
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
