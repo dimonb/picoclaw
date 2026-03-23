@@ -337,3 +337,39 @@ func TestPromoteTools_ConcurrentWithTickTTL(t *testing.T) {
 	}
 	<-done
 }
+
+func TestRegexSearchTool_RequestScopedPromotionLeavesGlobalTTLUntouched(t *testing.T) {
+	reg := setupPopulatedRegistry()
+	tool := NewRegexSearchTool(reg, 5, 10)
+	ctx := WithHiddenToolState(context.Background())
+
+	res := tool.Execute(ctx, map[string]any{"pattern": "system"})
+	if res.IsError {
+		t.Fatalf("unexpected error: %v", res.ForLLM)
+	}
+
+	reg.mu.RLock()
+	globalTTL := reg.tools["mcp_read_file"].TTL
+	reg.mu.RUnlock()
+	if globalTTL != 0 {
+		t.Fatalf("expected request-scoped promotion to leave global TTL at 0, got %d", globalTTL)
+	}
+
+	defs := reg.ToProviderDefsWithContext(ctx, "cli", "direct")
+	if len(defs) != 3 {
+		t.Fatalf("expected core tool plus two locally unlocked hidden tools, got %d defs", len(defs))
+	}
+	foundRead := false
+	foundList := false
+	for _, def := range defs {
+		if def.Function.Name == "mcp_read_file" {
+			foundRead = true
+		}
+		if def.Function.Name == "mcp_list_dir" {
+			foundList = true
+		}
+	}
+	if !foundRead || !foundList {
+		t.Fatalf("expected unlocked tools %q and %q to appear in provider defs", "mcp_read_file", "mcp_list_dir")
+	}
+}
