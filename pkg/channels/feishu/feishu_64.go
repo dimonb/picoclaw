@@ -722,9 +722,8 @@ func (c *FeishuChannel) downloadResource(
 	out.Close()
 
 	ref, err := store.Store(localPath, media.MediaMeta{
-		Filename:      filename,
-		Source:        "feishu",
-		CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
+		Filename: filename,
+		Source:   "feishu",
 	}, scope)
 	if err != nil {
 		logger.ErrorCF("feishu", "Failed to store downloaded resource", map[string]any{

@@ -23,7 +23,7 @@ type InboundMessage struct {
 	Sender     SenderInfo        `json:"sender"`
 	ChatID     string            `json:"chat_id"`
 	Content    string            `json:"content"`
-	Media      []string          `json:"media,omitempty"`
+	Media      []string          `json:"media,omitempty"`       // stored local media paths
 	Peer       Peer              `json:"peer"`                  // routing peer
 	MessageID  string            `json:"message_id,omitempty"`  // platform message ID
 	MediaScope string            `json:"media_scope,omitempty"` // media lifecycle scope
@@ -45,7 +45,7 @@ type OutboundMessage struct {
 // MediaPart describes a single media attachment to send.
 type MediaPart struct {
 	Type        string `json:"type"`                   // "image" | "audio" | "video" | "file"
-	Ref         string `json:"ref"`                    // media store ref, e.g. "media://abc123"
+	Ref         string `json:"ref"`                    // stored local file path
 	Caption     string `json:"caption,omitempty"`      // optional caption text
 	Filename    string `json:"filename,omitempty"`     // original filename hint
 	ContentType string `json:"content_type,omitempty"` // MIME type hint

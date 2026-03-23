@@ -1,706 +1,239 @@
 package media
 
 import (
-	"fmt"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 )
 
-func createTempFile(t *testing.T, dir, name string) string {
+func createTempFile(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("test content"), 0o644); err != nil {
-		t.Fatalf("failed to create temp file: %v", err)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
 	}
 	return path
 }
 
-func TestStoreAndResolve(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileMediaStore()
-
-	path := createTempFile(t, dir, "photo.jpg")
-
-	ref, err := store.Store(path, MediaMeta{Filename: "photo.jpg", Source: "telegram"}, "scope1")
+func readMetaFile(t *testing.T, path string) StoredFileMeta {
+	t.Helper()
+	data, err := os.ReadFile(path + ".meta.json")
 	if err != nil {
-		t.Fatalf("Store failed: %v", err)
+		t.Fatalf("ReadFile(meta): %v", err)
 	}
-
-	if !strings.HasPrefix(ref, "media://") {
-		t.Errorf("ref should start with media://, got %q", ref)
+	var meta StoredFileMeta
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("Unmarshal(meta): %v", err)
 	}
+	return meta
+}
 
-	resolved, err := store.Resolve(ref)
+func TestStore_CopiesIntoOrganizedLayout(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileMediaStoreAt(root)
+	source := createTempFile(t, t.TempDir(), "voice.ogg", "voice-data")
+
+	storedPath, err := store.Store(source, MediaMeta{
+		Filename:      "voice.ogg",
+		ContentType:   "audio/ogg",
+		Source:        "telegram",
+		StorageBucket: "agent_main_telegram_group_-1003822706455_3",
+	}, "telegram:-1003822706455/3:210")
 	if err != nil {
-		t.Fatalf("Resolve failed: %v", err)
+		t.Fatalf("Store: %v", err)
 	}
-	if resolved != path {
-		t.Errorf("Resolve returned %q, want %q", resolved, path)
+
+	if !strings.HasPrefix(storedPath, filepath.Join(root, time.Now().Format("2006-01-02"))) {
+		t.Fatalf("storedPath = %q, want prefix %q", storedPath, filepath.Join(root, time.Now().Format("2006-01-02")))
+	}
+	if filepath.Base(storedPath) != "voice.ogg" {
+		t.Fatalf("basename = %q", filepath.Base(storedPath))
+	}
+	if !strings.Contains(storedPath, filepath.Join(time.Now().Format("2006-01-02"), "agent_main_telegram_group_-1003822706455_3")) {
+		t.Fatalf("storedPath bucket mismatch: %q", storedPath)
+	}
+	meta := readMetaFile(t, storedPath)
+	if meta.Scope != "telegram:-1003822706455/3:210" {
+		t.Fatalf("scope = %q", meta.Scope)
+	}
+	if meta.Meta.Filename != "voice.ogg" {
+		t.Fatalf("filename = %q", meta.Meta.Filename)
+	}
+	if meta.Meta.ContentType != "audio/ogg" {
+		t.Fatalf("content_type = %q", meta.Meta.ContentType)
+	}
+	if meta.Meta.Source != "telegram" {
+		t.Fatalf("source = %q", meta.Meta.Source)
+	}
+	if meta.SHA256 == "" {
+		t.Fatal("expected sha256 to be populated")
 	}
 }
 
-func TestReleaseAll(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileMediaStore()
+func TestStore_ReusesSameNameAndSameContent(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileMediaStoreAt(root)
+	source := createTempFile(t, t.TempDir(), "report.pdf", "same-content")
 
-	paths := make([]string, 3)
-	refs := make([]string, 3)
-	for i := range 3 {
-		paths[i] = createTempFile(t, dir, strings.Repeat("a", i+1)+".jpg")
-		var err error
-		refs[i], err = store.Store(paths[i], MediaMeta{Source: "test"}, "scope1")
-		if err != nil {
-			t.Fatalf("Store failed: %v", err)
-		}
+	storedPath1, err := store.Store(source, MediaMeta{Filename: "report.pdf", Source: "telegram"}, "telegram:chat:1")
+	if err != nil {
+		t.Fatalf("Store(first): %v", err)
 	}
+	meta1 := readMetaFile(t, storedPath1)
+	time.Sleep(10 * time.Millisecond)
 
-	if err := store.ReleaseAll("scope1"); err != nil {
-		t.Fatalf("ReleaseAll failed: %v", err)
+	storedPath2, err := store.Store(source, MediaMeta{Filename: "report.pdf", Source: "telegram"}, "telegram:chat:2")
+	if err != nil {
+		t.Fatalf("Store(second): %v", err)
 	}
+	meta2 := readMetaFile(t, storedPath2)
 
-	// Files should be deleted
-	for _, p := range paths {
-		if _, err := os.Stat(p); !os.IsNotExist(err) {
-			t.Errorf("file %q should have been deleted", p)
-		}
+	if storedPath1 != storedPath2 {
+		t.Fatalf("expected same stored path, got %q and %q", storedPath1, storedPath2)
 	}
-
-	// Refs should be unresolvable
-	for _, ref := range refs {
-		if _, err := store.Resolve(ref); err == nil {
-			t.Errorf("Resolve(%q) should fail after ReleaseAll", ref)
-		}
+	if !meta2.UpdatedAt.After(meta1.UpdatedAt) {
+		t.Fatalf("expected updated_at to advance: %v <= %v", meta2.UpdatedAt, meta1.UpdatedAt)
+	}
+	if !meta2.CreatedAt.Equal(meta1.CreatedAt) {
+		t.Fatalf("created_at changed: %v != %v", meta2.CreatedAt, meta1.CreatedAt)
 	}
 }
 
-func TestReleaseAllForgetOnlyKeepsFile(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileMediaStore()
+func TestStore_ReusedPathAcrossScopesReleasesOnlyOnLastScope(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileMediaStoreAt(root)
+	source := createTempFile(t, t.TempDir(), "report.pdf", "same-content")
 
-	path := createTempFile(t, dir, "workspace.txt")
-	ref, err := store.Store(path, MediaMeta{
-		Source:        "test",
-		CleanupPolicy: CleanupPolicyForgetOnly,
-	}, "scope1")
+	storedPath, err := store.Store(source, MediaMeta{Filename: "report.pdf", Source: "telegram", StorageBucket: "shared"}, "scopeA")
 	if err != nil {
-		t.Fatalf("Store failed: %v", err)
+		t.Fatalf("Store(scopeA): %v", err)
 	}
-
-	if err := store.ReleaseAll("scope1"); err != nil {
-		t.Fatalf("ReleaseAll failed: %v", err)
-	}
-
-	if _, err := store.Resolve(ref); err == nil {
-		t.Error("forget-only ref should be unresolvable after release")
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("forget-only file should remain on disk: %v", err)
-	}
-}
-
-func TestReleaseAllSharedPathDeletesOnFinalRefOnly(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileMediaStore()
-
-	path := createTempFile(t, dir, "shared.jpg")
-	refA, err := store.Store(path, MediaMeta{
-		Source:        "test",
-		CleanupPolicy: CleanupPolicyDeleteOnCleanup,
-	}, "scopeA")
+	storedPath2, err := store.Store(source, MediaMeta{Filename: "report.pdf", Source: "telegram", StorageBucket: "shared"}, "scopeB")
 	if err != nil {
-		t.Fatalf("Store(scopeA) failed: %v", err)
+		t.Fatalf("Store(scopeB): %v", err)
 	}
-	refB, err := store.Store(path, MediaMeta{
-		Source:        "test",
-		CleanupPolicy: CleanupPolicyDeleteOnCleanup,
-	}, "scopeB")
-	if err != nil {
-		t.Fatalf("Store(scopeB) failed: %v", err)
+	if storedPath != storedPath2 {
+		t.Fatalf("expected same stored path, got %q and %q", storedPath, storedPath2)
 	}
 
 	if err := store.ReleaseAll("scopeA"); err != nil {
-		t.Fatalf("ReleaseAll(scopeA) failed: %v", err)
+		t.Fatalf("ReleaseAll(scopeA): %v", err)
 	}
-
-	if _, err := store.Resolve(refA); err == nil {
-		t.Error("refA should be unresolvable after ReleaseAll(scopeA)")
+	if _, err := os.Stat(storedPath); err != nil {
+		t.Fatalf("expected file to remain after releasing first scope: %v", err)
 	}
-	if _, err := store.Resolve(refB); err != nil {
-		t.Fatalf("refB should still resolve: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("shared file should remain until final ref is released: %v", err)
+	if _, _, err := store.ResolveWithMeta(storedPath); err != nil {
+		t.Fatalf("ResolveWithMeta after scopeA release: %v", err)
 	}
 
 	if err := store.ReleaseAll("scopeB"); err != nil {
-		t.Fatalf("ReleaseAll(scopeB) failed: %v", err)
+		t.Fatalf("ReleaseAll(scopeB): %v", err)
 	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("shared file should be deleted after final ref is released")
+	if _, err := os.Stat(storedPath); err != nil {
+		t.Fatalf("expected file to remain after releasing last scope, err=%v", err)
 	}
-}
-
-func TestReleaseAllMixedPoliciesKeepsFile(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileMediaStore()
-
-	path := createTempFile(t, dir, "shared.txt")
-	if _, err := store.Store(path, MediaMeta{
-		Source:        "test",
-		CleanupPolicy: CleanupPolicyDeleteOnCleanup,
-	}, "owned"); err != nil {
-		t.Fatalf("Store(owned) failed: %v", err)
-	}
-	if _, err := store.Store(path, MediaMeta{
-		Source:        "test",
-		CleanupPolicy: CleanupPolicyForgetOnly,
-	}, "borrowed"); err != nil {
-		t.Fatalf("Store(borrowed) failed: %v", err)
-	}
-
-	if err := store.ReleaseAll("owned"); err != nil {
-		t.Fatalf("ReleaseAll(owned) failed: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("mixed-policy file should remain after owned ref release: %v", err)
-	}
-
-	if err := store.ReleaseAll("borrowed"); err != nil {
-		t.Fatalf("ReleaseAll(borrowed) failed: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("mixed-policy path should not be auto-deleted: %v", err)
+	if _, err := os.Stat(storedPath + ".meta.json"); err != nil {
+		t.Fatalf("expected meta to remain after releasing last scope, err=%v", err)
 	}
 }
 
-func TestMultiScopeIsolation(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileMediaStore()
+func TestStore_AddsSuffixWhenSameNameHasDifferentContent(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileMediaStoreAt(root)
+	srcA := createTempFile(t, t.TempDir(), "report.pdf", "content-a")
+	srcB := createTempFile(t, t.TempDir(), "report.pdf", "content-b")
 
-	pathA := createTempFile(t, dir, "fileA.jpg")
-	pathB := createTempFile(t, dir, "fileB.jpg")
-
-	refA, _ := store.Store(pathA, MediaMeta{Source: "test"}, "scopeA")
-	refB, _ := store.Store(pathB, MediaMeta{Source: "test"}, "scopeB")
-
-	// Release only scopeA
-	if err := store.ReleaseAll("scopeA"); err != nil {
-		t.Fatalf("ReleaseAll(scopeA) failed: %v", err)
-	}
-
-	// scopeA file should be gone
-	if _, err := os.Stat(pathA); !os.IsNotExist(err) {
-		t.Error("file A should have been deleted")
-	}
-	if _, err := store.Resolve(refA); err == nil {
-		t.Error("refA should be unresolvable after release")
-	}
-
-	// scopeB file should still exist
-	if _, err := os.Stat(pathB); err != nil {
-		t.Error("file B should still exist")
-	}
-	resolved, err := store.Resolve(refB)
+	storedPath1, err := store.Store(srcA, MediaMeta{Filename: "report.pdf", Source: "telegram"}, "telegram:chat:1")
 	if err != nil {
-		t.Fatalf("refB should still resolve: %v", err)
+		t.Fatalf("Store(first): %v", err)
 	}
-	if resolved != pathB {
-		t.Errorf("resolved %q, want %q", resolved, pathB)
+	storedPath2, err := store.Store(srcB, MediaMeta{Filename: "report.pdf", Source: "telegram"}, "telegram:chat:2")
+	if err != nil {
+		t.Fatalf("Store(second): %v", err)
+	}
+
+	if filepath.Base(storedPath1) != "report.pdf" {
+		t.Fatalf("basename(first) = %q", filepath.Base(storedPath1))
+	}
+	if filepath.Base(storedPath2) != "report.1.pdf" {
+		t.Fatalf("basename(second) = %q", filepath.Base(storedPath2))
+	}
+	meta := readMetaFile(t, storedPath2)
+	if meta.Meta.Filename != "report.pdf" {
+		t.Fatalf("meta filename = %q", meta.Meta.Filename)
 	}
 }
 
-func TestReleaseAllIdempotent(t *testing.T) {
-	store := NewFileMediaStore()
+func TestResolveWithMeta_ByStoredPath(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileMediaStoreAt(root)
+	src := createTempFile(t, t.TempDir(), "photo.jpg", "jpg-data")
 
-	// ReleaseAll on non-existent scope should not error
-	if err := store.ReleaseAll("nonexistent"); err != nil {
-		t.Fatalf("ReleaseAll on empty scope should not error: %v", err)
+	storedPath, err := store.Store(src, MediaMeta{Filename: "photo.jpg", ContentType: "image/jpeg", Source: "telegram"}, "telegram:chat:1")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
 	}
+	resolvedPath, meta, err := store.ResolveWithMeta(storedPath)
+	if err != nil {
+		t.Fatalf("ResolveWithMeta: %v", err)
+	}
+	if resolvedPath != storedPath {
+		t.Fatalf("resolvedPath = %q, want %q", resolvedPath, storedPath)
+	}
+	if meta.Filename != "photo.jpg" {
+		t.Fatalf("filename = %q", meta.Filename)
+	}
+	if meta.ContentType != "image/jpeg" {
+		t.Fatalf("content_type = %q", meta.ContentType)
+	}
+}
 
-	// Create and release, then release again
-	dir := t.TempDir()
-	path := createTempFile(t, dir, "file.jpg")
-	_, _ = store.Store(path, MediaMeta{Source: "test"}, "scope1")
+func TestReleaseAll_ForgetsEntriesButKeepsStoredFiles(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileMediaStoreAt(root)
+	src := createTempFile(t, t.TempDir(), "a.txt", "hello")
 
-	if err := store.ReleaseAll("scope1"); err != nil {
-		t.Fatalf("first ReleaseAll failed: %v", err)
+	storedPath, err := store.Store(src, MediaMeta{Filename: "a.txt", Source: "test"}, "scope1")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
 	}
 	if err := store.ReleaseAll("scope1"); err != nil {
-		t.Fatalf("second ReleaseAll should not error: %v", err)
+		t.Fatalf("ReleaseAll: %v", err)
+	}
+	if _, err := os.Stat(storedPath); err != nil {
+		t.Fatalf("expected stored file to remain, err=%v", err)
+	}
+	if _, err := os.Stat(storedPath + ".meta.json"); err != nil {
+		t.Fatalf("expected meta file to remain, err=%v", err)
 	}
 }
 
-func TestReleaseAllCleansMappingsIfRefsMissing(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileMediaStore()
+func TestCleanExpired_ForgetsEntriesButKeepsFilesOnDisk(t *testing.T) {
+	root := t.TempDir()
+	store := NewFileMediaStoreAtWithCleanup(root, MediaCleanerConfig{MaxAge: time.Minute})
+	store.nowFunc = func() time.Time { return time.Date(2026, 3, 22, 12, 0, 0, 0, time.UTC) }
+	src := createTempFile(t, t.TempDir(), "a.txt", "hello")
 
-	path := createTempFile(t, dir, "file.jpg")
-	ref, err := store.Store(path, MediaMeta{Source: "test"}, "scope1")
+	storedPath, err := store.Store(src, MediaMeta{Filename: "a.txt", Source: "test"}, "scope1")
 	if err != nil {
-		t.Fatalf("Store failed: %v", err)
+		t.Fatalf("Store: %v", err)
 	}
+	store.nowFunc = func() time.Time { return time.Date(2026, 3, 22, 12, 2, 0, 0, time.UTC) }
 
-	// Simulate internal inconsistency: scopeToRefs/refToScope contains ref but refs map doesn't.
-	store.mu.Lock()
-	delete(store.refs, ref)
-	store.mu.Unlock()
-
-	if err := store.ReleaseAll("scope1"); err != nil {
-		t.Fatalf("ReleaseAll failed: %v", err)
+	forgotten := store.CleanExpired()
+	if forgotten != 1 {
+		t.Fatalf("forgotten = %d, want 1", forgotten)
 	}
-
-	// ReleaseAll should still clean mappings (even if it can't delete the file without the path).
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-	if _, ok := store.refToScope[ref]; ok {
-		t.Error("refToScope should not contain ref after ReleaseAll")
+	if _, err := os.Stat(storedPath); err != nil {
+		t.Fatalf("expected stored file to remain on disk, err=%v", err)
 	}
-	if _, ok := store.scopeToRefs["scope1"]; ok {
-		t.Error("scopeToRefs should not contain scope1 after ReleaseAll")
-	}
-}
-
-func TestStoreNonexistentFile(t *testing.T) {
-	store := NewFileMediaStore()
-
-	_, err := store.Store("/nonexistent/path/file.jpg", MediaMeta{Source: "test"}, "scope1")
-	if err == nil {
-		t.Error("Store should fail for nonexistent file")
-	}
-	// Error message should include the underlying os error, not just "file does not exist"
-	if !strings.Contains(err.Error(), "no such file or directory") &&
-		!strings.Contains(err.Error(), "cannot find") {
-		t.Errorf("Error should contain OS error detail, got: %v", err)
-	}
-}
-
-func TestResolveWithMeta(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileMediaStore()
-
-	path := createTempFile(t, dir, "image.png")
-	meta := MediaMeta{
-		Filename:    "image.png",
-		ContentType: "image/png",
-		Source:      "telegram",
-	}
-
-	ref, err := store.Store(path, meta, "scope1")
-	if err != nil {
-		t.Fatalf("Store failed: %v", err)
-	}
-
-	resolvedPath, resolvedMeta, err := store.ResolveWithMeta(ref)
-	if err != nil {
-		t.Fatalf("ResolveWithMeta failed: %v", err)
-	}
-	if resolvedPath != path {
-		t.Errorf("ResolveWithMeta path = %q, want %q", resolvedPath, path)
-	}
-	if resolvedMeta.Filename != meta.Filename {
-		t.Errorf("ResolveWithMeta Filename = %q, want %q", resolvedMeta.Filename, meta.Filename)
-	}
-	if resolvedMeta.ContentType != meta.ContentType {
-		t.Errorf("ResolveWithMeta ContentType = %q, want %q", resolvedMeta.ContentType, meta.ContentType)
-	}
-	if resolvedMeta.Source != meta.Source {
-		t.Errorf("ResolveWithMeta Source = %q, want %q", resolvedMeta.Source, meta.Source)
-	}
-
-	// Unknown ref should fail
-	_, _, err = store.ResolveWithMeta("media://nonexistent")
-	if err == nil {
-		t.Error("ResolveWithMeta should fail for unknown ref")
-	}
-}
-
-func TestConcurrentSafety(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileMediaStore()
-
-	const goroutines = 20
-	const filesPerGoroutine = 5
-
-	var wg sync.WaitGroup
-	wg.Add(goroutines)
-
-	for g := range goroutines {
-		go func(gIdx int) {
-			defer wg.Done()
-			scope := strings.Repeat("s", gIdx+1)
-
-			for i := range filesPerGoroutine {
-				path := createTempFile(t, dir, strings.Repeat("f", gIdx*filesPerGoroutine+i+1)+".tmp")
-				ref, err := store.Store(path, MediaMeta{Source: "test"}, scope)
-				if err != nil {
-					t.Errorf("Store failed: %v", err)
-					return
-				}
-
-				if _, err := store.Resolve(ref); err != nil {
-					t.Errorf("Resolve failed: %v", err)
-				}
-			}
-
-			if err := store.ReleaseAll(scope); err != nil {
-				t.Errorf("ReleaseAll failed: %v", err)
-			}
-		}(g)
-	}
-
-	wg.Wait()
-}
-
-// --- TTL cleanup tests ---
-
-func newTestStoreWithCleanup(maxAge time.Duration) *FileMediaStore {
-	s := NewFileMediaStoreWithCleanup(MediaCleanerConfig{
-		Enabled:  true,
-		MaxAge:   maxAge,
-		Interval: time.Hour, // won't tick in tests
-	})
-	return s
-}
-
-func TestCleanExpiredRemovesOldEntries(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-	store := newTestStoreWithCleanup(10 * time.Minute)
-	store.nowFunc = func() time.Time { return now.Add(-20 * time.Minute) }
-
-	path := createTempFile(t, dir, "old.jpg")
-	ref, err := store.Store(path, MediaMeta{Source: "test"}, "scope1")
-	if err != nil {
-		t.Fatalf("Store failed: %v", err)
-	}
-
-	// Advance clock to present
-	store.nowFunc = func() time.Time { return now }
-	removed := store.CleanExpired()
-
-	if removed != 1 {
-		t.Errorf("expected 1 removed, got %d", removed)
-	}
-	if _, err := store.Resolve(ref); err == nil {
-		t.Error("expired ref should be unresolvable")
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("expired file should be deleted")
-	}
-}
-
-func TestCleanExpiredForgetOnlyKeepsFile(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-	store := newTestStoreWithCleanup(10 * time.Minute)
-	store.nowFunc = func() time.Time { return now.Add(-20 * time.Minute) }
-
-	path := createTempFile(t, dir, "workspace.txt")
-	ref, err := store.Store(path, MediaMeta{
-		Source:        "test",
-		CleanupPolicy: CleanupPolicyForgetOnly,
-	}, "scope1")
-	if err != nil {
-		t.Fatalf("Store failed: %v", err)
-	}
-
-	store.nowFunc = func() time.Time { return now }
-	removed := store.CleanExpired()
-
-	if removed != 1 {
-		t.Errorf("expected 1 removed, got %d", removed)
-	}
-	if _, err := store.Resolve(ref); err == nil {
-		t.Error("expired forget-only ref should be unresolvable")
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("forget-only file should remain on disk: %v", err)
-	}
-}
-
-func TestCleanExpiredKeepsNonExpired(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-	store := newTestStoreWithCleanup(10 * time.Minute)
-	store.nowFunc = func() time.Time { return now }
-
-	path := createTempFile(t, dir, "fresh.jpg")
-	ref, err := store.Store(path, MediaMeta{Source: "test"}, "scope1")
-	if err != nil {
-		t.Fatalf("Store failed: %v", err)
-	}
-
-	removed := store.CleanExpired()
-	if removed != 0 {
-		t.Errorf("expected 0 removed, got %d", removed)
-	}
-
-	if _, err := store.Resolve(ref); err != nil {
-		t.Errorf("fresh ref should still resolve: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Error("fresh file should still exist")
-	}
-}
-
-func TestCleanExpiredMixedAges(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-	store := newTestStoreWithCleanup(10 * time.Minute)
-
-	// Store old entry
-	store.nowFunc = func() time.Time { return now.Add(-20 * time.Minute) }
-	oldPath := createTempFile(t, dir, "old.jpg")
-	oldRef, _ := store.Store(oldPath, MediaMeta{Source: "test"}, "scope1")
-
-	// Store fresh entry
-	store.nowFunc = func() time.Time { return now }
-	freshPath := createTempFile(t, dir, "fresh.jpg")
-	freshRef, _ := store.Store(freshPath, MediaMeta{Source: "test"}, "scope1")
-
-	removed := store.CleanExpired()
-	if removed != 1 {
-		t.Errorf("expected 1 removed, got %d", removed)
-	}
-
-	if _, err := store.Resolve(oldRef); err == nil {
-		t.Error("old ref should be gone")
-	}
-	if _, err := store.Resolve(freshRef); err != nil {
-		t.Errorf("fresh ref should still resolve: %v", err)
-	}
-}
-
-func TestCleanExpiredSharedPathDeletesOnFinalRefOnly(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-	store := newTestStoreWithCleanup(10 * time.Minute)
-
-	path := createTempFile(t, dir, "shared.jpg")
-
-	store.nowFunc = func() time.Time { return now.Add(-20 * time.Minute) }
-	oldRef, err := store.Store(path, MediaMeta{
-		Source:        "test",
-		CleanupPolicy: CleanupPolicyDeleteOnCleanup,
-	}, "scope-old")
-	if err != nil {
-		t.Fatalf("Store(old) failed: %v", err)
-	}
-
-	store.nowFunc = func() time.Time { return now }
-	freshRef, err := store.Store(path, MediaMeta{
-		Source:        "test",
-		CleanupPolicy: CleanupPolicyDeleteOnCleanup,
-	}, "scope-fresh")
-	if err != nil {
-		t.Fatalf("Store(fresh) failed: %v", err)
-	}
-
-	removed := store.CleanExpired()
-	if removed != 1 {
-		t.Errorf("expected 1 removed, got %d", removed)
-	}
-	if _, err := store.Resolve(oldRef); err == nil {
-		t.Error("old ref should be gone after cleanup")
-	}
-	if _, err := store.Resolve(freshRef); err != nil {
-		t.Fatalf("fresh ref should still resolve: %v", err)
-	}
-	if _, err := os.Stat(path); err != nil {
-		t.Errorf("shared file should remain while fresh ref exists: %v", err)
-	}
-
-	if err := store.ReleaseAll("scope-fresh"); err != nil {
-		t.Fatalf("ReleaseAll(scope-fresh) failed: %v", err)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("shared file should be deleted after final ref is released")
-	}
-}
-
-func TestCleanExpiredCleansEmptyScopes(t *testing.T) {
-	dir := t.TempDir()
-	now := time.Now()
-	store := newTestStoreWithCleanup(10 * time.Minute)
-
-	// Store old entry as the only one in scope
-	store.nowFunc = func() time.Time { return now.Add(-20 * time.Minute) }
-	path := createTempFile(t, dir, "only.jpg")
-	store.Store(path, MediaMeta{Source: "test"}, "lonely_scope")
-
-	store.nowFunc = func() time.Time { return now }
-	store.CleanExpired()
-
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-	if _, ok := store.scopeToRefs["lonely_scope"]; ok {
-		t.Error("empty scope should be cleaned up")
-	}
-}
-
-func TestStartStopLifecycle(t *testing.T) {
-	store := NewFileMediaStoreWithCleanup(MediaCleanerConfig{
-		Enabled:  true,
-		MaxAge:   time.Minute,
-		Interval: 50 * time.Millisecond,
-	})
-
-	// Start and stop should not panic
-	store.Start()
-	// Double start should not spawn a second goroutine
-	store.Start()
-	time.Sleep(100 * time.Millisecond)
-	store.Stop()
-
-	// Double stop should not panic
-	store.Stop()
-}
-
-func TestCleanExpiredZeroMaxAge(t *testing.T) {
-	store := NewFileMediaStoreWithCleanup(MediaCleanerConfig{
-		Enabled:  true,
-		MaxAge:   0,
-		Interval: time.Hour,
-	})
-
-	dir := t.TempDir()
-	path := createTempFile(t, dir, "file.jpg")
-	ref, _ := store.Store(path, MediaMeta{Source: "test"}, "scope1")
-
-	// Zero MaxAge should be a no-op
-	removed := store.CleanExpired()
-	if removed != 0 {
-		t.Errorf("expected 0 removed with zero MaxAge, got %d", removed)
-	}
-	if _, err := store.Resolve(ref); err != nil {
-		t.Errorf("ref should still resolve: %v", err)
-	}
-}
-
-func TestStartDisabledIsNoop(t *testing.T) {
-	store := NewFileMediaStoreWithCleanup(MediaCleanerConfig{
-		Enabled:  false,
-		MaxAge:   time.Minute,
-		Interval: time.Minute,
-	})
-	// Should not start any goroutine or panic
-	store.Start()
-	store.Stop()
-}
-
-func TestStartZeroIntervalNoPanic(t *testing.T) {
-	store := NewFileMediaStoreWithCleanup(MediaCleanerConfig{
-		Enabled:  true,
-		MaxAge:   time.Minute,
-		Interval: 0,
-	})
-	// Zero interval should not panic (time.NewTicker panics on <= 0)
-	store.Start()
-	store.Stop()
-}
-
-func TestStartZeroMaxAgeNoPanic(t *testing.T) {
-	store := NewFileMediaStoreWithCleanup(MediaCleanerConfig{
-		Enabled:  true,
-		MaxAge:   0,
-		Interval: time.Minute,
-	})
-	store.Start()
-	store.Stop()
-}
-
-func TestConcurrentCleanupSafety(t *testing.T) {
-	dir := t.TempDir()
-	store := newTestStoreWithCleanup(50 * time.Millisecond)
-	store.nowFunc = time.Now
-
-	const workers = 10
-	const ops = 20
-	var wg sync.WaitGroup
-	wg.Add(workers * 4)
-
-	// Store workers
-	for w := range workers {
-		go func(wIdx int) {
-			defer wg.Done()
-			scope := fmt.Sprintf("scope-%d", wIdx)
-			for i := range ops {
-				p := createTempFile(t, dir, fmt.Sprintf("w%d-f%d.tmp", wIdx, i))
-				store.Store(p, MediaMeta{Source: "test"}, scope)
-			}
-		}(w)
-	}
-
-	// Resolve workers
-	for range workers {
-		go func() {
-			defer wg.Done()
-			for range ops {
-				store.Resolve("media://nonexistent")
-			}
-		}()
-	}
-
-	// ReleaseAll workers
-	for w := range workers {
-		go func(wIdx int) {
-			defer wg.Done()
-			for range ops {
-				store.ReleaseAll(fmt.Sprintf("scope-%d", wIdx))
-			}
-		}(w)
-	}
-
-	// CleanExpired workers
-	for range workers {
-		go func() {
-			defer wg.Done()
-			for range ops {
-				store.CleanExpired()
-			}
-		}()
-	}
-
-	wg.Wait()
-}
-
-func TestRefToScopeConsistency(t *testing.T) {
-	dir := t.TempDir()
-	store := NewFileMediaStore()
-
-	// Store entries in two scopes
-	ref1, _ := store.Store(createTempFile(t, dir, "a.jpg"), MediaMeta{Source: "test"}, "s1")
-	ref2, _ := store.Store(createTempFile(t, dir, "b.jpg"), MediaMeta{Source: "test"}, "s1")
-	ref3, _ := store.Store(createTempFile(t, dir, "c.jpg"), MediaMeta{Source: "test"}, "s2")
-
-	store.mu.RLock()
-	checkRef := func(ref, expectedScope string) {
-		t.Helper()
-		if scope, ok := store.refToScope[ref]; !ok || scope != expectedScope {
-			t.Errorf("refToScope[%s] = %q, want %q", ref, scope, expectedScope)
-		}
-	}
-	checkRef(ref1, "s1")
-	checkRef(ref2, "s1")
-	checkRef(ref3, "s2")
-	store.mu.RUnlock()
-
-	// Release s1 and verify refToScope is cleaned
-	store.ReleaseAll("s1")
-
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-	if _, ok := store.refToScope[ref1]; ok {
-		t.Error("refToScope should not contain ref1 after ReleaseAll")
-	}
-	if _, ok := store.refToScope[ref2]; ok {
-		t.Error("refToScope should not contain ref2 after ReleaseAll")
-	}
-	if _, ok := store.refToScope[ref3]; !ok {
-		t.Error("refToScope should still contain ref3")
+	if _, err := os.Stat(storedPath + ".meta.json"); err != nil {
+		t.Fatalf("expected sidecar metadata to remain on disk, err=%v", err)
 	}
 }

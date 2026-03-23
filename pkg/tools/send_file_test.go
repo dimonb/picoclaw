@@ -101,8 +101,8 @@ func TestSendFileTool_Success(t *testing.T) {
 	if len(result.Media) != 1 {
 		t.Fatalf("expected 1 media ref, got %d", len(result.Media))
 	}
-	if result.Media[0][:8] != "media://" {
-		t.Errorf("expected media:// ref, got %q", result.Media[0])
+	if _, err := os.Stat(result.Media[0]); err != nil {
+		t.Errorf("expected stored local file, got %q (%v)", result.Media[0], err)
 	}
 	if !result.ResponseHandled {
 		t.Fatal("expected send_file success to mark response handled")
@@ -112,8 +112,8 @@ func TestSendFileTool_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResolveWithMeta failed: %v", err)
 	}
-	if meta.CleanupPolicy != media.CleanupPolicyForgetOnly {
-		t.Errorf("CleanupPolicy = %q, want %q", meta.CleanupPolicy, media.CleanupPolicyForgetOnly)
+	if meta.Filename == "" {
+		t.Fatal("expected filename metadata to be preserved")
 	}
 }
 
