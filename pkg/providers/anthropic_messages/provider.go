@@ -8,6 +8,7 @@ package anthropicmessages
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/providers/common"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
@@ -210,7 +212,7 @@ func buildRequestBody(
 				// Regular user message
 				apiMessages = append(apiMessages, map[string]any{
 					"role":    "user",
-					"content": msg.Content,
+					"content": buildUserContent(msg),
 				})
 			}
 
@@ -286,6 +288,71 @@ func buildRequestBody(
 	}
 
 	return result, nil
+}
+
+func buildUserContent(msg Message) any {
+	if len(msg.Media) == 0 {
+		return msg.Content
+	}
+
+	blocks := make([]any, 0, 1+len(msg.Media))
+	if msg.Content != "" {
+		blocks = append(blocks, map[string]any{
+			"type": "text",
+			"text": msg.Content,
+		})
+	}
+
+	for _, mediaURL := range msg.Media {
+		image, ok := common.ParseInlineImageDataURL(mediaURL)
+		if ok {
+			blocks = append(blocks, map[string]any{
+				"type": "image",
+				"source": map[string]any{
+					"type":       "base64",
+					"media_type": image.MediaType,
+					"data":       image.Base64Data,
+				},
+			})
+			continue
+		}
+
+		data, ok := common.ParseInlineDataURL(mediaURL)
+		if !ok || !common.IsInlineDocumentMediaType(data.MediaType) {
+			continue
+		}
+
+		switch data.MediaType {
+		case "application/pdf":
+			blocks = append(blocks, map[string]any{
+				"type": "document",
+				"source": map[string]any{
+					"type":       "base64",
+					"media_type": data.MediaType,
+					"data":       data.Base64Data,
+				},
+			})
+		case "text/plain":
+			decoded, err := base64.StdEncoding.DecodeString(data.Base64Data)
+			if err != nil {
+				continue
+			}
+			blocks = append(blocks, map[string]any{
+				"type": "document",
+				"source": map[string]any{
+					"type":       "text",
+					"media_type": data.MediaType,
+					"data":       string(decoded),
+				},
+			})
+		}
+	}
+
+	if len(blocks) == 0 {
+		return msg.Content
+	}
+
+	return blocks
 }
 
 // buildTools converts tool definitions to Anthropic format.

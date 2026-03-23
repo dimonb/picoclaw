@@ -1,13 +1,18 @@
 package media
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
+	"github.com/sipeed/picoclaw/pkg/fileutil"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
@@ -23,6 +28,17 @@ const (
 	// must never delete the underlying file.
 	CleanupPolicyForgetOnly CleanupPolicy = "forget_only"
 )
+
+func normalizeCleanupPolicy(p CleanupPolicy) CleanupPolicy {
+	if p == "" {
+		return CleanupPolicyDeleteOnCleanup
+	}
+	return p
+}
+
+func effectiveCleanupPolicy(meta MediaMeta) CleanupPolicy {
+	return normalizeCleanupPolicy(meta.CleanupPolicy)
+}
 
 // MediaMeta holds metadata about a stored media file.
 type MediaMeta struct {
@@ -58,6 +74,19 @@ type mediaEntry struct {
 	storedAt time.Time
 }
 
+type persistedMediaEntry struct {
+	ref   string
+	scope string
+	entry mediaEntry
+}
+
+type persistedEntry struct {
+	Ref      string    `json:"ref"`
+	Scope    string    `json:"scope"`
+	StoredAt time.Time `json:"stored_at"`
+	Meta     MediaMeta `json:"meta"`
+}
+
 type pathRefState struct {
 	refCount       int
 	deleteEligible bool
@@ -79,6 +108,7 @@ type FileMediaStore struct {
 	refToScope  map[string]string
 	refToPath   map[string]string
 	pathStates  map[string]pathRefState
+	baseDir     string
 
 	cleanerCfg MediaCleanerConfig
 	stop       chan struct{}
@@ -87,9 +117,8 @@ type FileMediaStore struct {
 	nowFunc    func() time.Time // for testing
 }
 
-// NewFileMediaStore creates a new FileMediaStore without background cleanup.
-func NewFileMediaStore() *FileMediaStore {
-	return &FileMediaStore{
+func newFileMediaStore(baseDir string, cfg MediaCleanerConfig, withCleanup bool) *FileMediaStore {
+	s := &FileMediaStore{
 		refs:        make(map[string]mediaEntry),
 		scopeToRefs: make(map[string]map[string]struct{}),
 		refToScope:  make(map[string]string),
@@ -97,86 +126,122 @@ func NewFileMediaStore() *FileMediaStore {
 		pathStates:  make(map[string]pathRefState),
 		nowFunc:     time.Now,
 	}
+	if withCleanup {
+		s.cleanerCfg = cfg
+		s.stop = make(chan struct{})
+	}
+	if strings.TrimSpace(baseDir) != "" {
+		cleanBaseDir := filepath.Clean(baseDir)
+		if err := os.MkdirAll(cleanBaseDir, 0o700); err != nil {
+			logger.WarnCF("media", "persistent store disabled: failed to create media directory", map[string]any{
+				"path":  cleanBaseDir,
+				"error": err.Error(),
+			})
+		} else {
+			s.baseDir = cleanBaseDir
+			s.loadPersistedEntries()
+		}
+	}
+	return s
+}
+
+// NewFileMediaStore creates a new FileMediaStore without background cleanup.
+func NewFileMediaStore() *FileMediaStore {
+	return newFileMediaStore("", MediaCleanerConfig{}, false)
+}
+
+// NewPersistentFileMediaStore creates a FileMediaStore that persists media blobs
+// and metadata in baseDir.
+func NewPersistentFileMediaStore(baseDir string) *FileMediaStore {
+	return newFileMediaStore(baseDir, MediaCleanerConfig{}, false)
 }
 
 // NewFileMediaStoreWithCleanup creates a FileMediaStore with TTL-based background cleanup.
 func NewFileMediaStoreWithCleanup(cfg MediaCleanerConfig) *FileMediaStore {
-	return &FileMediaStore{
-		refs:        make(map[string]mediaEntry),
-		scopeToRefs: make(map[string]map[string]struct{}),
-		refToScope:  make(map[string]string),
-		refToPath:   make(map[string]string),
-		pathStates:  make(map[string]pathRefState),
-		cleanerCfg:  cfg,
-		stop:        make(chan struct{}),
-		nowFunc:     time.Now,
-	}
+	return newFileMediaStore("", cfg, true)
+}
+
+// NewPersistentFileMediaStoreWithCleanup creates a disk-backed FileMediaStore
+// with TTL-based background cleanup.
+func NewPersistentFileMediaStoreWithCleanup(baseDir string, cfg MediaCleanerConfig) *FileMediaStore {
+	return newFileMediaStore(baseDir, cfg, true)
 }
 
 // Store registers a local file under the given scope. The file must exist.
 func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (string, error) {
-	if _, err := os.Stat(localPath); err != nil {
+	info, err := os.Stat(localPath)
+	if err != nil {
 		return "", fmt.Errorf("media store: %s: %w", localPath, err)
 	}
 
-	ref := "media://" + uuid.New().String()
-	meta.CleanupPolicy = normalizeCleanupPolicy(meta.CleanupPolicy)
+	refID := uuid.New().String()
+	ref := mediaRef(refID)
+	policy := effectiveCleanupPolicy(meta)
+	storedAt := s.nowFunc()
+	storedPath := localPath
+
+	if s.baseDir != "" {
+		storedPath = s.blobPath(refID)
+		if err := s.persistMedia(localPath, storedPath, persistedEntry{
+			Ref:      ref,
+			Scope:    scope,
+			StoredAt: storedAt,
+			Meta:     meta,
+		}, info.Mode().Perm()); err != nil {
+			return "", err
+		}
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.refs[ref] = mediaEntry{path: localPath, meta: meta, storedAt: s.nowFunc()}
+	s.refs[ref] = mediaEntry{path: storedPath, meta: meta, storedAt: storedAt}
 	if s.scopeToRefs[scope] == nil {
 		s.scopeToRefs[scope] = make(map[string]struct{})
 	}
 	s.scopeToRefs[scope][ref] = struct{}{}
 	s.refToScope[ref] = scope
-	s.refToPath[ref] = localPath
+	s.refToPath[ref] = storedPath
 
-	pathState := s.pathStates[localPath]
+	pathState := s.pathStates[storedPath]
 	if pathState.refCount == 0 {
-		pathState.deleteEligible = meta.CleanupPolicy == CleanupPolicyDeleteOnCleanup
-	} else if meta.CleanupPolicy == CleanupPolicyForgetOnly {
+		pathState.deleteEligible = policy == CleanupPolicyDeleteOnCleanup
+	} else if policy == CleanupPolicyForgetOnly {
 		// Be conservative: once a path is borrowed externally, never let this
 		// lifecycle auto-delete it even if store-managed refs also exist.
 		pathState.deleteEligible = false
 	}
+	if s.baseDir != "" {
+		pathState.deleteEligible = false
+	}
 	pathState.refCount++
-	s.pathStates[localPath] = pathState
+	s.pathStates[storedPath] = pathState
 
 	return ref, nil
 }
 
 // Resolve returns the local path for the given ref.
 func (s *FileMediaStore) Resolve(ref string) (string, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	entry, ok := s.refs[ref]
-	if !ok {
-		return "", fmt.Errorf("media store: unknown ref: %s", ref)
+	entry, err := s.resolveEntry(ref)
+	if err != nil {
+		return "", err
 	}
 	return entry.path, nil
 }
 
 // ResolveWithMeta returns the local path and metadata for the given ref.
 func (s *FileMediaStore) ResolveWithMeta(ref string) (string, MediaMeta, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	entry, ok := s.refs[ref]
-	if !ok {
-		return "", MediaMeta{}, fmt.Errorf("media store: unknown ref: %s", ref)
+	entry, err := s.resolveEntry(ref)
+	if err != nil {
+		return "", MediaMeta{}, err
 	}
 	return entry.path, entry.meta, nil
 }
 
-// ReleaseAll removes all files under the given scope and cleans up mappings.
-// Phase 1 (under lock): remove entries from maps.
-// Phase 2 (no lock): delete store-managed files from disk once their final
-// path ref is gone.
+// ReleaseAll removes refs for the given scope.
+// In in-memory mode, store-managed files are deleted once the final ref goes away.
+// In persistent mode, blobs/metadata remain on disk and can be resolved again later.
 func (s *FileMediaStore) ReleaseAll(scope string) error {
-	// Phase 1: collect paths and remove from maps under lock
 	var paths []string
 
 	s.mu.Lock()
@@ -198,10 +263,13 @@ func (s *FileMediaStore) ReleaseAll(scope string) error {
 	delete(s.scopeToRefs, scope)
 	s.mu.Unlock()
 
-	// Phase 2: delete files without holding the lock
+	if s.baseDir != "" {
+		return nil
+	}
+
 	for _, p := range paths {
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
-			logger.WarnCF("media", "release: failed to remove file", map[string]any{
+			logger.WarnCF("media", "cleanup: failed to remove file", map[string]any{
 				"path":  p,
 				"error": err.Error(),
 			})
@@ -211,9 +279,49 @@ func (s *FileMediaStore) ReleaseAll(scope string) error {
 	return nil
 }
 
-// CleanExpired removes all entries older than MaxAge.
-// Phase 1 (under lock): identify expired entries and remove from maps.
-// Phase 2 (no lock): delete store-managed files from disk to minimize lock contention.
+// releaseRefLocked removes ref mappings. Returns the physical file path and true
+// if the final reference to a store-managed path was dropped.
+// The caller is responsible for deleting the returned path.
+func (s *FileMediaStore) releaseRefLocked(ref string, fallbackPath string) (path string, shouldDelete bool) {
+	path = fallbackPath
+	if mapped, ok := s.refToPath[ref]; ok {
+		path = mapped
+	}
+
+	delete(s.refs, ref)
+	delete(s.refToPath, ref)
+	if scope, ok := s.refToScope[ref]; ok {
+		delete(s.refToScope, ref)
+		if s.scopeToRefs[scope] != nil {
+			delete(s.scopeToRefs[scope], ref)
+		}
+	}
+
+	if path == "" {
+		return "", false
+	}
+
+	state, ok := s.pathStates[path]
+	if !ok {
+		return "", false
+	}
+
+	state.refCount--
+	if state.refCount <= 0 {
+		delete(s.pathStates, path)
+		if state.deleteEligible {
+			return path, true
+		}
+	} else {
+		s.pathStates[path] = state
+	}
+
+	return "", false
+}
+
+// CleanExpired evicts entries older than MaxAge.
+// In in-memory mode, store-managed files are deleted once their final ref goes away.
+// In persistent mode, blobs/metadata remain on disk and can be lazily reloaded.
 func (s *FileMediaStore) CleanExpired() int {
 	if s.cleanerCfg.MaxAge <= 0 {
 		return 0
@@ -249,7 +357,10 @@ func (s *FileMediaStore) CleanExpired() int {
 	}
 	s.mu.Unlock()
 
-	// Phase 2: delete files without holding the lock
+	if s.baseDir != "" {
+		return len(expired)
+	}
+
 	for _, e := range expired {
 		if e.deletePath == "" {
 			continue
@@ -263,45 +374,6 @@ func (s *FileMediaStore) CleanExpired() int {
 	}
 
 	return len(expired)
-}
-
-func normalizeCleanupPolicy(policy CleanupPolicy) CleanupPolicy {
-	switch policy {
-	case "", CleanupPolicyDeleteOnCleanup:
-		return CleanupPolicyDeleteOnCleanup
-	case CleanupPolicyForgetOnly:
-		return CleanupPolicyForgetOnly
-	default:
-		return CleanupPolicyDeleteOnCleanup
-	}
-}
-
-func (s *FileMediaStore) releaseRefLocked(ref, fallbackPath string) (string, bool) {
-	path := fallbackPath
-	if storedPath, ok := s.refToPath[ref]; ok {
-		path = storedPath
-		delete(s.refToPath, ref)
-	}
-
-	delete(s.refs, ref)
-	delete(s.refToScope, ref)
-
-	if path == "" {
-		return "", false
-	}
-
-	pathState, ok := s.pathStates[path]
-	if !ok {
-		return "", false
-	}
-	if pathState.refCount <= 1 {
-		delete(s.pathStates, path)
-		return path, pathState.deleteEligible
-	}
-
-	pathState.refCount--
-	s.pathStates[path] = pathState
-	return "", false
 }
 
 // Start begins the background cleanup goroutine if cleanup is enabled.
@@ -323,7 +395,6 @@ func (s *FileMediaStore) Start() {
 			"interval": s.cleanerCfg.Interval.String(),
 			"max_age":  s.cleanerCfg.MaxAge.String(),
 		})
-
 		go func() {
 			ticker := time.NewTicker(s.cleanerCfg.Interval)
 			defer ticker.Stop()
@@ -332,7 +403,7 @@ func (s *FileMediaStore) Start() {
 				select {
 				case <-ticker.C:
 					if n := s.CleanExpired(); n > 0 {
-						logger.InfoCF("media", "cleanup: removed expired entries", map[string]any{
+						logger.InfoCF("media", "cleanup: evicted expired entries from memory", map[string]any{
 							"count": n,
 						})
 					}
@@ -345,7 +416,7 @@ func (s *FileMediaStore) Start() {
 }
 
 // Stop terminates the background cleanup goroutine.
-// Safe to call multiple times; only the first call closes the channel.
+// Safe to call multiple times or if cleanup was not started.
 func (s *FileMediaStore) Stop() {
 	if s.stop == nil {
 		return
@@ -353,4 +424,247 @@ func (s *FileMediaStore) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stop)
 	})
+}
+
+func (s *FileMediaStore) loadPersistedEntries() {
+	entries, err := os.ReadDir(s.baseDir)
+	if err != nil {
+		logger.WarnCF("media", "failed to read media directory", map[string]any{
+			"path":  s.baseDir,
+			"error": err.Error(),
+		})
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".meta.json") {
+			continue
+		}
+
+		persisted, err := s.readPersistedEntryByID(strings.TrimSuffix(entry.Name(), ".meta.json"))
+		if err != nil {
+			logger.WarnCF("media", "skipping invalid persisted entry", map[string]any{
+				"name":  entry.Name(),
+				"error": err.Error(),
+			})
+			continue
+		}
+
+		s.rememberResolvedEntry(persisted)
+	}
+}
+
+func (s *FileMediaStore) resolveEntry(ref string) (mediaEntry, error) {
+	s.mu.RLock()
+	entry, ok := s.refs[ref]
+	s.mu.RUnlock()
+	if ok {
+		return entry, nil
+	}
+	if s.baseDir == "" {
+		return mediaEntry{}, fmt.Errorf("media store: unknown ref: %s", ref)
+	}
+
+	id, ok := safeRefID(ref)
+	if !ok {
+		return mediaEntry{}, fmt.Errorf("media store: invalid ref: %s", ref)
+	}
+
+	persisted, err := s.readPersistedEntryByID(id)
+	if err != nil {
+		return mediaEntry{}, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if entry, ok := s.refs[ref]; ok {
+		return entry, nil
+	}
+
+	s.rememberResolvedEntryLocked(persisted)
+	return persisted.entry, nil
+}
+
+func (s *FileMediaStore) rememberResolvedEntry(p persistedMediaEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rememberResolvedEntryLocked(p)
+}
+
+func (s *FileMediaStore) rememberResolvedEntryLocked(p persistedMediaEntry) {
+	s.refs[p.ref] = p.entry
+	if p.scope != "" {
+		if s.scopeToRefs[p.scope] == nil {
+			s.scopeToRefs[p.scope] = make(map[string]struct{})
+		}
+		s.scopeToRefs[p.scope][p.ref] = struct{}{}
+		s.refToScope[p.ref] = p.scope
+	}
+
+	s.refToPath[p.ref] = p.entry.path
+	policy := effectiveCleanupPolicy(p.entry.meta)
+	pathState := s.pathStates[p.entry.path]
+	if pathState.refCount == 0 {
+		pathState.deleteEligible = policy == CleanupPolicyDeleteOnCleanup
+	} else if policy == CleanupPolicyForgetOnly {
+		pathState.deleteEligible = false
+	}
+	if s.baseDir != "" {
+		pathState.deleteEligible = false
+	}
+	pathState.refCount++
+	s.pathStates[p.entry.path] = pathState
+}
+
+func (s *FileMediaStore) readPersistedEntryByID(id string) (persistedMediaEntry, error) {
+	if s.baseDir == "" {
+		return persistedMediaEntry{}, fmt.Errorf("media store: persistent storage is disabled")
+	}
+	if !isSafeRefID(id) {
+		return persistedMediaEntry{}, fmt.Errorf("media store: invalid ref id: %s", id)
+	}
+
+	metaPath := s.metaPath(id)
+	blobPath := s.blobPath(id)
+
+	data, err := os.ReadFile(metaPath)
+	if err != nil {
+		return persistedMediaEntry{}, fmt.Errorf("media store: read metadata: %w", err)
+	}
+
+	var persisted persistedEntry
+	if err := json.Unmarshal(data, &persisted); err != nil {
+		return persistedMediaEntry{}, fmt.Errorf("media store: parse metadata: %w", err)
+	}
+	if persisted.Ref == "" {
+		persisted.Ref = mediaRef(id)
+	}
+	if persisted.StoredAt.IsZero() {
+		if info, statErr := os.Stat(metaPath); statErr == nil {
+			persisted.StoredAt = info.ModTime()
+		} else {
+			persisted.StoredAt = time.Now()
+		}
+	}
+	if _, err := os.Stat(blobPath); err != nil {
+		return persistedMediaEntry{}, fmt.Errorf("media store: blob not found: %w", err)
+	}
+
+	return persistedMediaEntry{
+		ref:   persisted.Ref,
+		scope: persisted.Scope,
+		entry: mediaEntry{
+			path:     blobPath,
+			meta:     persisted.Meta,
+			storedAt: persisted.StoredAt,
+		},
+	}, nil
+}
+
+func (s *FileMediaStore) persistMedia(srcPath, blobPath string, meta persistedEntry, perm os.FileMode) error {
+	if err := copyFileAtomic(srcPath, blobPath, perm); err != nil {
+		return fmt.Errorf("media store: persist blob: %w", err)
+	}
+
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		_ = os.Remove(blobPath)
+		return fmt.Errorf("media store: encode metadata: %w", err)
+	}
+
+	if err := fileutil.WriteFileAtomic(s.metaPath(refID(meta.Ref)), data, 0o600); err != nil {
+		_ = os.Remove(blobPath)
+		return fmt.Errorf("media store: persist metadata: %w", err)
+	}
+
+	return nil
+}
+
+func copyFileAtomic(srcPath, dstPath string, perm os.FileMode) error {
+	if perm == 0 {
+		perm = 0o600
+	}
+
+	srcFile, err := os.Open(srcPath)
+	if err != nil {
+		return fmt.Errorf("open source: %w", err)
+	}
+	defer srcFile.Close()
+
+	dir := filepath.Dir(dstPath)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create destination dir: %w", err)
+	}
+
+	tmpFile, err := os.OpenFile(
+		filepath.Join(dir, fmt.Sprintf(".tmp-%d-%d", os.Getpid(), time.Now().UnixNano())),
+		os.O_WRONLY|os.O_CREATE|os.O_EXCL,
+		perm,
+	)
+	if err != nil {
+		return fmt.Errorf("create temp blob: %w", err)
+	}
+
+	tmpPath := tmpFile.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			tmpFile.Close()
+			_ = os.Remove(tmpPath)
+		}
+	}()
+
+	if _, err := io.Copy(tmpFile, srcFile); err != nil {
+		return fmt.Errorf("copy content: %w", err)
+	}
+
+	if err := tmpFile.Sync(); err != nil {
+		return fmt.Errorf("sync temp file: %w", err)
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		return fmt.Errorf("close temp file: %w", err)
+	}
+	cleanup = false
+
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("rename to destination: %w", err)
+	}
+
+	return nil
+}
+
+func mediaRef(id string) string {
+	return "media://" + id
+}
+
+func refID(ref string) string {
+	return strings.TrimPrefix(ref, "media://")
+}
+
+func safeRefID(ref string) (string, bool) {
+	id := refID(ref)
+	if !strings.HasPrefix(ref, "media://") || id == "" {
+		return "", false
+	}
+	if !isSafeRefID(id) {
+		return "", false
+	}
+	return id, true
+}
+
+func isSafeRefID(id string) bool {
+	if id == "" || strings.Contains(id, "..") {
+		return false
+	}
+	return !strings.ContainsAny(id, `/\`)
+}
+
+func (s *FileMediaStore) blobPath(id string) string {
+	return filepath.Join(s.baseDir, id+".blob")
+}
+
+func (s *FileMediaStore) metaPath(id string) string {
+	return filepath.Join(s.baseDir, id+".meta.json")
 }

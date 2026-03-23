@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -51,6 +52,8 @@ type TelegramChannel struct {
 	chatIDs map[string]int64
 	ctx     context.Context
 	cancel  context.CancelFunc
+	runDone chan struct{}
+	mu      sync.Mutex
 
 	registerFunc     func(context.Context, []commands.Definition) error
 	commandRegCancel context.CancelFunc
@@ -108,6 +111,14 @@ func NewTelegramChannel(cfg *config.Config, bus *bus.MessageBus) (*TelegramChann
 }
 
 func (c *TelegramChannel) Start(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.IsRunning() {
+		logger.WarnC("telegram", "Start called while Telegram bot is already running")
+		return nil
+	}
+
 	logger.InfoC("telegram", "Starting Telegram bot (polling mode)...")
 
 	c.ctx, c.cancel = context.WithCancel(ctx)
@@ -126,6 +137,7 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 		return fmt.Errorf("failed to create bot handler: %w", err)
 	}
 	c.bh = bh
+	c.runDone = make(chan struct{})
 
 	bh.HandleMessage(func(ctx *th.Context, message telego.Message) error {
 		return c.handleMessage(ctx, &message)
@@ -138,33 +150,53 @@ func (c *TelegramChannel) Start(ctx context.Context) error {
 
 	c.startCommandRegistration(c.ctx, commands.BuiltinDefinitions())
 
-	go func() {
-		if err = bh.Start(); err != nil {
+	go func(runDone chan struct{}, handler *th.BotHandler) {
+		defer close(runDone)
+		defer c.SetRunning(false)
+
+		if startErr := handler.Start(); startErr != nil && !errors.Is(startErr, context.Canceled) {
 			logger.ErrorCF("telegram", "Bot handler failed", map[string]any{
-				"error": err.Error(),
+				"error": startErr.Error(),
 			})
 		}
-	}()
+	}(c.runDone, bh)
 
 	return nil
 }
 
 func (c *TelegramChannel) Stop(ctx context.Context) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	logger.InfoC("telegram", "Stopping Telegram bot...")
 	c.SetRunning(false)
 
-	// Stop the bot handler
+	if c.commandRegCancel != nil {
+		c.commandRegCancel()
+		c.commandRegCancel = nil
+	}
+
+	// Cancel long polling first so any in-flight getUpdates request is aborted
+	// before we allow a subsequent Start() to issue a new polling request.
+	if c.cancel != nil {
+		c.cancel()
+		c.cancel = nil
+	}
+
+	// Then stop the bot handler and wait for the handler loop to exit.
 	if c.bh != nil {
 		_ = c.bh.StopWithContext(ctx)
 	}
-
-	// Cancel our context (stops long polling)
-	if c.cancel != nil {
-		c.cancel()
+	if c.runDone != nil {
+		select {
+		case <-c.runDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		c.runDone = nil
 	}
-	if c.commandRegCancel != nil {
-		c.commandRegCancel()
-	}
+	c.bh = nil
+	c.ctx = nil
 
 	return nil
 }
@@ -577,8 +609,8 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			params := &telego.SendDocumentParams{
 				ChatID:          tu.ID(chatID),
 				MessageThreadID: threadID,
-				Document: telego.InputFile{File: telegramNamedReader{Reader: file, filename: telegramDocumentFilename(part, localPath)}},
-				Caption: part.Caption,
+				Document:        telego.InputFile{File: telegramNamedReader{Reader: file, filename: telegramDocumentFilename(part, localPath)}},
+				Caption:         part.Caption,
 			}
 			if msg.ReplyToMessageID != "" {
 				if mid, parseErr := strconv.Atoi(msg.ReplyToMessageID); parseErr == nil {
@@ -642,13 +674,10 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	scope := channels.BuildMediaScope("telegram", chatIDStr, messageIDStr)
 
 	// Helper to register a local file with the media store
-	storeMedia := func(localPath, filename string) string {
+	storeMedia := func(localPath string, meta media.MediaMeta) string {
 		if store := c.GetMediaStore(); store != nil {
-			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename:      filename,
-				Source:        "telegram",
-				CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
-			}, scope)
+			meta.CleanupPolicy = media.CleanupPolicyDeleteOnCleanup
+			ref, err := store.Store(localPath, meta, scope)
 			if err == nil {
 				return ref
 			}
@@ -671,7 +700,11 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 		photo := message.Photo[len(message.Photo)-1]
 		photoPath := c.downloadPhoto(ctx, photo.FileID)
 		if photoPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(photoPath, "photo.jpg"))
+			mediaPaths = append(mediaPaths, storeMedia(photoPath, media.MediaMeta{
+				Filename:    "photo.jpg",
+				ContentType: "image/jpeg",
+				Source:      "telegram",
+			}))
 			if content != "" {
 				content += "\n"
 			}
@@ -682,7 +715,11 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	if message.Voice != nil {
 		voicePath := c.downloadFile(ctx, message.Voice.FileID, ".ogg")
 		if voicePath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(voicePath, "voice.ogg"))
+			mediaPaths = append(mediaPaths, storeMedia(voicePath, media.MediaMeta{
+				Filename:    "voice.ogg",
+				ContentType: "audio/ogg",
+				Source:      "telegram",
+			}))
 
 			if content != "" {
 				content += "\n"
@@ -694,7 +731,11 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	if message.Audio != nil {
 		audioPath := c.downloadFile(ctx, message.Audio.FileID, ".mp3")
 		if audioPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(audioPath, "audio.mp3"))
+			mediaPaths = append(mediaPaths, storeMedia(audioPath, media.MediaMeta{
+				Filename:    "audio.mp3",
+				ContentType: "audio/mpeg",
+				Source:      "telegram",
+			}))
 			if content != "" {
 				content += "\n"
 			}
@@ -705,7 +746,15 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	if message.Document != nil {
 		docPath := c.downloadFile(ctx, message.Document.FileID, "")
 		if docPath != "" {
-			mediaPaths = append(mediaPaths, storeMedia(docPath, "document"))
+			filename := strings.TrimSpace(message.Document.FileName)
+			if filename == "" {
+				filename = "document"
+			}
+			mediaPaths = append(mediaPaths, storeMedia(docPath, media.MediaMeta{
+				Filename:    filename,
+				ContentType: strings.TrimSpace(message.Document.MimeType),
+				Source:      "telegram",
+			}))
 			if content != "" {
 				content += "\n"
 			}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/media"
 )
 
 const MaxReadFileSize = 64 * 1024 // 64KB limit to avoid context overflow
@@ -249,8 +250,9 @@ func isWithinWorkspace(candidate, workspace string) bool {
 }
 
 type ReadFileTool struct {
-	fs      fileSystem
-	maxSize int64
+	fs         fileSystem
+	maxSize    int64
+	mediaStore media.MediaStore
 }
 
 func NewReadFileTool(
@@ -280,7 +282,7 @@ func (t *ReadFileTool) Name() string {
 }
 
 func (t *ReadFileTool) Description() string {
-	return "Read the contents of a file. Supports pagination via `offset` and `length`."
+	return "Read the contents of a file or inbound attachment. Supports pagination via `offset` and `length`."
 }
 
 func (t *ReadFileTool) Parameters() map[string]any {
@@ -289,7 +291,7 @@ func (t *ReadFileTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"path": map[string]any{
 				"type":        "string",
-				"description": "Path to the file to read.",
+				"description": "Path to the file to read. Also supports inbound attachment refs like media://<id>.",
 			},
 			"offset": map[string]any{
 				"type":        "integer",
@@ -304,6 +306,10 @@ func (t *ReadFileTool) Parameters() map[string]any {
 		},
 		"required": []string{"path"},
 	}
+}
+
+func (t *ReadFileTool) SetMediaStore(store media.MediaStore) {
+	t.mediaStore = store
 }
 
 func (t *ReadFileTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
@@ -333,7 +339,7 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		length = t.maxSize
 	}
 
-	file, err := t.fs.Open(path)
+	file, displayPath, resolvedPath, err := t.openReadTarget(path)
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
@@ -414,7 +420,6 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	// header parseable by downstream tools and log processors.
 	readRange := fmt.Sprintf("bytes %d-%d", offset, readEnd-1)
 
-	displayPath := filepath.Base(path)
 	var header string
 	if totalSize >= 0 {
 		header = fmt.Sprintf(
@@ -440,11 +445,50 @@ func (t *ReadFileTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	logger.DebugCF("tool", "ReadFileTool execution completed successfully",
 		map[string]any{
 			"path":       path,
+			"resolved":   resolvedPath,
 			"bytes_read": len(data),
 			"has_more":   hasMore,
 		})
 
 	return NewToolResult(header + "\n\n" + string(data))
+}
+
+func (t *ReadFileTool) openReadTarget(path string) (fs.File, string, string, error) {
+	if strings.HasPrefix(path, "media://") {
+		if t.mediaStore == nil {
+			return nil, "", "", fmt.Errorf("failed to open file: media store not configured")
+		}
+
+		resolvedPath, meta, err := t.mediaStore.ResolveWithMeta(path)
+		if err != nil {
+			return nil, "", "", fmt.Errorf("failed to open file: %w", err)
+		}
+
+		file, err := os.Open(resolvedPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, "", "", fmt.Errorf("failed to open file: file not found: %w", err)
+			}
+			if os.IsPermission(err) {
+				return nil, "", "", fmt.Errorf("failed to open file: access denied: %w", err)
+			}
+			return nil, "", "", fmt.Errorf("failed to open file: %w", err)
+		}
+
+		displayPath := strings.TrimSpace(meta.Filename)
+		if displayPath == "" {
+			displayPath = filepath.Base(resolvedPath)
+		}
+
+		return file, displayPath, resolvedPath, nil
+	}
+
+	file, err := t.fs.Open(path)
+	if err != nil {
+		return nil, "", "", err
+	}
+
+	return file, filepath.Base(path), path, nil
 }
 
 // getInt64Arg extracts an integer argument from the args map, returning the

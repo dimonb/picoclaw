@@ -1107,8 +1107,13 @@ func (al *AgentLoop) GetConfig() *config.Config {
 func (al *AgentLoop) SetMediaStore(s media.MediaStore) {
 	al.mediaStore = s
 
-	// Propagate store to send_file tools in all agents.
+	// Propagate store to media-aware tools in all agents.
 	registry := al.GetRegistry()
+	registry.ForEachTool("read_file", func(t tools.Tool) {
+		if rf, ok := t.(*tools.ReadFileTool); ok {
+			rf.SetMediaStore(s)
+		}
+	})
 	registry.ForEachTool("send_file", func(t tools.Tool) {
 		if sf, ok := t.(*tools.SendFileTool); ok {
 			sf.SetMediaStore(s)
@@ -1893,7 +1898,7 @@ func parseTelegramDeliveryDirective(
 	inner, matched := extractTelegramDeliveryHeaderInner(header)
 	if !matched {
 		if strings.HasPrefix(header, "[[") {
-			if idx := strings.Index(firstLine, "]]" ); idx >= 0 {
+			if idx := strings.Index(firstLine, "]]"); idx >= 0 {
 				header = strings.TrimSpace(firstLine[:idx+2])
 				inner, matched = extractTelegramDeliveryHeaderInner(header)
 				if matched {
@@ -3701,6 +3706,7 @@ func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string, t
 		},
 	)
 }
+
 // findNearestUserMessage finds the nearest user message to the given index.
 // It searches backward first, then forward if no user message is found.
 func (al *AgentLoop) findNearestUserMessage(messages []providers.Message, mid int) int {

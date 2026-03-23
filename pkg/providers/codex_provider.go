@@ -13,6 +13,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/auth"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers/common"
 )
 
 const (
@@ -235,7 +236,7 @@ func buildCodexParams(
 				inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
 					OfMessage: &responses.EasyInputMessageParam{
 						Role:    responses.EasyInputMessageRoleUser,
-						Content: responses.EasyInputMessageContentUnionParam{OfString: openai.Opt(msg.Content)},
+						Content: buildCodexInputMessageContent(msg),
 					},
 				})
 			}
@@ -313,6 +314,45 @@ func buildCodexParams(
 	}
 
 	return params
+}
+
+func buildCodexInputMessageContent(msg Message) responses.EasyInputMessageContentUnionParam {
+	if len(msg.Media) == 0 {
+		return responses.EasyInputMessageContentUnionParam{OfString: openai.Opt(msg.Content)}
+	}
+
+	parts := make(responses.ResponseInputMessageContentListParam, 0, 1+len(msg.Media))
+	if msg.Content != "" {
+		parts = append(parts, responses.ResponseInputContentParamOfInputText(msg.Content))
+	}
+
+	for _, mediaURL := range msg.Media {
+		if image, ok := common.ParseInlineImageDataURL(mediaURL); ok {
+			part := responses.ResponseInputContentParamOfInputImage(responses.ResponseInputImageDetailAuto)
+			part.OfInputImage.ImageURL = openai.Opt(image.DataURL)
+			parts = append(parts, part)
+			continue
+		}
+
+		data, ok := common.ParseInlineDataURL(mediaURL)
+		if !ok || !common.IsInlineDocumentMediaType(data.MediaType) {
+			continue
+		}
+
+		part := responses.ResponseInputContentUnionParam{
+			OfInputFile: &responses.ResponseInputFileParam{
+				FileData: openai.Opt(data.DataURL),
+				Filename: openai.Opt(common.SuggestedFilenameForMediaType(data.MediaType)),
+			},
+		}
+		parts = append(parts, part)
+	}
+
+	if len(parts) == 0 {
+		return responses.EasyInputMessageContentUnionParam{OfString: openai.Opt(msg.Content)}
+	}
+
+	return responses.EasyInputMessageContentUnionParam{OfInputItemContentList: parts}
 }
 
 func resolveCodexToolCall(tc ToolCall) (name string, arguments string, ok bool) {

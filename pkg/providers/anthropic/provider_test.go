@@ -77,6 +77,114 @@ func TestBuildParams_ToolCallMessage(t *testing.T) {
 	}
 }
 
+func TestBuildParams_UserMessageWithMedia(t *testing.T) {
+	params, err := buildParams([]Message{
+		{Role: "user", Content: "Describe this", Media: []string{"data:image/png;base64,abc123"}},
+	}, nil, "claude-sonnet-4.6", map[string]any{"max_tokens": 1024})
+	if err != nil {
+		t.Fatalf("buildParams() error: %v", err)
+	}
+	if len(params.Messages) != 1 {
+		t.Fatalf("len(Messages) = %d, want 1", len(params.Messages))
+	}
+	if len(params.Messages[0].Content) != 2 {
+		t.Fatalf("len(Content) = %d, want 2", len(params.Messages[0].Content))
+	}
+	if params.Messages[0].Content[0].OfText == nil || params.Messages[0].Content[0].OfText.Text != "Describe this" {
+		t.Fatalf("unexpected text block: %#v", params.Messages[0].Content[0].OfText)
+	}
+	image := params.Messages[0].Content[1].OfImage
+	if image == nil || image.Source.OfBase64 == nil {
+		t.Fatalf("expected base64 image block, got %#v", image)
+	}
+	if image.Source.OfBase64.MediaType != anthropic.Base64ImageSourceMediaType("image/png") {
+		t.Fatalf("media type = %q, want image/png", image.Source.OfBase64.MediaType)
+	}
+	if image.Source.OfBase64.Data != "abc123" {
+		t.Fatalf("base64 data = %q, want abc123", image.Source.OfBase64.Data)
+	}
+}
+
+func TestBuildParams_UserMessageWithPDFDocument(t *testing.T) {
+	params, err := buildParams([]Message{
+		{Role: "user", Content: "Read this", Media: []string{"data:application/pdf;base64,JVBERi0xLjQ="}},
+	}, nil, "claude-sonnet-4.6", map[string]any{"max_tokens": 1024})
+	if err != nil {
+		t.Fatalf("buildParams() error: %v", err)
+	}
+
+	if len(params.Messages) != 1 {
+		t.Fatalf("len(Messages) = %d, want 1", len(params.Messages))
+	}
+	if len(params.Messages[0].Content) != 2 {
+		t.Fatalf("len(Content) = %d, want 2", len(params.Messages[0].Content))
+	}
+
+	document := params.Messages[0].Content[1].OfDocument
+	if document == nil || document.Source.OfBase64 == nil {
+		t.Fatalf("expected base64 document block, got %#v", document)
+	}
+
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatalf("marshal document block: %v", err)
+	}
+	var encoded map[string]any
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		t.Fatalf("unmarshal document block: %v", err)
+	}
+	if document.Source.OfBase64.Data != "JVBERi0xLjQ=" {
+		t.Fatalf("base64 data = %q, want JVBERi0xLjQ=", document.Source.OfBase64.Data)
+	}
+	source, ok := encoded["source"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected marshaled source object, got %#v", encoded["source"])
+	}
+	if got := source["media_type"]; got != "application/pdf" {
+		t.Fatalf("media type = %v, want application/pdf", got)
+	}
+}
+
+func TestBuildParams_UserMessageWithTextDocument(t *testing.T) {
+	params, err := buildParams([]Message{
+		{Role: "user", Content: "Read this", Media: []string{"data:text/plain;base64,aGVsbG8gd29ybGQ="}},
+	}, nil, "claude-sonnet-4.6", map[string]any{"max_tokens": 1024})
+	if err != nil {
+		t.Fatalf("buildParams() error: %v", err)
+	}
+
+	if len(params.Messages) != 1 {
+		t.Fatalf("len(Messages) = %d, want 1", len(params.Messages))
+	}
+	if len(params.Messages[0].Content) != 2 {
+		t.Fatalf("len(Content) = %d, want 2", len(params.Messages[0].Content))
+	}
+
+	document := params.Messages[0].Content[1].OfDocument
+	if document == nil || document.Source.OfText == nil {
+		t.Fatalf("expected plain text document block, got %#v", document)
+	}
+
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatalf("marshal document block: %v", err)
+	}
+	var encoded map[string]any
+	if err := json.Unmarshal(raw, &encoded); err != nil {
+		t.Fatalf("unmarshal document block: %v", err)
+	}
+	if document.Source.OfText.Data != "hello world" {
+		t.Fatalf("text data = %q, want hello world", document.Source.OfText.Data)
+	}
+	source, ok := encoded["source"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected marshaled source object, got %#v", encoded["source"])
+	}
+	if got := source["media_type"]; got != "text/plain" {
+		t.Fatalf("media type = %v, want text/plain", got)
+	}
+}
+
 func TestBuildParams_WithTools(t *testing.T) {
 	tools := []ToolDefinition{
 		{

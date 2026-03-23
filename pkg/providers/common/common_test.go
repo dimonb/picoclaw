@@ -144,6 +144,63 @@ func TestSerializeMessages_MediaWithToolCallID(t *testing.T) {
 	}
 }
 
+func TestParseInlineDataURL(t *testing.T) {
+	image, ok := ParseInlineDataURL("data:image/png;base64,abc123")
+	if !ok {
+		t.Fatal("expected valid inline data URL")
+	}
+	if image.MediaType != "image/png" {
+		t.Fatalf("MediaType = %q, want %q", image.MediaType, "image/png")
+	}
+	if image.Base64Data != "abc123" {
+		t.Fatalf("Base64Data = %q, want %q", image.Base64Data, "abc123")
+	}
+}
+
+func TestParseInlineDataURL_Invalid(t *testing.T) {
+	tests := []string{
+		"https://example.com/image.png",
+		"data:image/png,abc123",
+		"data:image/png;base64,",
+	}
+
+	for _, input := range tests {
+		if _, ok := ParseInlineDataURL(input); ok {
+			t.Fatalf("expected %q to be rejected", input)
+		}
+	}
+}
+
+func TestParseInlineImageDataURL_RejectsNonImage(t *testing.T) {
+	if _, ok := ParseInlineImageDataURL("data:text/plain;base64,abc123"); ok {
+		t.Fatal("expected non-image data URL to be rejected by ParseInlineImageDataURL")
+	}
+}
+
+func TestIsInlineDocumentMediaType(t *testing.T) {
+	if !IsInlineDocumentMediaType("application/pdf") {
+		t.Fatal("expected pdf to be supported")
+	}
+	if !IsInlineDocumentMediaType("text/plain") {
+		t.Fatal("expected text/plain to be supported")
+	}
+	if IsInlineDocumentMediaType("text/csv") {
+		t.Fatal("did not expect text/csv to be treated as native inline document")
+	}
+}
+
+func TestSuggestedFilenameForMediaType(t *testing.T) {
+	if got := SuggestedFilenameForMediaType("application/pdf"); got != "attachment.pdf" {
+		t.Fatalf("pdf filename = %q, want attachment.pdf", got)
+	}
+	if got := SuggestedFilenameForMediaType("text/plain"); got != "attachment.txt" {
+		t.Fatalf("text filename = %q, want attachment.txt", got)
+	}
+	if got := SuggestedFilenameForMediaType("application/octet-stream"); got != "attachment.bin" {
+		t.Fatalf("default filename = %q, want attachment.bin", got)
+	}
+}
+
 func TestSerializeMessages_StripsSystemParts(t *testing.T) {
 	messages := []Message{
 		{

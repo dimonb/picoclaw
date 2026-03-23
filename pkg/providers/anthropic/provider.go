@@ -2,6 +2,7 @@ package anthropicprovider
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -10,6 +11,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 
+	"github.com/sipeed/picoclaw/pkg/providers/common"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
@@ -170,7 +172,7 @@ func buildParams(
 				)
 			} else {
 				anthropicMessages = append(anthropicMessages,
-					anthropic.NewUserMessage(anthropic.NewTextBlock(msg.Content)),
+					anthropic.NewUserMessage(buildAnthropicUserBlocks(msg)...),
 				)
 			}
 		case "assistant":
@@ -244,6 +246,47 @@ func buildParams(
 	}
 
 	return params, nil
+}
+
+func buildAnthropicUserBlocks(msg Message) []anthropic.ContentBlockParamUnion {
+	blocks := make([]anthropic.ContentBlockParamUnion, 0, 1+len(msg.Media))
+	if msg.Content != "" {
+		blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+	}
+
+	for _, mediaURL := range msg.Media {
+		image, ok := common.ParseInlineImageDataURL(mediaURL)
+		if ok {
+			blocks = append(blocks, anthropic.NewImageBlockBase64(image.MediaType, image.Base64Data))
+			continue
+		}
+
+		data, ok := common.ParseInlineDataURL(mediaURL)
+		if !ok || !common.IsInlineDocumentMediaType(data.MediaType) {
+			continue
+		}
+
+		switch data.MediaType {
+		case "application/pdf":
+			blocks = append(blocks, anthropic.NewDocumentBlock(anthropic.Base64PDFSourceParam{
+				Data: data.Base64Data,
+			}))
+		case "text/plain":
+			decoded, err := base64.StdEncoding.DecodeString(data.Base64Data)
+			if err != nil {
+				continue
+			}
+			blocks = append(blocks, anthropic.NewDocumentBlock(anthropic.PlainTextSourceParam{
+				Data: string(decoded),
+			}))
+		}
+	}
+
+	if len(blocks) == 0 {
+		blocks = append(blocks, anthropic.NewTextBlock(msg.Content))
+	}
+
+	return blocks
 }
 
 // applyThinkingConfig sets thinking parameters based on the level value.
