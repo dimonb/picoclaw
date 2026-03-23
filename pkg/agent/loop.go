@@ -553,7 +553,6 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 				if al.pendingSteeringCountForScope(target.SessionKey) > 0 &&
 					!responsePersisted && response.Content != "" && response.OnDelivered != nil {
 					response.OnDelivered(nil)
-					responsePersisted = true
 				}
 
 				for al.pendingSteeringCountForScope(target.SessionKey) > 0 {
