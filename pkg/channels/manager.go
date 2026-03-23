@@ -157,6 +157,46 @@ func (m *Manager) RecordReactionUndo(channel, chatID string, undo func()) {
 	m.reactionUndos.Store(key, reactionEntry{undo: undo, createdAt: time.Now()})
 }
 
+// CleanupState stops typing, undoes any reaction indicator, and deletes the placeholder
+// for the given channel+chatID without sending a response message.
+// Called when the agent completes a turn via a direct tool action (e.g. reaction tool)
+// that produces no outbound message, so preSend never runs.
+func (m *Manager) CleanupState(ctx context.Context, channelName, chatID string) {
+	key := channelName + ":" + chatID
+
+	if v, loaded := m.typingStops.LoadAndDelete(key); loaded {
+		if entry, ok := v.(typingEntry); ok {
+			entry.stop()
+		}
+	}
+
+	if v, loaded := m.reactionUndos.LoadAndDelete(key); loaded {
+		if entry, ok := v.(reactionEntry); ok {
+			entry.undo()
+		}
+	}
+
+	if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
+		if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
+			ch, ok := m.GetChannel(channelName)
+			if !ok {
+				return
+			}
+			if deleter, ok := ch.(MessageDeleter); ok {
+				if err := deleter.DeleteMessage(ctx, chatID, entry.id); err != nil {
+					logger.WarnCF("manager", "Failed to delete placeholder after tool action",
+						map[string]any{
+							"channel":        channelName,
+							"chat_id":        chatID,
+							"placeholder_id": entry.id,
+							"error":          err.Error(),
+						})
+				}
+			}
+		}
+	}
+}
+
 // preSend handles typing stop, reaction undo, and placeholder editing before sending a message.
 // Returns the delivered message IDs and true when delivery completed before a normal Send.
 func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMessage, ch Channel) ([]string, bool) {
@@ -1096,4 +1136,18 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	channel, _ := m.channels[channelName]
 	_, err := channel.Send(ctx, msg)
 	return err
+}
+
+// SetMessageReaction synchronously adds an explicit emoji reaction to a
+// specific message if the channel supports MessageReactor.
+func (m *Manager) SetMessageReaction(ctx context.Context, channelName, chatID, messageID, emoji string) error {
+	ch, ok := m.GetChannel(channelName)
+	if !ok {
+		return fmt.Errorf("channel %s not found", channelName)
+	}
+	reactor, ok := ch.(MessageReactor)
+	if !ok {
+		return fmt.Errorf("channel %s does not support message reactions", channelName)
+	}
+	return reactor.SetMessageReaction(ctx, chatID, messageID, emoji)
 }

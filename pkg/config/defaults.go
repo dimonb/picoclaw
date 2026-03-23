@@ -58,9 +58,10 @@ func DefaultConfig() *Config {
 				AllowFrom:        FlexibleStringSlice{},
 			},
 			Telegram: TelegramConfig{
-				Enabled:   false,
-				AllowFrom: FlexibleStringSlice{},
-				Typing:    TypingConfig{Enabled: true},
+				Enabled:              false,
+				AllowFrom:            FlexibleStringSlice{},
+				AllowedReactionEmoji: DefaultTelegramReactionEmoji(),
+				Typing:               TypingConfig{Enabled: true},
 				Placeholder: PlaceholderConfig{
 					Enabled: true,
 					Text:    "Thinking... 💭",
@@ -493,6 +494,9 @@ func DefaultConfig() *Config {
 				Enabled: true,
 			},
 			Message: ToolConfig{
+				Enabled: true,
+			},
+			Reaction: ToolConfig{
 				Enabled: true,
 			},
 			ReadFile: ReadFileToolConfig{

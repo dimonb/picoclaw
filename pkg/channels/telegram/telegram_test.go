@@ -109,6 +109,11 @@ func successResponseWithMessageID(t *testing.T, messageID int) *ta.Response {
 	return &ta.Response{Ok: true, Result: b}
 }
 
+func successBoolResponse(t *testing.T) *ta.Response {
+	t.Helper()
+	return &ta.Response{Ok: true, Result: []byte("true")}
+}
+
 // newTestChannel creates a TelegramChannel with a mocked bot for unit testing.
 func newTestChannel(t *testing.T, caller *stubCaller) *TelegramChannel {
 	return newTestChannelWithConstructor(t, caller, &stubConstructor{})
@@ -449,6 +454,30 @@ func TestSend_HTMLOverflow_WordBoundary(t *testing.T) {
 	}
 
 	assert.True(t, foundFullWord, "The target word should not be split between chunks")
+}
+
+func TestSetMessageReaction_SendsConfiguredEmoji(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return successBoolResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	err := ch.SetMessageReaction(context.Background(), "12345", "99", "❤️")
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(caller.calls[0].Data.BodyRaw, &body))
+	assert.Equal(t, float64(99), body["message_id"])
+	reaction, ok := body["reaction"].([]any)
+	require.True(t, ok)
+	require.Len(t, reaction, 1)
+	first, ok := reaction[0].(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, "emoji", first["type"])
+	assert.Equal(t, "❤️", first["emoji"])
 }
 
 func TestSend_NotRunning(t *testing.T) {

@@ -50,6 +50,7 @@ func WithToolReplyContext(
 	ctx = context.WithValue(ctx, ctxKeyParentMessageID, parentMessageID)
 	return ctx
 }
+
 // ToolChannel extracts the channel from ctx, or "" if unset.
 func ToolChannel(ctx context.Context) string {
 	v, _ := ctx.Value(ctxKeyChannel).(string)
@@ -79,6 +80,7 @@ func ToolParentMessageID(ctx context.Context) string {
 	v, _ := ctx.Value(ctxKeyParentMessageID).(string)
 	return v
 }
+
 // AsyncCallback is a function type that async tools use to notify completion.
 // When an async tool finishes its work, it calls this callback with the result.
 //
@@ -114,6 +116,22 @@ type AsyncExecutor interface {
 	// invoked (possibly from another goroutine) when the async operation
 	// completes. cb is guaranteed to be non-nil by the caller (registry).
 	ExecuteAsync(ctx context.Context, args map[string]any, cb AsyncCallback) *ToolResult
+}
+
+// SequentialTool marks tools that must execute in model order within a single
+// LLM turn, instead of being fanned out in parallel with sibling tool calls.
+// This is intended for tools whose calls mutate shared state and can depend on
+// earlier calls from the same assistant message.
+type SequentialTool interface {
+	Tool
+	ExecuteSequentially() bool
+}
+
+// AvailabilityAwareTool marks tools whose visibility depends on the current
+// request context, such as channel-specific tools.
+type AvailabilityAwareTool interface {
+	Tool
+	Available(ctx context.Context) bool
 }
 
 func ToolToSchema(tool Tool) map[string]any {

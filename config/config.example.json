@@ -84,7 +84,26 @@
       "token": "YOUR_TELEGRAM_BOT_TOKEN",
       "base_url": "",
       "proxy": "",
-      "allow_from": ["YOUR_USER_ID"],
+      "allow_from": [
+        "YOUR_USER_ID"
+      ],
+      "allowed_reaction_emoji": [
+        "👍",
+        "👎",
+        "❤️",
+        "🔥",
+        "🥰",
+        "👏",
+        "😁",
+        "🤔",
+        "🤯",
+        "😱",
+        "🤬",
+        "😢",
+        "🎉",
+        "🤩",
+        "🤮"
+      ],
       "use_markdown_v2": false,
       "reasoning_channel_id": "",
       "streaming": {
@@ -518,6 +537,9 @@
       "enabled": true
     },
     "message": {
+      "enabled": true
+    },
+    "reaction": {
       "enabled": true
     },
     "read_file": {

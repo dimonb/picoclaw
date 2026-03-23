@@ -300,6 +300,9 @@ func registerSharedTools(
 			})
 			agent.Tools.Register(messageTool)
 		}
+		if cfg.Tools.IsToolEnabled("reaction") {
+			agent.Tools.Register(tools.NewReactionTool([]string(cfg.Channels.Telegram.AllowedReactionEmoji)))
+		}
 
 		// Send file tool (outbound media via MediaStore — store injected later by SetMediaStore)
 		if cfg.Tools.IsToolEnabled("send_file") {
@@ -679,6 +682,17 @@ func (al *AgentLoop) publishAgentResponseIfNeeded(
 	defaultChannel, defaultChatID string,
 ) {
 	if response.HandledExternally {
+		channel := response.Channel
+		if channel == "" {
+			channel = defaultChannel
+		}
+		chatID := response.ChatID
+		if chatID == "" {
+			chatID = defaultChatID
+		}
+		if al.channelManager != nil && channel != "" && chatID != "" {
+			al.channelManager.CleanupState(ctx, channel, chatID)
+		}
 		if response.OnDelivered != nil {
 			response.OnDelivered(nil)
 		}
@@ -988,6 +1002,7 @@ func (al *AgentLoop) RegisterTool(tool tools.Tool) {
 
 func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	al.channelManager = cm
+	al.bindReactionTools(cm)
 }
 
 // ReloadProviderAndConfig atomically swaps the provider and config with proper synchronization.
@@ -1103,6 +1118,16 @@ func (al *AgentLoop) GetConfig() *config.Config {
 	return al.cfg
 }
 
+func (al *AgentLoop) bindReactionTools(cm *channels.Manager) {
+	al.registry.ForEachTool("reaction", func(t tools.Tool) {
+		if rt, ok := t.(*tools.ReactionTool); ok {
+			rt.SetReactionCallback(func(ctx context.Context, channel, chatID, messageID, emoji string) error {
+				return cm.SetMessageReaction(ctx, channel, chatID, messageID, emoji)
+			})
+		}
+	})
+}
+
 // SetMediaStore injects a MediaStore for media lifecycle management.
 func (al *AgentLoop) SetMediaStore(s media.MediaStore) {
 	al.mediaStore = s
@@ -1135,6 +1160,11 @@ func (al *AgentLoop) agentTurnHandledByDirectToolAction(agent *AgentInstance) bo
 			return true
 		}
 	}
+	if tool, ok := agent.Tools.Get("reaction"); ok {
+		if rt, ok := tool.(*tools.ReactionTool); ok && rt.HasHandledInRound() && rt.SuppressesReply() {
+			return true
+		}
+	}
 	return false
 }
 
@@ -1145,6 +1175,11 @@ func (al *AgentLoop) resetRoundActionTools(agent *AgentInstance) {
 	if tool, ok := agent.Tools.Get("message"); ok {
 		if resetter, ok := tool.(interface{ ResetSentInRound() }); ok {
 			resetter.ResetSentInRound()
+		}
+	}
+	if tool, ok := agent.Tools.Get("reaction"); ok {
+		if resetter, ok := tool.(interface{ ResetHandledInRound() }); ok {
+			resetter.ResetHandledInRound()
 		}
 	}
 }
@@ -1477,12 +1512,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		return agentResponse{}, routeErr
 	}
 
-	// Reset message-tool state for this round so we don't skip publishing due to a previous round.
-	if tool, ok := agent.Tools.Get("message"); ok {
-		if resetter, ok := tool.(interface{ ResetSentInRound() }); ok {
-			resetter.ResetSentInRound()
-		}
-	}
+	al.resetRoundActionTools(agent)
 
 	// Resolve session key from route, while preserving explicit agent-scoped keys.
 	scopeKey := resolveScopeKey(route, msg.SessionKey)
@@ -1809,6 +1839,7 @@ func (al *AgentLoop) runAgentLoop(
 			})
 	}
 
+	response.HandledExternally = directActionHandled
 	return response, nil
 }
 
@@ -1893,7 +1924,7 @@ func parseTelegramDeliveryDirective(
 	inner, matched := extractTelegramDeliveryHeaderInner(header)
 	if !matched {
 		if strings.HasPrefix(header, "[[") {
-			if idx := strings.Index(firstLine, "]]" ); idx >= 0 {
+			if idx := strings.Index(firstLine, "]]"); idx >= 0 {
 				header = strings.TrimSpace(firstLine[:idx+2])
 				inner, matched = extractTelegramDeliveryHeaderInner(header)
 				if matched {
@@ -2160,6 +2191,11 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 	// Inject turnState and AgentLoop into context so tools (e.g. spawn) can retrieve them.
 	turnCtx = withTurnState(turnCtx, ts)
 	turnCtx = WithAgentLoop(turnCtx, al)
+	turnCtx = tools.WithToolContext(turnCtx, ts.channel, ts.chatID)
+	turnCtx = tools.WithToolSessionKey(turnCtx, ts.sessionKey)
+	if replyCtx := replyContextFromOptions(ts.opts); replyCtx != nil {
+		turnCtx = tools.WithToolReplyContext(turnCtx, replyCtx.CurrentMessageID, replyCtx.ParentMessageID)
+	}
 
 	al.registerActiveTurn(ts)
 	defer al.clearActiveTurn(ts)
@@ -3138,7 +3174,7 @@ turnLoop:
 		return al.abortTurn(ts)
 	}
 
-	if finalContent == "" {
+	if finalContent == "" && !al.agentTurnHandledByDirectToolAction(ts.agent) {
 		if ts.currentIteration() >= ts.agent.MaxIterations && ts.agent.MaxIterations > 0 {
 			finalContent = toolLimitResponse
 		} else {
@@ -3701,6 +3737,7 @@ func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string, t
 		},
 	)
 }
+
 // findNearestUserMessage finds the nearest user message to the given index.
 // It searches backward first, then forward if no user message is found.
 func (al *AgentLoop) findNearestUserMessage(messages []providers.Message, mid int) int {
