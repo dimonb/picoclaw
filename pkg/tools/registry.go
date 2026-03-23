@@ -30,6 +30,14 @@ type mediaStoreAware interface {
 	SetMediaStore(store media.MediaStore)
 }
 
+type sequentialTool interface {
+	ExecuteSequentially() bool
+}
+
+type contextAwareTool interface {
+	Available(ctx context.Context) bool
+}
+
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
 		tools: make(map[string]*ToolEntry),
@@ -169,13 +177,56 @@ func (r *ToolRegistry) Get(name string) (Tool, bool) {
 	if !ok {
 		return nil, false
 	}
-	// Hidden tools with expired TTL are not callable.
 	if !entry.IsCore && entry.TTL <= 0 {
 		return nil, false
 	}
 	return entry.Tool, true
 }
 
+func toolEntryVisibleInContext(entry *ToolEntry, ctx context.Context, name string) bool {
+	if entry.IsCore || entry.TTL > 0 {
+		return true
+	}
+	return HiddenToolVisible(ctx, name)
+}
+
+func (r *ToolRegistry) getWithContext(ctx context.Context, name string) (Tool, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	entry, ok := r.tools[name]
+	if !ok {
+		return nil, false
+	}
+	if !toolEntryVisibleInContext(entry, ctx, name) {
+		return nil, false
+	}
+	return entry.Tool, true
+}
+
+// ExecutesSequentially reports whether the named tool must preserve model order
+// within a single LLM turn instead of being fanned out with sibling calls.
+func (r *ToolRegistry) ExecutesSequentially(name string) bool {
+	return r.ExecutesSequentiallyWithContext(context.Background(), name)
+}
+
+// ExecutesSequentiallyWithContext reports whether the named tool must preserve
+// model order within a single LLM turn for the current request context.
+func (r *ToolRegistry) ExecutesSequentiallyWithContext(ctx context.Context, name string) bool {
+	tool, ok := r.getWithContext(ctx, name)
+	if !ok {
+		return false
+	}
+	sequential, ok := tool.(sequentialTool)
+	return ok && sequential.ExecuteSequentially()
+}
+
+func toolAvailableInContext(tool Tool, ctx context.Context) bool {
+	if aware, ok := tool.(contextAwareTool); ok {
+		return aware.Available(ctx)
+	}
+	return true
+}
 func (r *ToolRegistry) Execute(ctx context.Context, name string, args map[string]any) *ToolResult {
 	return r.ExecuteWithContext(ctx, name, args, "", "", nil)
 }
@@ -197,7 +248,11 @@ func (r *ToolRegistry) ExecuteWithContext(
 			"args": args,
 		})
 
-	tool, ok := r.Get(name)
+	// Inject channel/chatID into ctx so tools read them via ToolChannel(ctx)/ToolChatID(ctx).
+	// Always inject — tools validate what they require.
+	ctx = WithToolContext(ctx, channel, chatID)
+
+	tool, ok := r.getWithContext(ctx, name)
 	if !ok {
 		logger.ErrorCF("tool", "Tool not found",
 			map[string]any{
@@ -213,11 +268,6 @@ func (r *ToolRegistry) ExecuteWithContext(
 		return ErrorResult(fmt.Sprintf("invalid arguments for tool %q: %s", name, err)).
 			WithError(fmt.Errorf("argument validation failed: %w", err))
 	}
-
-	// Inject channel/chatID into ctx so tools read them via ToolChannel(ctx)/ToolChatID(ctx).
-	// Always inject — tools validate what they require.
-	ctx = WithToolContext(ctx, channel, chatID)
-
 	// If tool implements AsyncExecutor and callback is provided, use ExecuteAsync.
 	// The callback is a call parameter, not mutable state on the tool instance.
 	var result *ToolResult
@@ -308,19 +358,25 @@ func (r *ToolRegistry) sortedToolNames() []string {
 }
 
 func (r *ToolRegistry) GetDefinitions() []map[string]any {
+	return r.GetDefinitionsWithContext(context.Background(), "", "")
+}
+
+func (r *ToolRegistry) GetDefinitionsWithContext(ctx context.Context, channel, chatID string) []map[string]any {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	ctx = WithToolContext(ctx, channel, chatID)
 	sorted := r.sortedToolNames()
 	definitions := make([]map[string]any, 0, len(sorted))
 	for _, name := range sorted {
 		entry := r.tools[name]
-
-		if !entry.IsCore && entry.TTL <= 0 {
+		if !toolEntryVisibleInContext(entry, ctx, name) {
 			continue
 		}
-
-		definitions = append(definitions, ToolToSchema(r.tools[name].Tool))
+		if !toolAvailableInContext(entry.Tool, ctx) {
+			continue
+		}
+		definitions = append(definitions, ToolToSchema(entry.Tool))
 	}
 	return definitions
 }
@@ -328,21 +384,26 @@ func (r *ToolRegistry) GetDefinitions() []map[string]any {
 // ToProviderDefs converts tool definitions to provider-compatible format.
 // This is the format expected by LLM provider APIs.
 func (r *ToolRegistry) ToProviderDefs() []providers.ToolDefinition {
+	return r.ToProviderDefsWithContext(context.Background(), "", "")
+}
+
+func (r *ToolRegistry) ToProviderDefsWithContext(ctx context.Context, channel, chatID string) []providers.ToolDefinition {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
+	ctx = WithToolContext(ctx, channel, chatID)
 	sorted := r.sortedToolNames()
 	definitions := make([]providers.ToolDefinition, 0, len(sorted))
 	for _, name := range sorted {
 		entry := r.tools[name]
-
-		if !entry.IsCore && entry.TTL <= 0 {
+		if !toolEntryVisibleInContext(entry, ctx, name) {
+			continue
+		}
+		if !toolAvailableInContext(entry.Tool, ctx) {
 			continue
 		}
 
 		schema := ToolToSchema(entry.Tool)
-
-		// Safely extract nested values with type checks
 		fn, ok := schema["function"].(map[string]any)
 		if !ok {
 			continue

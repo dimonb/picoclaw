@@ -69,7 +69,7 @@ func (t *RegexSearchTool) Execute(ctx context.Context, args map[string]any) *Too
 	}
 
 	logger.InfoCF("discovery", "Regex search completed", map[string]any{"pattern": pattern, "results": len(res)})
-	return formatDiscoveryResponse(t.registry, res, t.ttl)
+	return formatDiscoveryResponse(ctx, t.registry, res, t.ttl)
 }
 
 type BM25SearchTool struct {
@@ -139,7 +139,7 @@ func (t *BM25SearchTool) Execute(ctx context.Context, args map[string]any) *Tool
 	}
 
 	logger.InfoCF("discovery", "BM25 search completed", map[string]any{"query": query, "results": len(results)})
-	return formatDiscoveryResponse(t.registry, results, t.ttl)
+	return formatDiscoveryResponse(ctx, t.registry, results, t.ttl)
 }
 
 // ToolSearchResult represents the result returned to the LLM.
@@ -188,7 +188,12 @@ func (r *ToolRegistry) SearchRegex(pattern string, maxSearchResults int) ([]Tool
 	return results, nil
 }
 
-func formatDiscoveryResponse(registry *ToolRegistry, results []ToolSearchResult, ttl int) *ToolResult {
+func formatDiscoveryResponse(
+	ctx context.Context,
+	registry *ToolRegistry,
+	results []ToolSearchResult,
+	ttl int,
+) *ToolResult {
 	if len(results) == 0 {
 		return SilentResult("No tools found matching the query.")
 	}
@@ -197,7 +202,9 @@ func formatDiscoveryResponse(registry *ToolRegistry, results []ToolSearchResult,
 	for i, r := range results {
 		names[i] = r.Name
 	}
-	registry.PromoteTools(names, ttl)
+	if !PromoteHiddenTools(ctx, names, ttl) {
+		registry.PromoteTools(names, ttl)
+	}
 	logger.InfoCF("discovery", "Promoted tools", map[string]any{"tools": names, "ttl": ttl})
 
 	b, err := json.Marshal(results)
