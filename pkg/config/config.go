@@ -271,7 +271,8 @@ type SubTurnConfig struct {
 	MaxConcurrent         int `json:"max_concurrent"          env:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_MAX_CONCURRENT"`
 	DefaultTimeoutMinutes int `json:"default_timeout_minutes" env:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_DEFAULT_TIMEOUT_MINUTES"`
 	DefaultTokenBudget    int `json:"default_token_budget"    env:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_DEFAULT_TOKEN_BUDGET"`
-	ConcurrencyTimeoutSec int `json:"concurrency_timeout_sec" env:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_CONCURRENCY_TIMEOUT_SEC"`}
+	ConcurrencyTimeoutSec int `json:"concurrency_timeout_sec" env:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_CONCURRENCY_TIMEOUT_SEC"`
+}
 
 type ToolFeedbackConfig struct {
 	Enabled       bool `json:"enabled"         env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED"`
@@ -386,7 +387,7 @@ type WhatsAppConfig struct {
 }
 
 type TelegramConfig struct {
-	Enabled            bool                           `json:"enabled"                 env:"PICOCLAW_CHANNELS_TELEGRAM_ENABLED"`
+	Enabled            bool `json:"enabled"                 env:"PICOCLAW_CHANNELS_TELEGRAM_ENABLED"`
 	token              string
 	BaseURL            string                         `json:"base_url"                env:"PICOCLAW_CHANNELS_TELEGRAM_BASE_URL"`
 	Proxy              string                         `json:"proxy"                   env:"PICOCLAW_CHANNELS_TELEGRAM_PROXY"`
@@ -1924,6 +1925,19 @@ func (c *Config) GetModelConfig(modelName string) (*ModelConfig, error) {
 	// Multiple configs - use round-robin for load balancing
 	idx := (rrCounter.Add(1) - 1) % uint64(len(matches))
 	return matches[idx], nil
+}
+
+// GetModelConfigByModel looks up a ModelConfig by its full Model field
+// (e.g. "anthropic/claude-sonnet-4.6"), which is distinct from ModelName.
+// Returns the first matching entry, or an error if not found.
+func (c *Config) GetModelConfigByModel(model string) (*ModelConfig, error) {
+	model = strings.TrimSpace(model)
+	for i := range c.ModelList {
+		if strings.EqualFold(strings.TrimSpace(c.ModelList[i].Model), model) {
+			return c.ModelList[i], nil
+		}
+	}
+	return nil, fmt.Errorf("model %q not found in model_list", model)
 }
 
 // findMatches finds all ModelConfig entries with the given model_name.

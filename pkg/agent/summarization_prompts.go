@@ -67,7 +67,7 @@ Update the running conversation summary for future context injection.
 </task>
 
 <instructions>
-Preserve only information likely to matter in future turns.
+Keep only information that could change how the assistant should behave in future turns.
 Prioritize:
 - confirmed decisions and commitments
 - unresolved questions, blockers, or follow-ups
