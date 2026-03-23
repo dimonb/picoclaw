@@ -276,26 +276,26 @@ func markdownToHTML(md string) string {
 	return strings.TrimSpace(string(markdown.ToHTML([]byte(md), p, renderer)))
 }
 
-func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
-		return channels.ErrNotRunning
+		return nil, channels.ErrNotRunning
 	}
 
 	roomID := id.RoomID(strings.TrimSpace(msg.ChatID))
 	if roomID == "" {
-		return fmt.Errorf("matrix room ID is empty: %w", channels.ErrSendFailed)
+		return nil, fmt.Errorf("matrix room ID is empty: %w", channels.ErrSendFailed)
 	}
 
 	content := strings.TrimSpace(msg.Content)
 	if content == "" {
-		return nil
+		return nil, nil
 	}
 
 	_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, c.messageContent(content))
 	if err != nil {
-		return fmt.Errorf("matrix send: %w", channels.ErrTemporary)
+		return nil, fmt.Errorf("matrix send: %w", channels.ErrTemporary)
 	}
-	return nil
+	return nil, nil
 }
 
 func (c *MatrixChannel) messageContent(text string) *event.MessageEventContent {

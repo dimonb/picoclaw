@@ -276,9 +276,9 @@ func (c *WeComAIBotWSChannel) Stop(_ context.Context) error {
 
 // Send delivers the agent reply for msg.ChatID.
 // The waiting task goroutine picks it up and writes the final stream response.
-func (c *WeComAIBotWSChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+func (c *WeComAIBotWSChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
-		return channels.ErrNotRunning
+		return nil, channels.ErrNotRunning
 	}
 
 	// msg.ChatID carries the inbound req_id (set by dispatchWSAgentTask).
@@ -293,9 +293,9 @@ func (c *WeComAIBotWSChannel) Send(ctx context.Context, msg bus.OutboundMessage)
 		if err := c.wsSendActivePush(msg.ChatID, 0, msg.Content); err != nil {
 			logger.WarnCF("wecom_aibot", "Proactive push failed",
 				map[string]any{"chat_id": msg.ChatID, "error": err.Error()})
-			return fmt.Errorf("websocket delivery failed: %w", channels.ErrSendFailed)
+			return nil, fmt.Errorf("websocket delivery failed: %w", channels.ErrSendFailed)
 		}
-		return nil
+		return nil, nil
 	}
 
 	if task == nil {
@@ -304,18 +304,18 @@ func (c *WeComAIBotWSChannel) Send(ctx context.Context, msg bus.OutboundMessage)
 			// push unless wsStreamMaxDuration has elapsed.
 			logger.WarnCF("wecom_aibot", "Send: stream window still open, skip proactive push",
 				map[string]any{"req_id": msg.ChatID, "ready_at": route.ReadyAt.Format(time.RFC3339)})
-			return nil
+			return nil, nil
 		}
 
 		if err := c.wsSendActivePush(route.ChatID, route.ChatType, msg.Content); err != nil {
 			logger.WarnCF("wecom_aibot", "Late reply proactive push failed",
 				map[string]any{"req_id": msg.ChatID, "chat_id": route.ChatID, "error": err.Error()})
-			return fmt.Errorf("websocket delivery failed: %w", channels.ErrSendFailed)
+			return nil, fmt.Errorf("websocket delivery failed: %w", channels.ErrSendFailed)
 		}
 		logger.InfoCF("wecom_aibot", "Late reply delivered via proactive push",
 			map[string]any{"req_id": msg.ChatID, "chat_id": route.ChatID, "chat_type": route.ChatType})
 		c.deleteReqState(msg.ChatID)
-		return nil
+		return nil, nil
 	}
 
 	// Non-blocking fast path: when answerCh has space, deliver without racing
@@ -323,18 +323,18 @@ func (c *WeComAIBotWSChannel) Send(ctx context.Context, msg bus.OutboundMessage)
 	// incoming message, but the response must still be sent).
 	select {
 	case task.answerCh <- msg.Content:
-		return nil
+		return nil, nil
 	default:
 	}
 	// answerCh was full; block with cancellation guards.
 	select {
 	case task.answerCh <- msg.Content:
 	case <-task.ctx.Done():
-		return nil
+		return nil, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
-	return nil
+	return nil, nil
 }
 
 // ---- Connection management ----

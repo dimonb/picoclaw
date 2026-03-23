@@ -192,14 +192,14 @@ func (c *WeComAppChannel) Stop(ctx context.Context) error {
 }
 
 // Send sends a message to WeCom user proactively using access token
-func (c *WeComAppChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+func (c *WeComAppChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
-		return channels.ErrNotRunning
+		return nil, channels.ErrNotRunning
 	}
 
 	accessToken := c.getAccessToken()
 	if accessToken == "" {
-		return fmt.Errorf("no valid access token available")
+		return nil, fmt.Errorf("no valid access token available")
 	}
 
 	logger.DebugCF("wecom_app", "Sending message", map[string]any{
@@ -207,7 +207,7 @@ func (c *WeComAppChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		"preview": utils.Truncate(msg.Content, 100),
 	})
 
-	return c.sendTextMessage(ctx, accessToken, msg.ChatID, msg.Content)
+	return nil, c.sendTextMessage(ctx, accessToken, msg.ChatID, msg.Content)
 }
 
 // SendMedia implements the channels.MediaSender interface.

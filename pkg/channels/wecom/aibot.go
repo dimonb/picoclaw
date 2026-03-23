@@ -211,9 +211,9 @@ func (c *WeComAIBotChannel) Stop(ctx context.Context) error {
 // Send delivers the agent reply into the active streamTask for msg.ChatID.
 // It writes into the earliest unfinished task in the queue (FIFO per chatID).
 // If the stream has already closed (deadline passed), it posts directly to response_url.
-func (c *WeComAIBotChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+func (c *WeComAIBotChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
-		return channels.ErrNotRunning
+		return nil, channels.ErrNotRunning
 	}
 	c.taskMu.Lock()
 	queue := c.chatTasks[msg.ChatID]
@@ -246,7 +246,7 @@ func (c *WeComAIBotChannel) Send(ctx context.Context, msg bus.OutboundMessage) e
 				"chat_id": msg.ChatID,
 			},
 		)
-		return nil
+		return nil, nil
 	}
 
 	if streamClosed {
@@ -263,7 +263,7 @@ func (c *WeComAIBotChannel) Send(ctx context.Context, msg bus.OutboundMessage) e
 					"stream_id": task.StreamID,
 				})
 				c.removeTask(task)
-				return fmt.Errorf("response_url delivery failed: %w", channels.ErrSendFailed)
+				return nil, fmt.Errorf("response_url delivery failed: %w", channels.ErrSendFailed)
 			}
 		} else {
 			logger.WarnCF("wecom_aibot", "Stream closed but no response_url available", map[string]any{
@@ -271,7 +271,7 @@ func (c *WeComAIBotChannel) Send(ctx context.Context, msg bus.OutboundMessage) e
 			})
 		}
 		c.removeTask(task)
-		return nil
+		return nil, nil
 	}
 
 	// Stream still open: deliver via answerCh for the next poll response.
@@ -279,11 +279,11 @@ func (c *WeComAIBotChannel) Send(ctx context.Context, msg bus.OutboundMessage) e
 	case task.answerCh <- msg.Content:
 	case <-task.ctx.Done():
 		// Task was canceled (cleanup removed it); silently drop the reply.
-		return nil
+		return nil, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return nil, ctx.Err()
 	}
-	return nil
+	return nil, nil
 }
 
 // WebhookPath returns the path for registering on the shared HTTP server

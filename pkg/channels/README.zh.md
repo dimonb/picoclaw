@@ -253,27 +253,27 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 
 ```go
 // 旧代码：返回普通 error
-func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
-    if !c.running { return fmt.Errorf("not running") }
+func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
+    if !c.running { return nil, fmt.Errorf("not running") }
     // ...
-    if err != nil { return err }
+    if err != nil { return nil, err }
 }
 
 // 新代码：必须返回哨兵错误，供 Manager 判断重试策略
-func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
     if !c.IsRunning() {
-        return channels.ErrNotRunning    // ← Manager 不会重试
+        return nil, channels.ErrNotRunning    // ← Manager 不会重试
     }
     // ...
     if err != nil {
         // 使用 ClassifySendError 根据 HTTP 状态码包装错误
-        return channels.ClassifySendError(statusCode, err)
+        return nil, channels.ClassifySendError(statusCode, err)
         // 或手动包装：
-        // return fmt.Errorf("%w: %v", channels.ErrTemporary, err)
-        // return fmt.Errorf("%w: %v", channels.ErrRateLimit, err)
-        // return fmt.Errorf("%w: %v", channels.ErrSendFailed, err)
+        // return nil, fmt.Errorf("%w: %v", channels.ErrTemporary, err)
+        // return nil, fmt.Errorf("%w: %v", channels.ErrRateLimit, err)
+        // return nil, fmt.Errorf("%w: %v", channels.ErrSendFailed, err)
     }
-    return nil
+    return nil, nil
 }
 ```
 
@@ -301,6 +301,8 @@ sender := bus.SenderInfo{
     CanonicalID: identity.BuildCanonicalID("telegram", strconv.FormatInt(from.ID, 10)),
     Username:    from.Username,
     DisplayName: from.FirstName,
+    FirstName:   from.FirstName,
+    LastName:    from.LastName,
 }
 
 peer := bus.Peer{
@@ -502,10 +504,10 @@ func (c *MatrixChannel) Stop(ctx context.Context) error {
     return nil
 }
 
-func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
     // 1. 检查运行状态
     if !c.IsRunning() {
-        return channels.ErrNotRunning
+        return nil, channels.ErrNotRunning
     }
 
     // 2. 发送消息到 Matrix
@@ -513,14 +515,14 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) error
     if err != nil {
         // 3. 必须使用错误分类包装
         //    如果你有 HTTP 状态码：
-        //    return channels.ClassifySendError(statusCode, err)
+        //    return nil, channels.ClassifySendError(statusCode, err)
         //    如果是网络错误：
-        //    return channels.ClassifyNetError(err)
+        //    return nil, channels.ClassifyNetError(err)
         //    如果需要手动分类：
-        return fmt.Errorf("%w: %v", channels.ErrTemporary, err)
+        return nil, fmt.Errorf("%w: %v", channels.ErrTemporary, err)
     }
 
-    return nil
+    return nil, nil
 }
 
 // ========== 消息接收处理 ==========
@@ -867,7 +869,9 @@ type SenderInfo struct {
     PlatformID  string `json:"platform_id,omitempty"`  // 平台原始 ID
     CanonicalID string `json:"canonical_id,omitempty"` // "platform:id" 规范格式
     Username    string `json:"username,omitempty"`
-    DisplayName string `json:"display_name,omitempty"`
+    DisplayName string `json:"display_name,omitempty"` // 无 first/last 时的回退显示名
+    FirstName   string `json:"first_name,omitempty"`   // 名（优先于 DisplayName）
+    LastName    string `json:"last_name,omitempty"`    // 姓
 }
 
 // 入站消息
@@ -888,9 +892,11 @@ type InboundMessage struct {
 
 // 出站文本消息
 type OutboundMessage struct {
-    Channel string
-    ChatID  string
-    Content string
+    Channel          string                // 目标 channel 名称
+    ChatID           string                // 目标聊天/房间 ID
+    Content          string                // 消息文本
+    ReplyToMessageID string                // 可选：回复的平台消息 ID
+    OnDelivered      func(msgIDs []string) // 可选：投递成功后携带平台消息 ID 回调（不序列化）
 }
 
 // 出站媒体消息
@@ -1272,7 +1278,7 @@ type Channel interface {
     Name() string
     Start(ctx context.Context) error
     Stop(ctx context.Context) error
-    Send(ctx context.Context, msg bus.OutboundMessage) error
+    Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error)
     IsRunning() bool
     IsAllowed(senderID string) bool
     IsAllowedSender(sender bus.SenderInfo) bool

@@ -147,9 +147,9 @@ func (c *WeComBotChannel) Stop(ctx context.Context) error {
 // Send sends a message to WeCom user via webhook API
 // Note: WeCom Bot can only reply within the configured timeout (default 5 seconds) of receiving a message
 // For delayed responses, we use the webhook URL
-func (c *WeComBotChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+func (c *WeComBotChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
-		return channels.ErrNotRunning
+		return nil, channels.ErrNotRunning
 	}
 
 	logger.DebugCF("wecom", "Sending message via webhook", map[string]any{
@@ -157,7 +157,7 @@ func (c *WeComBotChannel) Send(ctx context.Context, msg bus.OutboundMessage) err
 		"preview": utils.Truncate(msg.Content, 100),
 	})
 
-	return c.sendWebhookReply(ctx, msg.ChatID, msg.Content)
+	return nil, c.sendWebhookReply(ctx, msg.ChatID, msg.Content)
 }
 
 // WebhookPath returns the path for registering on the shared HTTP server.
