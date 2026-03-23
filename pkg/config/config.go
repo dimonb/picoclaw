@@ -1987,6 +1987,19 @@ func (c *Config) GetModelConfig(modelName string) (*ModelConfig, error) {
 	return matches[idx], nil
 }
 
+// GetModelConfigByModel looks up a ModelConfig by its full Model field
+// (e.g. "anthropic/claude-sonnet-4.6"), which is distinct from ModelName.
+// Returns the first matching entry, or an error if not found.
+func (c *Config) GetModelConfigByModel(model string) (*ModelConfig, error) {
+	model = strings.TrimSpace(model)
+	for i := range c.ModelList {
+		if strings.EqualFold(strings.TrimSpace(c.ModelList[i].Model), model) {
+			return c.ModelList[i], nil
+		}
+	}
+	return nil, fmt.Errorf("model %q not found in model_list", model)
+}
+
 // findMatches finds all ModelConfig entries with the given model_name.
 func (c *Config) findMatches(modelName string) []*ModelConfig {
 	var matches []*ModelConfig

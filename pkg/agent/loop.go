@@ -1905,7 +1905,13 @@ turnLoop:
 					providerCtx,
 					activeCandidates,
 					func(ctx context.Context, provider, model string) (*providers.LLMResponse, error) {
-						return ts.agent.Provider.Chat(ctx, messagesForCall, toolDefsForCall, model, llmOpts)
+						p := ts.agent.Provider
+						if ts.agent.ProviderMap != nil {
+							if mapped, ok := ts.agent.ProviderMap[providers.ModelKey(provider, model)]; ok {
+								p = mapped
+							}
+						}
+						return p.Chat(ctx, messagesForCall, toolDefsForCall, model, llmOpts)
 					},
 				)
 				if fbErr != nil {
