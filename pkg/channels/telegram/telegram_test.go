@@ -667,3 +667,37 @@ func TestHandleMessage_ReplyThread_NonForum_NoIsolation(t *testing.T) {
 	assert.Empty(t, inbound.Metadata["parent_peer_kind"])
 	assert.Empty(t, inbound.Metadata["parent_peer_id"])
 }
+
+func TestHandleMessage_ReplyToMessageID_Preserved(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		chatIDs:     make(map[string]int64),
+		ctx:         context.Background(),
+	}
+
+	msg := &telego.Message{
+		Text:      "reply in group",
+		MessageID: 30,
+		Chat: telego.Chat{
+			ID:   -100999,
+			Type: "supergroup",
+		},
+		From: &telego.User{
+			ID:        10,
+			FirstName: "Dana",
+		},
+		ReplyToMessage: &telego.Message{
+			MessageID: 25,
+		},
+	}
+
+	err := ch.handleMessage(context.Background(), msg)
+	require.NoError(t, err)
+
+	inbound, ok := <-messageBus.InboundChan()
+	require.True(t, ok)
+	assert.Equal(t, "30", inbound.MessageID)
+	assert.Equal(t, "25", inbound.ReplyToMessageID)
+	assert.Equal(t, "25", inbound.Metadata["reply_to_message_id"])
+}
