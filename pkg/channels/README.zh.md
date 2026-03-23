@@ -880,6 +880,7 @@ type InboundMessage struct {
     Media      []string          // 媒体引用列表（media://...）
     Peer       Peer              // 路由对等体（一等字段）
     MessageID  string            // 平台消息 ID（一等字段）
+    ReplyToMessageID string      // 父消息 ID（一等字段）
     MediaScope string            // 媒体生命周期作用域
     SessionKey string            // 会话键
     Metadata   map[string]string // 仅用于 channel 特有扩展
@@ -1190,10 +1191,11 @@ Manager 创建单一 `http.Server`，自动发现和注册：
 **不要再把以下信息放入 Metadata**：
 - `peer_kind` / `peer_id` → 使用 `InboundMessage.Peer`
 - `message_id` → 使用 `InboundMessage.MessageID`
+- `reply_to_message_id` → 使用 `InboundMessage.ReplyToMessageID`
 - `sender_platform` / `sender_username` → 使用 `InboundMessage.Sender`
 
 **Metadata 仅用于**：
-- Channel 特有的扩展信息（如 Telegram 的 `reply_to_message_id`）
+- 尚未有结构化字段承载的 Channel 特有扩展信息
 - 不适合放入结构化字段的临时信息
 
 ### 5.3 并发安全约定
