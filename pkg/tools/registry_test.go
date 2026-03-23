@@ -459,6 +459,56 @@ func TestToolRegistry_ConcurrentAccess(t *testing.T) {
 
 // --- Panic and abnormal exit tests ---
 
+func TestToolRegistry_RequestScopedHiddenToolVisibility(t *testing.T) {
+	r := NewToolRegistry()
+	hidden := &mockContextAwareTool{
+		mockRegistryTool: *newMockTool("hidden_seq", "request scoped hidden tool"),
+	}
+	r.RegisterHidden(hidden)
+
+	ctx := WithHiddenToolState(context.Background())
+	if !PromoteHiddenTools(ctx, []string{"hidden_seq"}, 2) {
+		t.Fatal("expected request-scoped promotion to succeed")
+	}
+
+	if _, ok := r.Get("hidden_seq"); ok {
+		t.Fatal("expected hidden tool to remain globally hidden")
+	}
+	defs := r.ToProviderDefsWithContext(ctx, "cli", "direct")
+	if len(defs) != 1 || defs[0].Function.Name != "hidden_seq" {
+		t.Fatalf("expected locally unlocked hidden tool in provider defs, got %+v", defs)
+	}
+
+	result := r.ExecuteWithContext(ctx, "hidden_seq", nil, "cli", "direct", nil)
+	if result.IsError {
+		t.Fatalf("expected request-scoped hidden tool to execute, got %q", result.ForLLM)
+	}
+	if hidden.lastCtx == nil {
+		t.Fatal("expected hidden tool to receive execution context")
+	}
+
+	if !TickHiddenTools(ctx) {
+		t.Fatal("expected first TTL tick to apply to request-scoped state")
+	}
+	defs = r.ToProviderDefsWithContext(ctx, "cli", "direct")
+	if len(defs) != 1 {
+		t.Fatalf("expected hidden tool to remain visible after first tick, got %d defs", len(defs))
+	}
+
+	if !TickHiddenTools(ctx) {
+		t.Fatal("expected second TTL tick to apply to request-scoped state")
+	}
+	defs = r.ToProviderDefsWithContext(ctx, "cli", "direct")
+	if len(defs) != 0 {
+		t.Fatalf("expected hidden tool visibility to expire, got %d defs", len(defs))
+	}
+
+	result = r.ExecuteWithContext(ctx, "hidden_seq", nil, "cli", "direct", nil)
+	if !result.IsError {
+		t.Fatal("expected expired hidden tool to become unavailable again")
+	}
+}
+
 // mockPanicTool is a tool that panics during execution
 type mockPanicTool struct {
 	name       string
@@ -491,9 +541,7 @@ func TestToolRegistry_Execute_PanicRecovery(t *testing.T) {
 		panicValue: "something went terribly wrong",
 	})
 
-	// Should not panic, should return error result
 	result := r.Execute(context.Background(), "panic_tool", nil)
-
 	if result == nil {
 		t.Fatal("expected non-nil result after panic recovery")
 	}
@@ -516,15 +564,8 @@ func TestToolRegistry_Execute_PanicRecovery(t *testing.T) {
 
 func TestToolRegistry_Execute_PanicRecovery_ErrorType(t *testing.T) {
 	r := NewToolRegistry()
-
-	// Test with error type panic
-	r.Register(&mockPanicTool{
-		name:       "error_panic_tool",
-		panicValue: errors.New("custom error panic"),
-	})
-
+	r.Register(&mockPanicTool{name: "error_panic_tool", panicValue: errors.New("custom error panic")})
 	result := r.Execute(context.Background(), "error_panic_tool", nil)
-
 	if !result.IsError {
 		t.Error("expected IsError=true")
 	}
@@ -535,15 +576,8 @@ func TestToolRegistry_Execute_PanicRecovery_ErrorType(t *testing.T) {
 
 func TestToolRegistry_Execute_PanicRecovery_IntType(t *testing.T) {
 	r := NewToolRegistry()
-
-	// Test with int type panic
-	r.Register(&mockPanicTool{
-		name:       "int_panic_tool",
-		panicValue: 42,
-	})
-
+	r.Register(&mockPanicTool{name: "int_panic_tool", panicValue: 42})
 	result := r.Execute(context.Background(), "int_panic_tool", nil)
-
 	if !result.IsError {
 		t.Error("expected IsError=true")
 	}
@@ -555,9 +589,7 @@ func TestToolRegistry_Execute_PanicRecovery_IntType(t *testing.T) {
 func TestToolRegistry_Execute_NilResultHandling(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(&mockNilResultTool{name: "nil_tool"})
-
 	result := r.Execute(context.Background(), "nil_tool", nil)
-
 	if result == nil {
 		t.Fatal("expected non-nil result when tool returns nil")
 	}
@@ -577,21 +609,8 @@ func TestToolRegistry_Execute_NilResultHandling(t *testing.T) {
 
 func TestToolRegistry_ExecuteWithContext_PanicRecovery(t *testing.T) {
 	r := NewToolRegistry()
-	r.Register(&mockPanicTool{
-		name:       "ctx_panic_tool",
-		panicValue: "context panic test",
-	})
-
-	// Should not panic even with context
-	result := r.ExecuteWithContext(
-		context.Background(),
-		"ctx_panic_tool",
-		map[string]any{"key": "value"},
-		"telegram",
-		"chat-123",
-		nil,
-	)
-
+	r.Register(&mockPanicTool{name: "ctx_panic_tool", panicValue: "context panic test"})
+	result := r.ExecuteWithContext(context.Background(), "ctx_panic_tool", map[string]any{"key": "value"}, "telegram", "chat-123", nil)
 	if result == nil {
 		t.Fatal("expected non-nil result")
 	}
@@ -606,20 +625,11 @@ func TestToolRegistry_ExecuteWithContext_PanicRecovery(t *testing.T) {
 func TestToolRegistry_Execute_PanicDoesNotAffectOtherTools(t *testing.T) {
 	r := NewToolRegistry()
 	r.Register(&mockPanicTool{name: "bad_tool", panicValue: "boom"})
-	r.Register(&mockRegistryTool{
-		name:   "good_tool",
-		desc:   "works fine",
-		params: map[string]any{},
-		result: SilentResult("success"),
-	})
-
-	// First, trigger the panic
+	r.Register(&mockRegistryTool{name: "good_tool", desc: "works fine", params: map[string]any{}, result: SilentResult("success")})
 	result1 := r.Execute(context.Background(), "bad_tool", nil)
 	if !result1.IsError {
 		t.Error("expected error from panic tool")
 	}
-
-	// Then, verify the good tool still works
 	result2 := r.Execute(context.Background(), "good_tool", nil)
 	if result2.IsError {
 		t.Errorf("expected success from good tool, got error: %s", result2.ForLLM)

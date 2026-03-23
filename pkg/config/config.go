@@ -271,7 +271,8 @@ type SubTurnConfig struct {
 	MaxConcurrent         int `json:"max_concurrent"          env:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_MAX_CONCURRENT"`
 	DefaultTimeoutMinutes int `json:"default_timeout_minutes" env:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_DEFAULT_TIMEOUT_MINUTES"`
 	DefaultTokenBudget    int `json:"default_token_budget"    env:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_DEFAULT_TOKEN_BUDGET"`
-	ConcurrencyTimeoutSec int `json:"concurrency_timeout_sec" env:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_CONCURRENCY_TIMEOUT_SEC"`}
+	ConcurrencyTimeoutSec int `json:"concurrency_timeout_sec" env:"PICOCLAW_AGENTS_DEFAULTS_SUBTURN_CONCURRENCY_TIMEOUT_SEC"`
+}
 
 type ToolFeedbackConfig struct {
 	Enabled       bool `json:"enabled"         env:"PICOCLAW_AGENTS_DEFAULTS_TOOL_FEEDBACK_ENABLED"`
@@ -291,6 +292,7 @@ type AgentDefaults struct {
 	ContextWindow             int                `json:"context_window,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_CONTEXT_WINDOW"`
 	Temperature               *float64           `json:"temperature,omitempty"           env:"PICOCLAW_AGENTS_DEFAULTS_TEMPERATURE"`
 	MaxToolIterations         int                `json:"max_tool_iterations"             env:"PICOCLAW_AGENTS_DEFAULTS_MAX_TOOL_ITERATIONS"`
+	MaxConcurrentSessions     int                `json:"max_concurrent_sessions,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_MAX_CONCURRENT_SESSIONS"`
 	SummarizeMessageThreshold int                `json:"summarize_message_threshold"     env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_MESSAGE_THRESHOLD"`
 	SummarizeTokenPercent     int                `json:"summarize_token_percent"         env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_TOKEN_PERCENT"`
 	SummarizeKeepMessages     int                `json:"summarize_keep_messages"         env:"PICOCLAW_AGENTS_DEFAULTS_SUMMARIZE_KEEP_MESSAGES"`
@@ -386,7 +388,7 @@ type WhatsAppConfig struct {
 }
 
 type TelegramConfig struct {
-	Enabled            bool                           `json:"enabled"                 env:"PICOCLAW_CHANNELS_TELEGRAM_ENABLED"`
+	Enabled            bool `json:"enabled"                 env:"PICOCLAW_CHANNELS_TELEGRAM_ENABLED"`
 	token              string
 	BaseURL            string                         `json:"base_url"                env:"PICOCLAW_CHANNELS_TELEGRAM_BASE_URL"`
 	Proxy              string                         `json:"proxy"                   env:"PICOCLAW_CHANNELS_TELEGRAM_PROXY"`
