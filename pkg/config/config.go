@@ -386,17 +386,18 @@ type WhatsAppConfig struct {
 }
 
 type TelegramConfig struct {
-	Enabled            bool `json:"enabled"                 env:"PICOCLAW_CHANNELS_TELEGRAM_ENABLED"`
+	Enabled            bool                           `json:"enabled"                 env:"PICOCLAW_CHANNELS_TELEGRAM_ENABLED"`
 	token              string
-	BaseURL            string              `json:"base_url"                env:"PICOCLAW_CHANNELS_TELEGRAM_BASE_URL"`
-	Proxy              string              `json:"proxy"                   env:"PICOCLAW_CHANNELS_TELEGRAM_PROXY"`
-	AllowFrom          FlexibleStringSlice `json:"allow_from"              env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOW_FROM"`
-	GroupTrigger       GroupTriggerConfig  `json:"group_trigger,omitempty"`
-	Typing             TypingConfig        `json:"typing,omitempty"`
-	Placeholder        PlaceholderConfig   `json:"placeholder,omitempty"`
-	Streaming          StreamingConfig     `json:"streaming,omitempty"`
-	ReasoningChannelID string              `json:"reasoning_channel_id"    env:"PICOCLAW_CHANNELS_TELEGRAM_REASONING_CHANNEL_ID"`
-	UseMarkdownV2      bool                `json:"use_markdown_v2"         env:"PICOCLAW_CHANNELS_TELEGRAM_USE_MARKDOWN_V2"`
+	BaseURL            string                         `json:"base_url"                env:"PICOCLAW_CHANNELS_TELEGRAM_BASE_URL"`
+	Proxy              string                         `json:"proxy"                   env:"PICOCLAW_CHANNELS_TELEGRAM_PROXY"`
+	AllowFrom          FlexibleStringSlice            `json:"allow_from"              env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOW_FROM"`
+	Groups             map[string]TelegramGroupConfig `json:"groups,omitempty"`
+	GroupTrigger       GroupTriggerConfig             `json:"group_trigger,omitempty"`
+	Typing             TypingConfig                   `json:"typing,omitempty"`
+	Placeholder        PlaceholderConfig              `json:"placeholder,omitempty"`
+	Streaming          StreamingConfig                `json:"streaming,omitempty"`
+	ReasoningChannelID string                         `json:"reasoning_channel_id"    env:"PICOCLAW_CHANNELS_TELEGRAM_REASONING_CHANNEL_ID"`
+	UseMarkdownV2      bool                           `json:"use_markdown_v2"         env:"PICOCLAW_CHANNELS_TELEGRAM_USE_MARKDOWN_V2"`
 	secDirty           bool
 }
 
@@ -409,6 +410,14 @@ func (c *TelegramConfig) Token() string {
 func (c *TelegramConfig) SetToken(token string) {
 	c.token = token
 	c.secDirty = true
+}
+
+type TelegramTopicConfig struct {
+	AgentID string `json:"agent_id,omitempty"`
+}
+
+type TelegramGroupConfig struct {
+	Topics map[string]TelegramTopicConfig `json:"topics,omitempty"`
 }
 
 type FeishuConfig struct {

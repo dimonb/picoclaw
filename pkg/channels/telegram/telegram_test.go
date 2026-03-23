@@ -537,7 +537,7 @@ func TestSend_WithForumThreadID(t *testing.T) {
 	ch := newTestChannel(t, caller)
 
 	_, err := ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID:  "-1001234567890/42",
+		ChatID:  "-1001234567890:topic:42",
 		Content: "Hello from topic",
 	})
 
@@ -547,8 +547,17 @@ func TestSend_WithForumThreadID(t *testing.T) {
 
 func TestHandleMessage_ForumTopic_SetsMetadata(t *testing.T) {
 	messageBus := bus.NewMessageBus()
+	cfg := config.DefaultConfig()
+	cfg.Channels.Telegram.Groups = map[string]config.TelegramGroupConfig{
+		"-1001234567890": {
+			Topics: map[string]config.TelegramTopicConfig{
+				"42": {AgentID: "coder"},
+			},
+		},
+	}
 	ch := &TelegramChannel{
 		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		config:      cfg,
 		chatIDs:     make(map[string]int64),
 		ctx:         context.Background(),
 	}
@@ -575,15 +584,18 @@ func TestHandleMessage_ForumTopic_SetsMetadata(t *testing.T) {
 	require.True(t, ok, "expected inbound message")
 
 	// Composite chatID should include thread ID
-	assert.Equal(t, "-1001234567890/42", inbound.ChatID)
+	assert.Equal(t, "-1001234567890:topic:42", inbound.ChatID)
 
 	// Peer ID should include thread ID for session key isolation
 	assert.Equal(t, "group", inbound.Peer.Kind)
-	assert.Equal(t, "-1001234567890/42", inbound.Peer.ID)
+	assert.Equal(t, "-1001234567890:topic:42", inbound.Peer.ID)
 
 	// Parent peer metadata should be set for agent binding
-	assert.Equal(t, "topic", inbound.Metadata["parent_peer_kind"])
-	assert.Equal(t, "42", inbound.Metadata["parent_peer_id"])
+	assert.Equal(t, "group", inbound.Metadata["parent_peer_kind"])
+	assert.Equal(t, "-1001234567890", inbound.Metadata["parent_peer_id"])
+	assert.Equal(t, "42", inbound.Metadata["thread_id"])
+	assert.Equal(t, "coder", inbound.Metadata["route_agent_id"])
+	assert.Equal(t, "telegram.topic", inbound.Metadata["route_matched_by"])
 }
 
 func TestHandleMessage_NoForum_NoThreadMetadata(t *testing.T) {

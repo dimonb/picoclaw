@@ -20,7 +20,8 @@ type MessageEditor interface {
 	EditMessage(ctx context.Context, chatID string, messageID string, content string) error
 }
 
-// MessageDeleter — channels that can delete a message by ID.
+// MessageDeleter — channels that can delete an existing message.
+// messageID is always string; channels convert platform-specific types internally.
 type MessageDeleter interface {
 	DeleteMessage(ctx context.Context, chatID string, messageID string) error
 }

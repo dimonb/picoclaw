@@ -20,6 +20,7 @@ type (
 	ContentBlock           = protocoltypes.ContentBlock
 	CacheControl           = protocoltypes.CacheControl
 	MessageSender          = protocoltypes.MessageSender
+	MessageReaction        = protocoltypes.MessageReaction
 )
 
 type LLMProvider interface {

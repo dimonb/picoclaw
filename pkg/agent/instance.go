@@ -107,7 +107,7 @@ func NewAgentInstance(
 	contextBuilder := NewContextBuilder(workspace).WithToolDiscovery(
 		mcpDiscoveryActive && cfg.Tools.MCP.Discovery.UseBM25,
 		mcpDiscoveryActive && cfg.Tools.MCP.Discovery.UseRegex,
-	)
+	).WithTelegramAllowedReactionEmoji(nil)
 
 	agentID := routing.DefaultAgentID
 	agentName := ""

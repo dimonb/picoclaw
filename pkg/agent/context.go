@@ -21,11 +21,12 @@ import (
 )
 
 type ContextBuilder struct {
-	workspace          string
-	skillsLoader       *skills.SkillsLoader
-	memory             *MemoryStore
-	toolDiscoveryBM25  bool
-	toolDiscoveryRegex bool
+	workspace                    string
+	skillsLoader                 *skills.SkillsLoader
+	memory                       *MemoryStore
+	toolDiscoveryBM25            bool
+	toolDiscoveryRegex           bool
+	telegramAllowedReactionEmoji []string
 
 	// Cache for system prompt to avoid rebuilding on every call.
 	// This fixes issue #607: repeated reprocessing of the entire context.
@@ -49,6 +50,23 @@ type ContextBuilder struct {
 func (cb *ContextBuilder) WithToolDiscovery(useBM25, useRegex bool) *ContextBuilder {
 	cb.toolDiscoveryBM25 = useBM25
 	cb.toolDiscoveryRegex = useRegex
+	return cb
+}
+
+func (cb *ContextBuilder) WithTelegramAllowedReactionEmoji(values []string) *ContextBuilder {
+	seen := make(map[string]struct{}, len(values))
+	cb.telegramAllowedReactionEmoji = cb.telegramAllowedReactionEmoji[:0]
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		cb.telegramAllowedReactionEmoji = append(cb.telegramAllowedReactionEmoji, value)
+	}
 	return cb
 }
 
@@ -503,12 +521,68 @@ func (cb *ContextBuilder) buildDynamicContext(channel, chatID, senderID, senderD
 	return sb.String()
 }
 
+type ReplyContextInfo struct {
+	CurrentMessageID string
+	ParentMessageID  string
+}
+
+func defaultTelegramDeliveryEmoji() []string {
+	return []string{"👍", "❤️", "🔥", "👀", "✅", "🙏"}
+}
+
+func buildTelegramDeliveryContext(channel string, replyCtx *ReplyContextInfo, allowedEmoji []string) string {
+	if channel != "telegram" || replyCtx == nil || strings.TrimSpace(replyCtx.CurrentMessageID) == "" {
+		return ""
+	}
+
+	parentID := strings.TrimSpace(replyCtx.ParentMessageID)
+	if parentID == "" {
+		parentID = "(none)"
+	}
+
+	if len(allowedEmoji) == 0 {
+		allowedEmoji = defaultTelegramDeliveryEmoji()
+	}
+	emojiHint := strings.Join(allowedEmoji, " ")
+
+	return fmt.Sprintf(
+		"## Telegram Delivery\n"+
+			"Current inbound message ID: %s\n"+
+			"Parent message ID: %s\n\n"+
+			"Historical messages in the conversation may include `[msg:#ID]`, `[reply_to:#PARENT]`, and `[react_to:#ID=EMOJI]` annotations so you can reference exact Telegram messages.\n\n"+
+			"To control delivery of your final Telegram response, you may put exactly one hidden delivery block on the first line of your final response.\n"+
+			"Format:\n"+
+			"`[[reply_to:<message_id|current|parent|chat>;react_to:<message_id|current|parent>:<emoji>;react_to:<message_id|current|parent>:<emoji>;text_reply=<true|false>]]`\n\n"+
+			"Rules:\n"+
+			"- `reply_to` is optional; use `chat` for a normal non-reply message\n"+
+			"- `react_to` is optional and may appear multiple times\n"+
+			"- `text_reply` defaults to `true`; set `text_reply=false` for a reaction-only response\n"+
+			"- after the block, add a blank line and then the user-visible message body\n"+
+			"- if `text_reply=false`, do not include any visible message body after the block\n"+
+			"- allowed reaction emoji: %s\n"+
+			"- do not mention the hidden block in the visible message body\n"+
+			"- the `message` tool is unavailable in this chat; use the hidden delivery block for normal replies\n\n"+
+			"Do not use the `message` tool for the normal reply in this chat; use the final answer plus the hidden delivery block when you need reply routing.", 
+		replyCtx.CurrentMessageID,
+		parentID,
+		emojiHint,
+	)
+}
+
+func annotateMessageForPrompt(msg providers.Message) providers.Message {
+	annotated := msg
+	if prefix := messageHistoryAnnotation(msg); prefix != "" {
+		annotated.Content = prefix + msg.Content
+	}
+	return annotated
+}
 func (cb *ContextBuilder) BuildMessages(
 	history []providers.Message,
 	summary string,
 	currentMessage string,
 	media []string,
 	channel, chatID, senderID, senderDisplayName string,
+	replyCtx *ReplyContextInfo,
 	activeSkills ...string,
 ) []providers.Message {
 	messages := []providers.Message{}
@@ -526,6 +600,7 @@ func (cb *ContextBuilder) BuildMessages(
 
 	// Build short dynamic context (time, runtime, session) — changes per request
 	dynamicCtx := cb.buildDynamicContext(channel, chatID, senderID, senderDisplayName)
+	replyRoutingCtx := buildTelegramDeliveryContext(channel, replyCtx, cb.telegramAllowedReactionEmoji)
 
 	// Compose a single system message: static (cached) + dynamic + optional summary.
 	// Keeping all system content in one message ensures every provider adapter can
@@ -546,6 +621,11 @@ func (cb *ContextBuilder) BuildMessages(
 	if skillsText := cb.buildActiveSkillsContext(activeSkills); skillsText != "" {
 		stringParts = append(stringParts, skillsText)
 		contentBlocks = append(contentBlocks, providers.ContentBlock{Type: "text", Text: skillsText})
+	}
+
+	if replyRoutingCtx != "" {
+		stringParts = append(stringParts, replyRoutingCtx)
+		contentBlocks = append(contentBlocks, providers.ContentBlock{Type: "text", Text: replyRoutingCtx})
 	}
 
 	if summary != "" {
@@ -596,11 +676,7 @@ func (cb *ContextBuilder) BuildMessages(
 	// Add conversation history, annotating messages that have threading IDs
 	// so the LLM can navigate thread structure from persisted sessions.
 	for _, msg := range history {
-		annotated := msg
-		if prefix := messageHistoryAnnotation(msg); prefix != "" {
-			annotated.Content = prefix + msg.Content
-		}
-		messages = append(messages, annotated)
+		messages = append(messages, annotateMessageForPrompt(msg))
 	}
 
 	// Add current user message
@@ -609,10 +685,14 @@ func (cb *ContextBuilder) BuildMessages(
 			Role:    "user",
 			Content: currentMessage,
 		}
+		if replyCtx != nil {
+			msg.MessageIDs = []string{strings.TrimSpace(replyCtx.CurrentMessageID)}
+			msg.ReplyToMessageID = strings.TrimSpace(replyCtx.ParentMessageID)
+		}
 		if len(media) > 0 {
 			msg.Media = media
 		}
-		messages = append(messages, msg)
+		messages = append(messages, annotateMessageForPrompt(msg))
 	}
 
 	return messages

@@ -16,6 +16,27 @@ type compactionNoteMetadata struct {
 	OmittedMessages bool
 }
 
+// messageThreadAnnotation returns the delivery/thread annotation prefix for a
+// message, e.g. "[msg:#5, reply_to:#3, react_to:#5=❤️] " or "" if absent.
+func messageThreadAnnotation(msg providers.Message) string {
+	parts := make([]string, 0, 2+len(msg.Reactions))
+	if len(msg.MessageIDs) > 0 && strings.TrimSpace(msg.MessageIDs[0]) != "" {
+		parts = append(parts, fmt.Sprintf("msg:#%s", msg.MessageIDs[0]))
+	}
+	if msg.ReplyToMessageID != "" {
+		parts = append(parts, fmt.Sprintf("reply_to:#%s", msg.ReplyToMessageID))
+	}
+	for _, reaction := range msg.Reactions {
+		if reaction.TargetMessageID == "" || reaction.Emoji == "" {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("react_to:#%s=%s", reaction.TargetMessageID, reaction.Emoji))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("[%s] ", strings.Join(parts, ", "))
+}
 func formatConversationMessages(batch []providers.Message) string {
 	var sb strings.Builder
 	for _, m := range batch {
@@ -60,7 +81,7 @@ Distinguish clearly between confirmed facts or decisions, tentative ideas, and u
 Omit small talk, repetition, exploratory dead ends, and details that are interesting but do not change future behavior.
 If newer statements conflict with older ones, prefer the newer statement and note the change briefly.
 When summarizing preferences, plans, or output requirements, prefer the latest explicit user instruction.
-Messages may carry [msg:#ID] and [reply_to:#PARENT] annotations showing thread structure. Mention thread structure only if it remains unresolved or operationally relevant for future context.
+Messages may carry [msg:#ID], [reply_to:#PARENT], and [react_to:#ID=EMOJI] annotations showing thread structure and silent acknowledgements. Mention thread structure only if it remains unresolved or operationally relevant for future context.
 Do not invent facts.
 Write in the dominant language of the conversation.
 Keep the result under 180 words.

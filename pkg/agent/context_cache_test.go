@@ -82,7 +82,7 @@ func TestSingleSystemMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msgs := cb.BuildMessages(tt.history, tt.summary, tt.message, nil, "test", "chat1", "", "")
+			msgs := cb.BuildMessages(tt.history, tt.summary, tt.message, nil, "test", "chat1", "", "", nil)
 
 			systemCount := 0
 			for _, m := range msgs {
@@ -168,7 +168,7 @@ func TestBuildMessages_CurrentSenderDynamicContext(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			msgs := cb.BuildMessages(nil, "", "hello", nil, "discord", "chat1", tt.senderID, tt.senderDisplayName)
+			msgs := cb.BuildMessages(nil, "", "hello", nil, "discord", "chat1", tt.senderID, tt.senderDisplayName, nil)
 			sys := msgs[0].Content
 
 			if tt.wantSection {
@@ -185,6 +185,35 @@ func TestBuildMessages_CurrentSenderDynamicContext(t *testing.T) {
 				t.Fatalf("system prompt should omit Current Sender section:\n%s", sys)
 			}
 		})
+	}
+}
+
+func TestBuildMessages_TelegramDeliveryContext(t *testing.T) {
+	tmpDir := setupWorkspace(t, map[string]string{
+		"IDENTITY.md": "# Identity\nTest agent.",
+	})
+	defer os.RemoveAll(tmpDir)
+
+	cb := NewContextBuilder(tmpDir)
+	msgs := cb.BuildMessages(nil, "", "hello", nil, "telegram", "chat1", "", "", &ReplyContextInfo{
+		CurrentMessageID: "910",
+		ParentMessageID:  "905",
+	})
+	sys := msgs[0].Content
+	if !strings.Contains(sys, "## Telegram Delivery") {
+		t.Fatal("system prompt missing Telegram delivery section")
+	}
+	if !strings.Contains(sys, "Current inbound message ID: 910") {
+		t.Fatal("system prompt missing current message ID")
+	}
+	if !strings.Contains(sys, "[[reply_to:<message_id|current|parent|chat>;react_to:<message_id|current|parent>:<emoji>;react_to:<message_id|current|parent>:<emoji>;text_reply=<true|false>]]") {
+		t.Fatal("system prompt missing final delivery block guidance")
+	}
+	if !strings.Contains(sys, "the `message` tool is unavailable in this chat; use the hidden delivery block for normal replies") {
+		t.Fatal("system prompt missing guidance about hidden-block delivery")
+	}
+	if !strings.Contains(sys, "Do not use the `message` tool for the normal reply in this chat") {
+		t.Fatal("system prompt missing guidance to avoid message tool for normal replies")
 	}
 }
 
@@ -638,7 +667,7 @@ func TestConcurrentBuildSystemPromptWithCache(t *testing.T) {
 				}
 
 				// Also exercise BuildMessages concurrently
-				msgs := cb.BuildMessages(nil, "", "hello", nil, "test", "chat", "", "")
+				msgs := cb.BuildMessages(nil, "", "hello", nil, "test", "chat", "", "", nil)
 				if len(msgs) < 2 {
 					errs <- "BuildMessages returned fewer than 2 messages"
 					return
@@ -726,6 +755,6 @@ func BenchmarkBuildMessagesWithCache(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = cb.BuildMessages(history, "summary", "new message", nil, "cli", "test", "", "")
+		_ = cb.BuildMessages(history, "summary", "new message", nil, "cli", "test", "", "", nil)
 	}
 }

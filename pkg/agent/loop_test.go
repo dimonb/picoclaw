@@ -880,6 +880,247 @@ func TestProcessMessage_UsesRouteSessionKey(t *testing.T) {
 	}
 }
 
+func TestParseFinalReplyDirective(t *testing.T) {
+	content, replyTo := parseFinalReplyDirective(
+		"telegram",
+		&ReplyContextInfo{
+			CurrentMessageID: "910",
+			ParentMessageID:  "905",
+		},
+		"[[reply_to:parent;react_to:current:❤️;react_to:905:🔥;text_reply=true]]\n\nThreaded answer",
+	)
+
+	if content != "Threaded answer" {
+		t.Fatalf("content=%q", content)
+	}
+	if replyTo != "905" {
+		t.Fatalf("replyTo=%q", replyTo)
+	}
+}
+
+func TestResolveFinalResponse_TelegramDeliveryDirectiveSupportsSilentMultiReaction(t *testing.T) {
+	response := resolveFinalResponse(
+		"telegram",
+		&ReplyContextInfo{
+			CurrentMessageID: "910",
+			ParentMessageID:  "905",
+		},
+		"[[reply_to:parent;react_to:current:❤️;react_to:905:🔥;text_reply=false]]\n",
+	)
+
+	if response.ReplyToMessageID != "905" {
+		t.Fatalf("reply_to_message_id=%q", response.ReplyToMessageID)
+	}
+	if !response.SuppressTextReply {
+		t.Fatal("expected SuppressTextReply=true")
+	}
+	if len(response.Reactions) != 2 {
+		t.Fatalf("reaction len=%d", len(response.Reactions))
+	}
+	if response.Reactions[0].TargetMessageID != "910" || response.Reactions[0].Emoji != "❤️" {
+		t.Fatalf("unexpected reaction[0]=%+v", response.Reactions[0])
+	}
+	if response.Reactions[1].TargetMessageID != "905" || response.Reactions[1].Emoji != "🔥" {
+		t.Fatalf("unexpected reaction[1]=%+v", response.Reactions[1])
+	}
+}
+
+func TestResolveFinalResponse_TelegramDeliveryDirectiveIgnoresMsgKey(t *testing.T) {
+	response := resolveFinalResponse(
+		"telegram",
+		&ReplyContextInfo{
+			CurrentMessageID: "910",
+			ParentMessageID:  "905",
+		},
+		"[[msg:#325;reply_to:parent;react_to:current:❤️;text_reply=true]]\n\nThreaded answer",
+	)
+
+	if response.Content != "Threaded answer" {
+		t.Fatalf("content=%q", response.Content)
+	}
+	if response.ReplyToMessageID != "905" {
+		t.Fatalf("reply_to_message_id=%q", response.ReplyToMessageID)
+	}
+	if response.SuppressTextReply {
+		t.Fatal("expected SuppressTextReply=false")
+	}
+	if len(response.Reactions) != 1 {
+		t.Fatalf("reaction len=%d", len(response.Reactions))
+	}
+	if response.Reactions[0].TargetMessageID != "910" || response.Reactions[0].Emoji != "❤️" {
+		t.Fatalf("unexpected reaction[0]=%+v", response.Reactions[0])
+	}
+}
+
+func TestResolveFinalResponse_InvalidTelegramDeliveryDirectiveDoesNotPartiallyApply(t *testing.T) {
+	response := resolveFinalResponse(
+		"telegram",
+		&ReplyContextInfo{
+			CurrentMessageID: "910",
+			ParentMessageID:  "905",
+		},
+		"[[reply_to:parent;react_to:current:❤️;unknown=true;text_reply=false]]\n\nVisible answer",
+	)
+
+	if response.ReplyToMessageID != "" {
+		t.Fatalf("reply_to_message_id=%q", response.ReplyToMessageID)
+	}
+	if response.SuppressTextReply {
+		t.Fatal("expected invalid directive to leave text reply enabled")
+	}
+	if len(response.Reactions) != 0 {
+		t.Fatalf("expected no reactions on invalid directive, got %+v", response.Reactions)
+	}
+	if response.Content != "Visible answer" {
+		t.Fatalf("content=%q", response.Content)
+	}
+}
+
+func TestResolveFinalResponse_TelegramSingleBracketDirectiveReplyToCurrent(t *testing.T) {
+	response := resolveFinalResponse(
+		"telegram",
+		&ReplyContextInfo{
+			CurrentMessageID: "281",
+			ParentMessageID:  "275",
+		},
+		"[reply_to:current] готово",
+	)
+
+	if response.Content != "готово" {
+		t.Fatalf("content=%q", response.Content)
+	}
+	if response.ReplyToMessageID != "281" {
+		t.Fatalf("reply_to_message_id=%q", response.ReplyToMessageID)
+	}
+	if response.SuppressTextReply {
+		t.Fatal("expected text reply to stay enabled")
+	}
+	if len(response.Reactions) != 0 {
+		t.Fatalf("unexpected reactions: %+v", response.Reactions)
+	}
+}
+
+func TestProcessMessage_TelegramFinalDirectiveSetsReplyTarget(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &simpleMockProvider{response: "[[reply_to:parent;text_reply=true]]\n\nThreaded answer"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	msg := bus.InboundMessage{
+		Channel:   "telegram",
+		SenderID:  "user1",
+		ChatID:    "chat1",
+		Content:   "hello",
+		MessageID: "910",
+		Metadata: map[string]string{
+			"reply_to_message_id": "905",
+		},
+		Peer: bus.Peer{
+			Kind: "direct",
+			ID:   "user1",
+		},
+	}
+
+	response, err := al.processMessage(context.Background(), msg)
+	if err != nil {
+		t.Fatalf("processMessage failed: %v", err)
+	}
+	if response.Content != "Threaded answer" {
+		t.Fatalf("content=%q", response.Content)
+	}
+	if response.ReplyToMessageID != "905" {
+		t.Fatalf("reply_to_message_id=%q", response.ReplyToMessageID)
+	}
+}
+
+func TestRun_PublishesTelegramReplyTargetFromFinalDirective(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &simpleMockProvider{response: "[[reply_to:parent;text_reply=true]]\n\nThreaded answer"}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- al.Run(ctx)
+	}()
+	defer func() {
+		al.Stop()
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatal("agent loop did not stop in time")
+		}
+	}()
+
+	inbound := bus.InboundMessage{
+		Channel:   "telegram",
+		SenderID:  "user1",
+		ChatID:    "chat1",
+		Content:   "hello",
+		MessageID: "910",
+		Metadata: map[string]string{
+			"reply_to_message_id": "905",
+		},
+		Peer: bus.Peer{
+			Kind: "direct",
+			ID:   "user1",
+		},
+	}
+	if err := msgBus.PublishInbound(context.Background(), inbound); err != nil {
+		t.Fatalf("publish inbound: %v", err)
+	}
+
+	outCtx, outCancel := context.WithTimeout(context.Background(), time.Second)
+	defer outCancel()
+
+	outbound, ok := msgBus.SubscribeOutbound(outCtx)
+	if !ok {
+		t.Fatal("expected outbound message")
+	}
+	if outbound.Content != "Threaded answer" {
+		t.Fatalf("content=%q", outbound.Content)
+	}
+	if outbound.ReplyToMessageID != "905" {
+		t.Fatalf("reply_to_message_id=%q", outbound.ReplyToMessageID)
+	}
+}
+
 func TestProcessMessage_CommandOutcomes(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
