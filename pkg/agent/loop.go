@@ -91,6 +91,7 @@ type processOptions struct {
 	MessageID               string                   // Inbound platform message ID (for threading)
 	ReplyToMessageID        string                   // Parent message ID from inbound (for threading)
 	Sender                  *providers.MessageSender // Author identity (nil for system/automated messages)
+	MessageMetadata         map[string]string        // Trigger/source/session metadata for current message
 }
 
 type continuationTarget struct {
@@ -1149,6 +1150,30 @@ func (al *AgentLoop) resetRoundActionTools(agent *AgentInstance) {
 	}
 }
 
+func (al *AgentLoop) PublishOutboundWithHistory(
+	ctx context.Context,
+	sessionKey, channel, chatID string,
+	msg providers.Message,
+) error {
+	agent := al.GetRegistry().GetDefaultAgent()
+	if agent == nil {
+		return fmt.Errorf("no default agent available")
+	}
+	out := bus.OutboundMessage{
+		Channel:          channel,
+		ChatID:           chatID,
+		Content:          msg.Content,
+		ReplyToMessageID: msg.ReplyToMessageID,
+	}
+	out.OnDelivered = func(msgIDs []string) {
+		delivered := msg
+		delivered.MessageIDs = cloneMessageIDs(msgIDs)
+		delivered.Metadata = providers.CloneMessageMetadata(msg.Metadata)
+		agent.Sessions.AddFullMessage(sessionKey, delivered)
+		_ = agent.Sessions.Save(sessionKey)
+	}
+	return al.bus.PublishOutbound(ctx, out)
+}
 func (al *AgentLoop) normalizeFinalReactions(
 	channel string,
 	reactions []providers.MessageReaction,
@@ -1374,23 +1399,15 @@ func (al *AgentLoop) ProcessDirect(
 	return al.ProcessDirectWithChannel(ctx, content, sessionKey, "cli", "direct")
 }
 
-func (al *AgentLoop) ProcessDirectWithChannel(
+func (al *AgentLoop) ProcessDirectWithMessage(
 	ctx context.Context,
-	content, sessionKey, channel, chatID string,
+	msg bus.InboundMessage,
 ) (string, error) {
 	if err := al.ensureHooksInitialized(ctx); err != nil {
 		return "", err
 	}
 	if err := al.ensureMCPInitialized(ctx); err != nil {
 		return "", err
-	}
-
-	msg := bus.InboundMessage{
-		Channel:    channel,
-		SenderID:   "cron",
-		ChatID:     chatID,
-		Content:    content,
-		SessionKey: sessionKey,
 	}
 
 	response, err := al.processMessage(ctx, msg)
@@ -1401,6 +1418,19 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 		response.OnDelivered(nil)
 	}
 	return response.Content, nil
+}
+
+func (al *AgentLoop) ProcessDirectWithChannel(
+	ctx context.Context,
+	content, sessionKey, channel, chatID string,
+) (string, error) {
+	return al.ProcessDirectWithMessage(ctx, bus.InboundMessage{
+		Channel:    channel,
+		SenderID:   "cron",
+		ChatID:     chatID,
+		Content:    content,
+		SessionKey: sessionKey,
+	})
 }
 
 // ProcessHeartbeat processes a heartbeat request without session history.
@@ -1512,6 +1542,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		MessageID:         msg.MessageID,
 		ReplyToMessageID:  msg.ReplyToMessageID,
 		Sender:            messageSenderFromInbound(msg.Sender),
+		MessageMetadata:   messageMetadataFromInbound(msg),
 	}
 	if opts.ReplyToMessageID == "" {
 		opts.ReplyToMessageID = inboundMetadata(msg, metadataKeyReplyToMessage)
@@ -1657,6 +1688,12 @@ func (al *AgentLoop) processSystemMessage(
 		UserMessage:     fmt.Sprintf("[System: %s] %s", msg.SenderID, msg.Content),
 		DefaultResponse: "Background task completed.",
 		EnableSummary:   false,
+		MessageMetadata: map[string]string{
+			providers.MessageMetaSourceKind: providers.MessageSourceSystem,
+			providers.MessageMetaChannel:    originChannel,
+			providers.MessageMetaChatID:     originChatID,
+			providers.MessageMetaSenderID:   msg.SenderID,
+		},
 		// System messages are synthetic inbound events, so there is no delivery
 		// callback chain from a channel send to feed assistant message IDs back.
 		SendResponse: true,
@@ -1716,17 +1753,6 @@ func (al *AgentLoop) runAgentLoop(
 	response.Reactions = al.normalizeFinalReactions(opts.Channel, response.Reactions)
 	response.HandledExternally = directActionHandled
 
-	if response.SuppressTextReply && len(response.Reactions) == 0 {
-		logger.WarnCF("agent", "Ignoring text_reply=false with no deliverable reactions", map[string]any{
-			"channel":        opts.Channel,
-			"chat_id":        opts.ChatID,
-			"session_key":    opts.SessionKey,
-			"raw_content":    utils.Truncate(result.finalContent, 160),
-			"content_len":    len(response.Content),
-			"reaction_count": 0,
-		})
-		response.SuppressTextReply = false
-	}
 	if response.SuppressTextReply && len(response.Reactions) > 0 && al.channelManager == nil {
 		logger.WarnCF("agent", "Ignoring text_reply=false without channel manager for reaction delivery", map[string]any{
 			"channel":        opts.Channel,
@@ -1758,6 +1784,7 @@ func (al *AgentLoop) runAgentLoop(
 				MessageIDs:       cloneMessageIDs(msgIDs),
 				ReplyToMessageID: response.ReplyToMessageID,
 				Reactions:        deliveredReactions,
+				Metadata:         outboundMessageMetadata(opts.Channel, opts.ChatID, opts.MessageMetadata),
 			}
 			agent.Sessions.AddFullMessage(opts.SessionKey, assistantMsg)
 			if saveErr := agent.Sessions.Save(opts.SessionKey); saveErr != nil {
@@ -1780,6 +1807,7 @@ func (al *AgentLoop) runAgentLoop(
 				Role:             "assistant",
 				ReplyToMessageID: response.ReplyToMessageID,
 				Reactions:        deliveredReactions,
+				Metadata:         outboundMessageMetadata(opts.Channel, opts.ChatID, opts.MessageMetadata),
 			}
 			agent.Sessions.AddFullMessage(opts.SessionKey, assistantMsg)
 			if saveErr := agent.Sessions.Save(opts.SessionKey); saveErr != nil {
@@ -1893,7 +1921,7 @@ func parseTelegramDeliveryDirective(
 	inner, matched := extractTelegramDeliveryHeaderInner(header)
 	if !matched {
 		if strings.HasPrefix(header, "[[") {
-			if idx := strings.Index(firstLine, "]]" ); idx >= 0 {
+			if idx := strings.Index(firstLine, "]]"); idx >= 0 {
 				header = strings.TrimSpace(firstLine[:idx+2])
 				inner, matched = extractTelegramDeliveryHeaderInner(header)
 				if matched {
@@ -2207,6 +2235,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 		ts.opts.SenderID,
 		ts.opts.SenderDisplayName,
 		replyContextFromOptions(ts.opts),
+		ts.opts.MessageMetadata,
 		activeSkillNames(ts.agent, ts.opts)...,
 	)
 
@@ -2238,6 +2267,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 				ts.media, ts.channel, ts.chatID,
 				ts.opts.SenderID, ts.opts.SenderDisplayName,
 				replyContextFromOptions(ts.opts),
+				ts.opts.MessageMetadata,
 				activeSkillNames(ts.agent, ts.opts)...,
 			)
 			messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
@@ -2253,6 +2283,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 			MessageIDs:       singleMessageIDs(ts.opts.MessageID),
 			ReplyToMessageID: ts.opts.ReplyToMessageID,
 			Sender:           ts.opts.Sender,
+			Metadata:         providers.CloneMessageMetadata(ts.opts.MessageMetadata),
 		}
 		ts.agent.Sessions.AddFullMessage(ts.sessionKey, rootMsg)
 		ts.recordPersistedMessage(rootMsg)
@@ -2605,6 +2636,7 @@ turnLoop:
 					newHistory, newSummary, "",
 					nil, ts.channel, ts.chatID, ts.opts.SenderID, ts.opts.SenderDisplayName,
 					replyContextFromOptions(ts.opts),
+					ts.opts.MessageMetadata,
 					activeSkillNames(ts.agent, ts.opts)...,
 				)
 				callMessages = messages
@@ -3701,6 +3733,7 @@ func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string, t
 		},
 	)
 }
+
 // findNearestUserMessage finds the nearest user message to the given index.
 // It searches backward first, then forward if no user message is found.
 func (al *AgentLoop) findNearestUserMessage(messages []providers.Message, mid int) int {
@@ -4384,6 +4417,69 @@ func extractParentPeer(msg bus.InboundMessage) *routing.RoutePeer {
 		return nil
 	}
 	return &routing.RoutePeer{Kind: parentKind, ID: parentID}
+}
+
+func messageMetadataFromInbound(msg bus.InboundMessage) map[string]string {
+	meta := map[string]string{}
+	if msg.Channel != "" {
+		meta[providers.MessageMetaChannel] = msg.Channel
+	}
+	if msg.ChatID != "" {
+		meta[providers.MessageMetaChatID] = msg.ChatID
+	}
+	if msg.SenderID != "" {
+		meta[providers.MessageMetaSenderID] = msg.SenderID
+	}
+	if msg.Peer.Kind != "" {
+		meta[providers.MessageMetaPeerKind] = msg.Peer.Kind
+	}
+	if msg.Peer.ID != "" {
+		meta[providers.MessageMetaPeerID] = msg.Peer.ID
+	}
+
+	sourceKind := strings.TrimSpace(inboundMetadata(msg, providers.MessageMetaSourceKind))
+	switch {
+	case sourceKind != "":
+		meta[providers.MessageMetaSourceKind] = sourceKind
+	case msg.Channel == "system":
+		meta[providers.MessageMetaSourceKind] = providers.MessageSourceSystem
+	case msg.SenderID != "" && msg.SenderID != "cron":
+		meta[providers.MessageMetaSourceKind] = providers.MessageSourceChannel
+	}
+
+	if triggerKind := strings.TrimSpace(inboundMetadata(msg, providers.MessageMetaTriggerKind)); triggerKind != "" {
+		meta[providers.MessageMetaTriggerKind] = triggerKind
+	}
+	if triggerID := strings.TrimSpace(inboundMetadata(msg, providers.MessageMetaTriggerID)); triggerID != "" {
+		meta[providers.MessageMetaTriggerID] = triggerID
+	}
+	if dispatchMode := strings.TrimSpace(inboundMetadata(msg, providers.MessageMetaDispatch)); dispatchMode != "" {
+		meta[providers.MessageMetaDispatch] = dispatchMode
+	}
+
+	return providers.CloneMessageMetadata(meta)
+}
+
+func outboundMessageMetadata(channel, chatID string, requestMetadata map[string]string) map[string]string {
+	meta := map[string]string{
+		providers.MessageMetaSourceKind: providers.MessageSourceAssistant,
+	}
+	if channel != "" {
+		meta[providers.MessageMetaChannel] = channel
+	}
+	if chatID != "" {
+		meta[providers.MessageMetaChatID] = chatID
+	}
+	if triggerKind := strings.TrimSpace(requestMetadata[providers.MessageMetaTriggerKind]); triggerKind != "" {
+		meta[providers.MessageMetaTriggerKind] = triggerKind
+	}
+	if triggerID := strings.TrimSpace(requestMetadata[providers.MessageMetaTriggerID]); triggerID != "" {
+		meta[providers.MessageMetaTriggerID] = triggerID
+	}
+	if dispatchMode := strings.TrimSpace(requestMetadata[providers.MessageMetaDispatch]); dispatchMode != "" {
+		meta[providers.MessageMetaDispatch] = dispatchMode
+	}
+	return providers.CloneMessageMetadata(meta)
 }
 
 // isNativeSearchProvider reports whether the given LLM provider implements

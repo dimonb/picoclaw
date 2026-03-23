@@ -32,6 +32,23 @@ func messageThreadAnnotation(msg providers.Message) string {
 		}
 		parts = append(parts, fmt.Sprintf("react_to:#%s=%s", reaction.TargetMessageID, reaction.Emoji))
 	}
+	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
+		sourceKind != providers.MessageSourceChannel && sourceKind != providers.MessageSourceAssistant {
+		parts = append(parts, fmt.Sprintf("source:%s", sourceKind))
+	}
+	if triggerKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerKind]); triggerKind != "" {
+		triggerLabel := triggerKind
+		if triggerID := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerID]); triggerID != "" {
+			triggerLabel += "#" + triggerID
+		}
+		parts = append(parts, fmt.Sprintf("trigger:%s", triggerLabel))
+	}
+	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
+		sourceKind != providers.MessageSourceChannel {
+		if channel := strings.TrimSpace(msg.Metadata[providers.MessageMetaChannel]); channel != "" {
+			parts = append(parts, fmt.Sprintf("via:%s", channel))
+		}
+	}
 	if len(parts) == 0 {
 		return ""
 	}
@@ -81,7 +98,7 @@ Distinguish clearly between confirmed facts or decisions, tentative ideas, and u
 Omit small talk, repetition, exploratory dead ends, and details that are interesting but do not change future behavior.
 If newer statements conflict with older ones, prefer the newer statement and note the change briefly.
 When summarizing preferences, plans, or output requirements, prefer the latest explicit user instruction.
-Messages may carry [msg:#ID], [reply_to:#PARENT], and [react_to:#ID=EMOJI] annotations showing thread structure and silent acknowledgements. Mention thread structure only if it remains unresolved or operationally relevant for future context.
+Messages may carry [msg:#ID], [reply_to:#PARENT], [react_to:#ID=EMOJI], [source:KIND], [trigger:KIND#ID], and [via:CHANNEL] annotations showing thread structure, delivery path, and automation triggers. Mention thread structure only if it remains unresolved or operationally relevant for future context.
 Do not invent facts.
 Write in the dominant language of the conversation.
 Keep the result under 180 words.

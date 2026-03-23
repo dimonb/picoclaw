@@ -504,7 +504,7 @@ func formatCurrentSenderLine(senderID, senderDisplayName string) string {
 	}
 }
 
-func (cb *ContextBuilder) buildDynamicContext(channel, chatID, senderID, senderDisplayName string) string {
+func (cb *ContextBuilder) buildDynamicContext(channel, chatID, senderID, senderDisplayName string, messageMetadata map[string]string) string {
 	now := time.Now().Format("2006-01-02 15:04 (Monday)")
 	rt := fmt.Sprintf("%s %s, Go %s", runtime.GOOS, runtime.GOARCH, runtime.Version())
 
@@ -516,6 +516,20 @@ func (cb *ContextBuilder) buildDynamicContext(channel, chatID, senderID, senderD
 	}
 	if senderLine := formatCurrentSenderLine(senderID, senderDisplayName); senderLine != "" {
 		fmt.Fprintf(&sb, "\n\n## Current Sender\n%s", senderLine)
+	}
+
+	triggerKind := strings.TrimSpace(messageMetadata[providers.MessageMetaTriggerKind])
+	if triggerKind != "" {
+		fmt.Fprintf(&sb, "\n\n## Current Trigger\nType: %s", triggerKind)
+		if triggerID := strings.TrimSpace(messageMetadata[providers.MessageMetaTriggerID]); triggerID != "" {
+			fmt.Fprintf(&sb, "\nTrigger ID: %s", triggerID)
+		}
+		if sourceKind := strings.TrimSpace(messageMetadata[providers.MessageMetaSourceKind]); sourceKind != "" {
+			fmt.Fprintf(&sb, "\nSource: %s", sourceKind)
+		}
+		if triggerKind == providers.MessageTriggerCron {
+			fmt.Fprintf(&sb, "\nThis turn was triggered automatically by a scheduled cron job. The next user message is synthetic automation input for the bound session.")
+		}
 	}
 
 	return sb.String()
@@ -562,7 +576,7 @@ func buildTelegramDeliveryContext(channel string, replyCtx *ReplyContextInfo, al
 			"- allowed reaction emoji: %s\n"+
 			"- do not mention the hidden block in the visible message body\n"+
 			"- the `message` tool is unavailable in this chat; use the hidden delivery block for normal replies\n\n"+
-			"Do not use the `message` tool for the normal reply in this chat; use the final answer plus the hidden delivery block when you need reply routing.", 
+			"Do not use the `message` tool for the normal reply in this chat; use the final answer plus the hidden delivery block when you need reply routing.",
 		replyCtx.CurrentMessageID,
 		parentID,
 		emojiHint,
@@ -583,6 +597,7 @@ func (cb *ContextBuilder) BuildMessages(
 	media []string,
 	channel, chatID, senderID, senderDisplayName string,
 	replyCtx *ReplyContextInfo,
+	messageMetadata map[string]string,
 	activeSkills ...string,
 ) []providers.Message {
 	messages := []providers.Message{}
@@ -599,7 +614,7 @@ func (cb *ContextBuilder) BuildMessages(
 	staticPrompt := cb.BuildSystemPromptWithCache()
 
 	// Build short dynamic context (time, runtime, session) — changes per request
-	dynamicCtx := cb.buildDynamicContext(channel, chatID, senderID, senderDisplayName)
+	dynamicCtx := cb.buildDynamicContext(channel, chatID, senderID, senderDisplayName, messageMetadata)
 	replyRoutingCtx := buildTelegramDeliveryContext(channel, replyCtx, cb.telegramAllowedReactionEmoji)
 
 	// Compose a single system message: static (cached) + dynamic + optional summary.
@@ -682,8 +697,9 @@ func (cb *ContextBuilder) BuildMessages(
 	// Add current user message
 	if strings.TrimSpace(currentMessage) != "" {
 		msg := providers.Message{
-			Role:    "user",
-			Content: currentMessage,
+			Role:     "user",
+			Content:  currentMessage,
+			Metadata: providers.CloneMessageMetadata(messageMetadata),
 		}
 		if replyCtx != nil {
 			msg.MessageIDs = []string{strings.TrimSpace(replyCtx.CurrentMessageID)}
@@ -977,19 +993,35 @@ func messageSenderAnnotation(sender *providers.MessageSender) string {
 }
 
 func messageThreadAnnotationBody(msg providers.Message) string {
+	parts := make([]string, 0, 5)
 	msgIDs := msg.MessageIDs
 	formattedIDs := strings.Join(msgIDs, ",#")
 	if formattedIDs != "" {
 		formattedIDs = "#" + formattedIDs
+		parts = append(parts, fmt.Sprintf("msgs:%s", formattedIDs))
 	}
-	switch {
-	case len(msgIDs) > 0 && msg.ReplyToMessageID != "":
-		return fmt.Sprintf("msgs:%s, reply_to:#%s", formattedIDs, msg.ReplyToMessageID)
-	case len(msgIDs) > 0:
-		return fmt.Sprintf("msgs:%s", formattedIDs)
-	case msg.ReplyToMessageID != "":
-		return fmt.Sprintf("reply_to:#%s", msg.ReplyToMessageID)
-	default:
+	if msg.ReplyToMessageID != "" {
+		parts = append(parts, fmt.Sprintf("reply_to:#%s", msg.ReplyToMessageID))
+	}
+	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
+		sourceKind != providers.MessageSourceChannel && sourceKind != providers.MessageSourceAssistant {
+		parts = append(parts, fmt.Sprintf("source:%s", sourceKind))
+	}
+	if triggerKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerKind]); triggerKind != "" {
+		triggerLabel := triggerKind
+		if triggerID := strings.TrimSpace(msg.Metadata[providers.MessageMetaTriggerID]); triggerID != "" {
+			triggerLabel += "#" + triggerID
+		}
+		parts = append(parts, fmt.Sprintf("trigger:%s", triggerLabel))
+	}
+	if sourceKind := strings.TrimSpace(msg.Metadata[providers.MessageMetaSourceKind]); sourceKind != "" &&
+		sourceKind != providers.MessageSourceChannel {
+		if channel := strings.TrimSpace(msg.Metadata[providers.MessageMetaChannel]); channel != "" {
+			parts = append(parts, fmt.Sprintf("via:%s", channel))
+		}
+	}
+	if len(parts) == 0 {
 		return ""
 	}
+	return strings.Join(parts, ", ")
 }

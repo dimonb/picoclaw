@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,13 +24,43 @@ type CronSchedule struct {
 	TZ      string `json:"tz,omitempty"`
 }
 
+const (
+	ModeAgent  = "agent"
+	ModeDirect = "direct"
+)
+
 type CronPayload struct {
-	Kind    string `json:"kind"`
-	Message string `json:"message"`
-	Command string `json:"command,omitempty"`
-	Deliver bool   `json:"deliver"`
-	Channel string `json:"channel,omitempty"`
-	To      string `json:"to,omitempty"`
+	Kind       string `json:"kind"`
+	Message    string `json:"message"`
+	Command    string `json:"command,omitempty"`
+	Mode       string `json:"mode,omitempty"`
+	Deliver    *bool  `json:"deliver,omitempty"` // legacy alias for old persisted jobs
+	Channel    string `json:"channel,omitempty"`
+	To         string `json:"to,omitempty"`
+	SessionKey string `json:"sessionKey,omitempty"`
+}
+
+func NormalizeMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", ModeAgent:
+		return ModeAgent
+	case ModeDirect:
+		return ModeDirect
+	default:
+		return ""
+	}
+}
+
+func (p CronPayload) EffectiveMode() string {
+	if rawMode := strings.TrimSpace(p.Mode); rawMode != "" {
+		if mode := NormalizeMode(rawMode); mode != "" {
+			return mode
+		}
+	}
+	if p.Deliver != nil && *p.Deliver {
+		return ModeDirect
+	}
+	return ModeAgent
 }
 
 type CronJobState struct {
@@ -348,9 +379,23 @@ func (cs *CronService) recomputeNextRuns() {
 	now := time.Now().UnixMilli()
 	for i := range cs.store.Jobs {
 		job := &cs.store.Jobs[i]
-		if job.Enabled {
-			job.State.NextRunAtMS = cs.computeNextRun(&job.Schedule, now)
+		if !job.Enabled {
+			continue
 		}
+
+		// Recovery semantics for overdue one-shot jobs:
+		// if an `at` job was persisted but the process restarts after its target
+		// time and before execution, run it immediately on startup instead of
+		// silently dropping it by setting NextRunAtMS=nil.
+		if job.Schedule.Kind == "at" && job.Schedule.AtMS != nil {
+			if job.State.LastRunAtMS == nil && *job.Schedule.AtMS <= now {
+				overdueNow := now
+				job.State.NextRunAtMS = &overdueNow
+				continue
+			}
+		}
+
+		job.State.NextRunAtMS = cs.computeNextRun(&job.Schedule, now)
 	}
 }
 
@@ -409,8 +454,7 @@ func (cs *CronService) AddJob(
 	name string,
 	schedule CronSchedule,
 	message string,
-	deliver bool,
-	channel, to string,
+	mode, channel, to, sessionKey string,
 ) (*CronJob, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
@@ -426,11 +470,12 @@ func (cs *CronService) AddJob(
 		Enabled:  true,
 		Schedule: schedule,
 		Payload: CronPayload{
-			Kind:    "agent_turn",
-			Message: message,
-			Deliver: deliver,
-			Channel: channel,
-			To:      to,
+			Kind:       "agent_turn",
+			Message:    message,
+			Mode:       NormalizeMode(mode),
+			Channel:    channel,
+			To:         to,
+			SessionKey: sessionKey,
 		},
 		State: CronJobState{
 			NextRunAtMS: cs.computeNextRun(&schedule, now),

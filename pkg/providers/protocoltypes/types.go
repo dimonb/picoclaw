@@ -87,7 +87,8 @@ type Message struct {
 	MessageIDs       []string          `json:"message_ids,omitempty"`         // Platform message IDs
 	ReplyToMessageID string            `json:"reply_to_message_id,omitempty"` // Parent message ID (for threading)
 	Reactions        []MessageReaction `json:"reactions,omitempty"`
-	Sender           *MessageSender    `json:"sender,omitempty"`              // Author identity (user messages only)
+	Sender           *MessageSender    `json:"sender,omitempty"` // Author identity (user messages only)
+	Metadata         map[string]string `json:"metadata,omitempty"`
 }
 
 type ToolDefinition struct {

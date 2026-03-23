@@ -10,6 +10,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/cron"
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 func newTestCronToolWithConfig(t *testing.T, cfg *config.Config) *CronTool {
@@ -31,7 +32,9 @@ func newTestCronTool(t *testing.T) *CronTool {
 
 // TestCronTool_CommandBlockedFromRemoteChannel verifies command scheduling is restricted to internal channels
 func TestCronTool_CommandBlockedFromRemoteChannel(t *testing.T) {
-	tool := newTestCronTool(t)
+	cfg := config.DefaultConfig()
+	cfg.Tools.Exec.AllowRemote = false
+	tool := newTestCronToolWithConfig(t, cfg)
 	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
 	result := tool.Execute(ctx, map[string]any{
 		"action":          "add",
@@ -46,6 +49,23 @@ func TestCronTool_CommandBlockedFromRemoteChannel(t *testing.T) {
 	}
 	if !strings.Contains(result.ForLLM, "restricted to internal channels") {
 		t.Errorf("expected 'restricted to internal channels', got: %s", result.ForLLM)
+	}
+}
+
+func TestCronTool_CommandAllowedFromRemoteChannelWhenExecAllowRemote(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Exec.AllowRemote = true
+	tool := newTestCronToolWithConfig(t, cfg)
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "check disk",
+		"command":    "df -h",
+		"at_seconds": float64(60),
+	})
+
+	if result.IsError {
+		t.Fatalf("expected command scheduling from remote channel to succeed when allow_remote=true, got: %s", result.ForLLM)
 	}
 }
 
@@ -204,8 +224,8 @@ func TestCronTool_NonCommandJobDefaultsDeliverToFalse(t *testing.T) {
 	if len(jobs) != 1 {
 		t.Fatalf("expected 1 job, got %d", len(jobs))
 	}
-	if jobs[0].Payload.Deliver {
-		t.Fatal("expected deliver=false by default for non-command jobs")
+	if jobs[0].Payload.EffectiveMode() != cron.ModeAgent {
+		t.Fatalf("expected default mode=%q, got %q", cron.ModeAgent, jobs[0].Payload.EffectiveMode())
 	}
 }
 
@@ -237,3 +257,167 @@ func TestCronTool_ExecuteJobPublishesErrorWhenExecDisabled(t *testing.T) {
 		t.Fatalf("expected exec disabled message, got: %s", msg.Content)
 	}
 }
+
+type stubJobExecutor struct {
+	published      bool
+	processed      bool
+	sessionKey     string
+	channel        string
+	chatID         string
+	msg            providers.Message
+	inboundMessage bus.InboundMessage
+}
+
+func (s *stubJobExecutor) ProcessDirectWithMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
+	s.processed = true
+	s.inboundMessage = msg
+	return "processed", nil
+}
+
+func (s *stubJobExecutor) PublishOutboundWithHistory(ctx context.Context, sessionKey, channel, chatID string, msg providers.Message) error {
+	s.published = true
+	s.sessionKey = sessionKey
+	s.channel = channel
+	s.chatID = chatID
+	s.msg = msg
+	return nil
+}
+
+func TestCronTool_AddJobDefaultsToAgentModeAndBindsSession(t *testing.T) {
+	tool := newTestCronTool(t)
+	ctx := WithToolSessionKey(
+		WithToolContext(context.Background(), "telegram", "-1003717341079/17"),
+		"agent:main:telegram:group:-1003717341079/17",
+	)
+
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "check actions",
+		"at_seconds": float64(60),
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+
+	jobs := tool.cronService.ListJobs(false)
+	if len(jobs) != 1 {
+		t.Fatalf("jobs len=%d, want 1", len(jobs))
+	}
+	if jobs[0].Payload.Mode != cron.ModeAgent {
+		t.Fatalf("mode=%q, want %q", jobs[0].Payload.Mode, cron.ModeAgent)
+	}
+	if jobs[0].Payload.SessionKey != "agent:main:telegram:group:-1003717341079/17" {
+		t.Fatalf("session_key=%q", jobs[0].Payload.SessionKey)
+	}
+}
+
+func TestCronTool_ExecuteJobDirectModePublishesWithHistory(t *testing.T) {
+	tool := newTestCronTool(t)
+	exec := &stubJobExecutor{}
+	tool.executor = exec
+	job := &cron.CronJob{
+		ID:   "job1",
+		Name: "reminder",
+		Payload: cron.CronPayload{
+			Message:    "hello from cron",
+			Mode:       cron.ModeDirect,
+			Channel:    "telegram",
+			To:         "-1003717341079/17",
+			SessionKey: "agent:main:telegram:group:-1003717341079/17",
+		},
+	}
+
+	got := tool.ExecuteJob(context.Background(), job)
+	if got != "ok" {
+		t.Fatalf("ExecuteJob()=%q, want ok", got)
+	}
+	if !exec.published {
+		t.Fatal("expected PublishOutboundWithHistory to be called")
+	}
+	if exec.channel != "telegram" || exec.chatID != "-1003717341079/17" {
+		t.Fatalf("unexpected route: %s %s", exec.channel, exec.chatID)
+	}
+	if exec.msg.Role != "assistant" || exec.msg.Content != "hello from cron" {
+		t.Fatalf("unexpected message: %+v", exec.msg)
+	}
+	wantSession := "agent:main:telegram:group:-1003717341079/17"
+	if exec.sessionKey != wantSession {
+		t.Fatalf("sessionKey=%q, want %q", exec.sessionKey, wantSession)
+	}
+	if exec.msg.Metadata[providers.MessageMetaSourceKind] != providers.MessageSourceCron {
+		t.Fatalf("source kind=%q", exec.msg.Metadata[providers.MessageMetaSourceKind])
+	}
+	if exec.msg.Metadata[providers.MessageMetaDispatch] != cron.ModeDirect {
+		t.Fatalf("dispatch mode=%q", exec.msg.Metadata[providers.MessageMetaDispatch])
+	}
+}
+
+func TestCronTool_ExecuteJobAgentModeUsesStoredSessionKeyAndMetadata(t *testing.T) {
+	tool := newTestCronTool(t)
+	exec := &stubJobExecutor{}
+	tool.executor = exec
+	job := &cron.CronJob{
+		ID:   "job2",
+		Name: "check actions",
+		Payload: cron.CronPayload{
+			Message:    "check the actions and report",
+			Mode:       cron.ModeAgent,
+			Channel:    "telegram",
+			To:         "-1003717341079/17",
+			SessionKey: "agent:main:telegram:group:-1003717341079/17",
+		},
+	}
+
+	got := tool.ExecuteJob(context.Background(), job)
+	if got != "ok" {
+		t.Fatalf("ExecuteJob()=%q, want ok", got)
+	}
+	if !exec.processed {
+		t.Fatal("expected ProcessDirectWithMessage to be called")
+	}
+	if exec.inboundMessage.SessionKey != "agent:main:telegram:group:-1003717341079/17" {
+		t.Fatalf("sessionKey=%q", exec.inboundMessage.SessionKey)
+	}
+	if exec.inboundMessage.Metadata[providers.MessageMetaSourceKind] != providers.MessageSourceCron {
+		t.Fatalf("source kind=%q", exec.inboundMessage.Metadata[providers.MessageMetaSourceKind])
+	}
+	if exec.inboundMessage.Metadata[providers.MessageMetaTriggerKind] != providers.MessageTriggerCron {
+		t.Fatalf("trigger kind=%q", exec.inboundMessage.Metadata[providers.MessageMetaTriggerKind])
+	}
+	if exec.inboundMessage.Metadata[providers.MessageMetaTriggerID] != "job2" {
+		t.Fatalf("trigger id=%q", exec.inboundMessage.Metadata[providers.MessageMetaTriggerID])
+	}
+	if exec.inboundMessage.Metadata[providers.MessageMetaDispatch] != cron.ModeAgent {
+		t.Fatalf("dispatch mode=%q", exec.inboundMessage.Metadata[providers.MessageMetaDispatch])
+	}
+}
+
+func TestCronTool_ExecuteJobLegacyDeliverTrueMapsToDirectMode(t *testing.T) {
+	tool := newTestCronTool(t)
+	exec := &stubJobExecutor{}
+	tool.executor = exec
+	job := &cron.CronJob{
+		ID:   "job3",
+		Name: "legacy reminder",
+		Payload: cron.CronPayload{
+			Message:    "legacy direct reminder",
+			Deliver:    boolPtr(true),
+			Channel:    "telegram",
+			To:         "-1003717341079",
+			SessionKey: "agent:main:telegram:group:-1003717341079",
+		},
+	}
+
+	got := tool.ExecuteJob(context.Background(), job)
+	if got != "ok" {
+		t.Fatalf("ExecuteJob()=%q, want ok", got)
+	}
+	if !exec.published {
+		t.Fatal("expected PublishOutboundWithHistory to be called for legacy deliver=true")
+	}
+	if exec.msg.Metadata[providers.MessageMetaDispatch] != cron.ModeDirect {
+		t.Fatalf("dispatch mode=%q", exec.msg.Metadata[providers.MessageMetaDispatch])
+	}
+}
+
+func boolPtr(v bool) *bool { return &v }
