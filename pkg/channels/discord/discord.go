@@ -128,13 +128,7 @@ func (c *DiscordChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	_, err := c.SendMessageWithIDs(ctx, msg)
-	return err
-}
-
-// SendMessageWithIDs implements channels.MessageIDsSender.
-func (c *DiscordChannel) SendMessageWithIDs(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
+func (c *DiscordChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}

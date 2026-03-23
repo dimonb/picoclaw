@@ -705,14 +705,8 @@ func (m *Manager) sendWithRetry(
 
 	var lastErr error
 	var msgIDs []string
-	sender, hasMessageIDsSender := w.ch.(MessageIDsSender)
 	for attempt := 0; attempt <= maxRetries; attempt++ {
-		msgIDs = nil
-		if hasMessageIDsSender {
-			msgIDs, lastErr = sender.SendMessageWithIDs(ctx, msg)
-		} else {
-			lastErr = w.ch.Send(ctx, msg)
-		}
+		msgIDs, lastErr = w.ch.Send(ctx, msg)
 		if lastErr == nil {
 			return msgIDs, true
 		}
@@ -1161,5 +1155,6 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 
 	// Fallback: direct send (should not happen)
 	channel, _ := m.channels[channelName]
-	return channel.Send(ctx, msg)
+	_, err := channel.Send(ctx, msg)
+	return err
 }

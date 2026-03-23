@@ -108,13 +108,7 @@ func (c *SlackChannel) Stop(ctx context.Context) error {
 	return nil
 }
 
-func (c *SlackChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
-	_, err := c.SendMessageWithIDs(ctx, msg)
-	return err
-}
-
-// SendMessageWithIDs implements channels.MessageIDsSender.
-func (c *SlackChannel) SendMessageWithIDs(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
+func (c *SlackChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
 	}

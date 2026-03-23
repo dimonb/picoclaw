@@ -26,20 +26,15 @@ type mockChannel struct {
 	lastPlaceholderID string
 }
 
-func (m *mockChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+func (m *mockChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	m.sentMessages = append(m.sentMessages, msg)
-	return m.sendFn(ctx, msg)
-}
-
-func (m *mockChannel) SendMessageWithIDs(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
-	m.sentMessages = append(m.sentMessages, msg)
-	if m.sendWithIDsFn == nil {
-		if m.sendFn == nil {
-			return nil, nil
-		}
-		return nil, m.sendFn(ctx, msg)
+	if m.sendWithIDsFn != nil {
+		return m.sendWithIDsFn(ctx, msg)
 	}
-	return m.sendWithIDsFn(ctx, msg)
+	if m.sendFn == nil {
+		return nil, nil
+	}
+	return nil, m.sendFn(ctx, msg)
 }
 
 func (m *mockChannel) Start(ctx context.Context) error { return nil }
