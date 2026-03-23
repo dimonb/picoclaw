@@ -375,6 +375,9 @@ func (c *SlackChannel) handleMessageEvent(ev *slackevents.MessageEvent) {
 		"platform":   "slack",
 		"team_id":    c.teamID,
 	}
+	if threadTS != "" && threadTS != messageTS {
+		metadata["reply_to_message_id"] = threadTS
+	}
 
 	logger.DebugCF("slack", "Received message", map[string]any{
 		"sender_id":  senderID,
@@ -446,6 +449,9 @@ func (c *SlackChannel) handleAppMention(ev *slackevents.AppMentionEvent) {
 		"platform":   "slack",
 		"is_mention": "true",
 		"team_id":    c.teamID,
+	}
+	if threadTS != "" && threadTS != messageTS {
+		metadata["reply_to_message_id"] = threadTS
 	}
 
 	c.HandleMessage(c.ctx, mentionPeer, messageTS, senderID, chatID, content, nil, metadata, mentionSender)
