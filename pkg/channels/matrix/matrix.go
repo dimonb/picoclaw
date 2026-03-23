@@ -743,6 +743,7 @@ func (c *MatrixChannel) handleMessageEvent(ctx context.Context, evt *event.Event
 		"sender_raw": senderID,
 	}
 	if replyTo := msgEvt.GetRelatesTo().GetReplyTo(); replyTo != "" {
+		metadata["reply_to_message_id"] = replyTo.String()
 		metadata["reply_to_msg_id"] = replyTo.String()
 	}
 

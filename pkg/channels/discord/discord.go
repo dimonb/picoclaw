@@ -478,6 +478,9 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 		"channel_id":   m.ChannelID,
 		"is_dm":        fmt.Sprintf("%t", m.GuildID == ""),
 	}
+	if m.MessageReference != nil && m.MessageReference.MessageID != "" {
+		metadata["reply_to_message_id"] = m.MessageReference.MessageID
+	}
 
 	c.HandleMessage(c.ctx, peer, m.ID, senderID, m.ChannelID, content, mediaPaths, metadata, sender)
 }
