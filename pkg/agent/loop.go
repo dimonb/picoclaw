@@ -1741,7 +1741,13 @@ func (al *AgentLoop) runLLMIteration(
 					ctx,
 					activeCandidates,
 					func(ctx context.Context, provider, model string) (*providers.LLMResponse, error) {
-						return agent.Provider.Chat(ctx, messages, providerToolDefs, model, llmOpts)
+						p := agent.Provider
+						if agent.ProviderMap != nil {
+							if mapped, ok := agent.ProviderMap[providers.ModelKey(provider, model)]; ok {
+								p = mapped
+							}
+						}
+						return p.Chat(ctx, messages, providerToolDefs, model, llmOpts)
 					},
 				)
 				if fbErr != nil {
