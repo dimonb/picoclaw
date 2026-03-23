@@ -113,8 +113,8 @@ func TestProcessMessage_IncludesCurrentSenderInDynamicContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if response != "Mock response" {
-		t.Fatalf("processMessage() response = %q, want %q", response, "Mock response")
+	if response.Content != "Mock response" {
+		t.Fatalf("processMessage() response = %q, want %q", response.Content, "Mock response")
 	}
 	if len(provider.lastMessages) == 0 {
 		t.Fatal("provider did not receive any messages")
@@ -169,8 +169,8 @@ func TestProcessMessage_UseCommandLoadsRequestedSkill(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if response != "Mock response" {
-		t.Fatalf("processMessage() response = %q, want %q", response, "Mock response")
+	if response.Content != "Mock response" {
+		t.Fatalf("processMessage() response = %q, want %q", response.Content, "Mock response")
 	}
 	if len(provider.lastMessages) == 0 {
 		t.Fatal("provider did not receive any messages")
@@ -259,8 +259,8 @@ func TestProcessMessage_UseCommandArmsSkillForNextMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processMessage() arm error = %v", err)
 	}
-	if !strings.Contains(response, `Skill "shell" is armed for your next message.`) {
-		t.Fatalf("arm response = %q, want armed confirmation", response)
+	if !strings.Contains(response.Content, `Skill "shell" is armed for your next message.`) {
+		t.Fatalf("arm response = %q, want armed confirmation", response.Content)
 	}
 
 	response, err = al.processMessage(context.Background(), bus.InboundMessage{
@@ -272,8 +272,8 @@ func TestProcessMessage_UseCommandArmsSkillForNextMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processMessage() follow-up error = %v", err)
 	}
-	if response != "Mock response" {
-		t.Fatalf("follow-up response = %q, want %q", response, "Mock response")
+	if response.Content != "Mock response" {
+		t.Fatalf("follow-up response = %q, want %q", response.Content, "Mock response")
 	}
 	if len(provider.lastMessages) == 0 {
 		t.Fatal("provider did not receive any messages")
@@ -286,6 +286,68 @@ func TestProcessMessage_UseCommandArmsSkillForNextMessage(t *testing.T) {
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
 	if lastMessage.Role != "user" || lastMessage.Content != "explain how to list files" {
 		t.Fatalf("last provider message = %+v, want unchanged follow-up user message", lastMessage)
+	}
+}
+
+func TestProcessMessage_AssistantSavedOnDelivered(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-test-*")
+	if err != nil {
+		t.Fatalf("Failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				Model:             "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &recordingProvider{}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	sessionKey := "agent:test-delivery"
+	response, err := al.processMessage(context.Background(), bus.InboundMessage{
+		Channel:    "telegram",
+		SenderID:   "telegram:123",
+		ChatID:     "chat-1",
+		Content:    "hello",
+		SessionKey: sessionKey,
+		MessageID:  "in-42",
+	})
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("No default agent found")
+	}
+
+	history := defaultAgent.Sessions.GetHistory(sessionKey)
+	if len(history) != 1 {
+		t.Fatalf("expected only user message before delivery, got %d", len(history))
+	}
+
+	if response.OnDelivered == nil {
+		t.Fatal("expected OnDelivered callback")
+	}
+	response.OnDelivered([]string{"out-99"})
+
+	history = defaultAgent.Sessions.GetHistory(sessionKey)
+	if len(history) != 2 {
+		t.Fatalf("expected 2 messages after delivery, got %d", len(history))
+	}
+	if history[1].Role != "assistant" {
+		t.Fatalf("expected assistant message, got %+v", history[1])
+	}
+	if len(history[1].MessageIDs) != 1 || history[1].MessageIDs[0] != "out-99" {
+		t.Fatalf("expected assistant message_ids [out-99], got %v", history[1].MessageIDs)
 	}
 }
 
@@ -699,7 +761,10 @@ func (h testHelper) executeAndGetResponse(tb testing.TB, ctx context.Context, ms
 	if err != nil {
 		tb.Fatalf("processMessage failed: %v", err)
 	}
-	return response
+	if response.OnDelivered != nil {
+		response.OnDelivered(nil)
+	}
+	return response.Content
 }
 
 const responseTimeout = 3 * time.Second
