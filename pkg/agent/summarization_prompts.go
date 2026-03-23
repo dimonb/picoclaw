@@ -48,17 +48,19 @@ Update the running conversation summary for future context injection.
 <instructions>
 Preserve only information likely to matter in future turns.
 Prioritize:
-- decisions and commitments
-- unresolved questions or follow-ups
+- confirmed decisions and commitments
+- unresolved questions, blockers, or follow-ups
+- the latest explicit user instructions
 - user preferences, constraints, and working style
-- important corrections or changed assumptions
-- referenced files, URLs, identifiers, versions, and named entities
+- important corrections, changed assumptions, and reversals of plan
+- exact technical references that may matter later: files, paths, URLs, identifiers, versions, function names, config keys, commands, branch names, and named entities
 - action items with owner and timeframe if present
 
-Omit small talk, repetition, exploratory dead ends, and wording that does not change future behavior.
+Distinguish clearly between confirmed facts or decisions, tentative ideas, and unresolved proposals.
+Omit small talk, repetition, exploratory dead ends, and details that are interesting but do not change future behavior.
 If newer statements conflict with older ones, prefer the newer statement and note the change briefly.
-Messages may carry [msg:#ID] and [reply_to:#PARENT] annotations showing thread structure. If a reply
-thread is active or unresolved, note it briefly as "thread rooted at #ID about <topic>" in Open Loops.
+When summarizing preferences, plans, or output requirements, prefer the latest explicit user instruction.
+Messages may carry [msg:#ID] and [reply_to:#PARENT] annotations showing thread structure. Mention thread structure only if it remains unresolved or operationally relevant for future context.
 Do not invent facts.
 Write in the dominant language of the conversation.
 Keep the result under 180 words.
@@ -69,9 +71,19 @@ Return Markdown with exactly these sections:
 ## Key Context
 ## Decisions
 ## Open Loops
+## Tentative Ideas / Alternatives
 ## Preferences / Constraints
 
 Use short bullet points.
+Avoid repeating the same item across sections.
+Put stable background in "Key Context" and settled choices in "Decisions".
+For "Open Loops", include the next expected action or blocker if known.
+"Open Loops" should contain items that still require action, resolution, confirmation, or follow-up.
+Put unresolved but still potentially useful ideas, alternatives, or proposals in "Tentative Ideas / Alternatives".
+"Tentative Ideas / Alternatives" should contain non-actionable options that may be useful later; do not duplicate active open loops there.
+Prefer action-oriented bullets in "Open Loops" (for example: decide, verify, inspect, confirm, wait for).
+Prefer option-oriented bullets in "Tentative Ideas / Alternatives" (for example: possible alternative, fallback option, optional refinement, if needed).
+Omit tentative ideas that are stale or no longer relevant.
 If a section is empty, write "- none".
 </format>
 
@@ -102,6 +114,7 @@ Keep the exact section structure below.
 Deduplicate aggressively.
 Preserve unresolved items until they are resolved.
 Prefer newer information when facts conflict.
+Do not preserve both old and new versions of the same fact unless the change itself matters.
 Keep only future-relevant context.
 Do not invent facts.
 Keep the result under 180 words.
@@ -112,9 +125,13 @@ Return Markdown with exactly these sections:
 ## Key Context
 ## Decisions
 ## Open Loops
+## Tentative Ideas / Alternatives
 ## Preferences / Constraints
 
 Use short bullet points.
+"Open Loops" should contain items that still require action, resolution, confirmation, or follow-up.
+Put unresolved but still potentially useful ideas, alternatives, or proposals in "Tentative Ideas / Alternatives".
+"Tentative Ideas / Alternatives" should contain non-actionable options that may be useful later; do not duplicate active open loops there.
 If a section is empty, write "- none".
 </format>
 
@@ -172,7 +189,10 @@ Include:
 - stable preferences or working style signals
 - important corrections and changes of plan
 
+Separate completed work from proposed work.
+Separate confirmed changes from ideas that were only discussed.
 Separate confirmed facts from tentative ideas when needed.
+In "Artifacts Mentioned", prefer exact references and indicate whether each artifact was changed, inspected, or merely referenced if that is clear.
 Omit filler and repetition.
 Do not invent details.
 Write in the dominant language of the conversation.
