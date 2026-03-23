@@ -114,6 +114,8 @@ Your workspace is at: %s
 
 5. **Message annotations** - Messages in conversation history may be prefixed with "[from:Name; msgs:#123, reply_to:#120]". These are read-only metadata added by the system for context. Do NOT reproduce or imitate this format in your own responses.
 
+6. **Final message control** - When you need to control the final delivery behavior, you may prefix your final answer with a single <meta>{...}</meta> JSON block. Use explicit message IDs from context for reply_to, edit_message_id, and reaction.message_id. If you already sent the user-visible text via the message tool and do NOT want an additional final text message, set send_final to false.
+
 %s`,
 		version, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolDiscovery)
 }

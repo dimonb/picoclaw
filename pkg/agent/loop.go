@@ -99,11 +99,20 @@ type continuationTarget struct {
 	ChatID     string
 }
 
+type finalReactionAction struct {
+	MessageID string
+	Emoji     string
+}
+
 type agentResponse struct {
-	Content     string
-	Channel     string
-	ChatID      string
-	OnDelivered func(msgIDs []string)
+	Content          string
+	Channel          string
+	ChatID           string
+	ReplyToMessageID string
+	EditMessageID    string
+	SkipFinalSend    bool
+	Reaction         *finalReactionAction
+	OnDelivered      func(msgIDs []string)
 }
 
 func (r agentResponse) outboundMessage(defaultChannel, defaultChatID string) bus.OutboundMessage {
@@ -116,10 +125,11 @@ func (r agentResponse) outboundMessage(defaultChannel, defaultChatID string) bus
 		chatID = defaultChatID
 	}
 	return bus.OutboundMessage{
-		Channel:     channel,
-		ChatID:      chatID,
-		Content:     r.Content,
-		OnDelivered: r.OnDelivered,
+		Channel:          channel,
+		ChatID:           chatID,
+		Content:          r.Content,
+		ReplyToMessageID: r.ReplyToMessageID,
+		OnDelivered:      r.OnDelivered,
 	}
 }
 
@@ -272,16 +282,15 @@ func registerSharedTools(
 		// Message tool
 		if cfg.Tools.IsToolEnabled("message") {
 			messageTool := tools.NewMessageTool()
-			messageTool.SetSendCallback(func(channel, chatID, content string) error {
+			messageTool.SetSendCallback(func(msg bus.OutboundMessage) error {
 				pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer pubCancel()
-				return msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-					Channel: channel,
-					ChatID:  chatID,
-					Content: content,
-				})
+				return msgBus.PublishOutbound(pubCtx, msg)
 			})
 			agent.Tools.Register(messageTool)
+		}
+		if cfg.Tools.IsToolEnabled("reaction") {
+			agent.Tools.Register(tools.NewReactionTool())
 		}
 
 		// Send file tool (outbound media via MediaStore — store injected later by SetMediaStore)
@@ -657,47 +666,6 @@ func (al *AgentLoop) Stop() {
 	al.running.Store(false)
 }
 
-func (al *AgentLoop) publishAgentResponseIfNeeded(
-	ctx context.Context,
-	response agentResponse,
-	defaultChannel, defaultChatID string,
-) {
-	if response.Content == "" {
-		return
-	}
-
-	alreadySent := false
-	defaultAgent := al.GetRegistry().GetDefaultAgent()
-	if defaultAgent != nil {
-		if tool, ok := defaultAgent.Tools.Get("message"); ok {
-			if mt, ok := tool.(*tools.MessageTool); ok {
-				alreadySent = mt.HasSentInRound()
-			}
-		}
-	}
-
-	if alreadySent {
-		if response.OnDelivered != nil {
-			response.OnDelivered(nil)
-		}
-		logger.DebugCF(
-			"agent",
-			"Skipped outbound (message tool already sent)",
-			map[string]any{"channel": response.outboundMessage(defaultChannel, defaultChatID).Channel},
-		)
-		return
-	}
-
-	outbound := response.outboundMessage(defaultChannel, defaultChatID)
-	al.bus.PublishOutbound(ctx, outbound)
-	logger.InfoCF("agent", "Published outbound response",
-		map[string]any{
-			"channel":     outbound.Channel,
-			"chat_id":     outbound.ChatID,
-			"content_len": len(response.Content),
-		})
-}
-
 func (al *AgentLoop) buildContinuationTarget(msg bus.InboundMessage) (*continuationTarget, error) {
 	if msg.Channel == "system" {
 		return nil, nil
@@ -968,6 +936,32 @@ func (al *AgentLoop) RegisterTool(tool tools.Tool) {
 
 func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	al.channelManager = cm
+	al.bindMessageTools(cm)
+	al.bindReactionTools(cm)
+}
+
+func (al *AgentLoop) bindMessageTools(cm *channels.Manager) {
+	al.registry.ForEachTool("message", func(t tools.Tool) {
+		if mt, ok := t.(*tools.MessageTool); ok {
+			mt.SetEditCallback(func(ctx context.Context, channel, chatID, messageID, content string) error {
+				return cm.EditMessage(ctx, channel, chatID, messageID, content)
+			})
+		}
+	})
+}
+
+func (al *AgentLoop) bindReactionTools(cm *channels.Manager) {
+	al.registry.ForEachTool("reaction", func(t tools.Tool) {
+		if rt, ok := t.(*tools.ReactionTool); ok {
+			rt.SetReactionCallback(func(ctx context.Context, channel, chatID, messageID, emoji string) error {
+				return cm.SetMessageReaction(ctx, channel, chatID, messageID, emoji)
+			})
+			rt.SetSupportFunc(func(ctx context.Context, channel, chatID string) channels.ReactionSupport {
+				support := cm.GetReactionSupport(ctx, channel, chatID)
+				return channels.ReactionSupport{AnyUnicode: support.AnyUnicode, Allowed: append([]string(nil), support.Allowed...)}
+			})
+		}
+	})
 }
 
 // ReloadProviderAndConfig atomically swaps the provider and config with proper synchronization.
@@ -1362,13 +1356,6 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		return agentResponse{}, routeErr
 	}
 
-	// Reset message-tool state for this round so we don't skip publishing due to a previous round.
-	if tool, ok := agent.Tools.Get("message"); ok {
-		if resetter, ok := tool.(interface{ ResetSentInRound() }); ok {
-			resetter.ResetSentInRound()
-		}
-	}
-
 	// Resolve session key from route, while preserving explicit agent-scoped keys.
 	scopeKey := resolveScopeKey(route, msg.SessionKey)
 	sessionKey := scopeKey
@@ -1584,18 +1571,17 @@ func (al *AgentLoop) runAgentLoop(
 		}
 	}
 
-	response := agentResponse{
-		Content: result.finalContent,
-		Channel: opts.Channel,
-		ChatID:  opts.ChatID,
-	}
+	response := resolveFinalResponse(result.finalContent)
+	response.Channel = opts.Channel
+	response.ChatID = opts.ChatID
 
-	if !opts.NoHistory && result.finalContent != "" {
+	if !opts.NoHistory && (strings.TrimSpace(response.Content) != "" || response.EditMessageID != "") {
 		response.OnDelivered = func(msgIDs []string) {
 			assistantMsg := providers.Message{
-				Role:       "assistant",
-				Content:    result.finalContent,
-				MessageIDs: cloneMessageIDs(msgIDs),
+				Role:             "assistant",
+				Content:          response.Content,
+				MessageIDs:       cloneMessageIDs(msgIDs),
+				ReplyToMessageID: response.ReplyToMessageID,
 			}
 			agent.Sessions.AddFullMessage(opts.SessionKey, assistantMsg)
 			if saveErr := agent.Sessions.Save(opts.SessionKey); saveErr != nil {
@@ -1613,13 +1599,15 @@ func (al *AgentLoop) runAgentLoop(
 	}
 
 	if result.finalContent != "" {
-		responsePreview := utils.Truncate(result.finalContent, 120)
+		responsePreview := utils.Truncate(response.Content, 120)
 		logger.InfoCF("agent", fmt.Sprintf("Response: %s", responsePreview),
 			map[string]any{
-				"agent_id":     agent.ID,
-				"session_key":  opts.SessionKey,
-				"iterations":   ts.currentIteration(),
-				"final_length": len(result.finalContent),
+				"agent_id":            agent.ID,
+				"session_key":         opts.SessionKey,
+				"iterations":          ts.currentIteration(),
+				"final_length":        len(response.Content),
+				"reply_to_message_id": response.ReplyToMessageID,
+				"edit_message_id":     response.EditMessageID,
 			})
 	}
 
@@ -1738,6 +1726,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 		ts.opts.SenderDisplayName,
 		activeSkillNames(ts.agent, ts.opts)...,
 	)
+	messages = al.appendMessageCapabilityNote(turnCtx, messages, ts.channel, ts.chatID, ts.opts.MessageID, ts.opts.ReplyToMessageID)
 
 	cfg := al.GetConfig()
 	maxMediaSize := cfg.Agents.Defaults.GetMaxMediaSize()
@@ -1768,6 +1757,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 				ts.opts.SenderID, ts.opts.SenderDisplayName,
 				activeSkillNames(ts.agent, ts.opts)...,
 			)
+			messages = al.appendMessageCapabilityNote(turnCtx, messages, ts.channel, ts.chatID, ts.opts.MessageID, ts.opts.ReplyToMessageID)
 			messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 		}
 	}

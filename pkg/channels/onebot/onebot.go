@@ -133,7 +133,6 @@ func (c *OneBotChannel) setMsgEmojiLike(messageID string, emojiID int, set bool)
 // It adds an emoji reaction (ID 289) to group messages and returns an undo function.
 // Private messages return a no-op since reactions are only meaningful in groups.
 func (c *OneBotChannel) ReactToMessage(ctx context.Context, chatID, messageID string) (func(), error) {
-	// Only react in group chats
 	if !strings.HasPrefix(chatID, "group:") {
 		return func() {}, nil
 	}
@@ -143,6 +142,25 @@ func (c *OneBotChannel) ReactToMessage(ctx context.Context, chatID, messageID st
 	return func() {
 		c.setMsgEmojiLike(messageID, 289, false)
 	}, nil
+}
+
+// SetMessageReaction implements channels.MessageReactor.
+func (c *OneBotChannel) SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	if !strings.HasPrefix(chatID, "group:") {
+		return fmt.Errorf("onebot reactions are only supported in group chats")
+	}
+	if strings.TrimSpace(emoji) != "" && !strings.EqualFold(strings.TrimSpace(emoji), "like") && strings.TrimSpace(emoji) != "👍" {
+		return fmt.Errorf("onebot only supports the built-in like reaction")
+	}
+	c.setMsgEmojiLike(messageID, 289, true)
+	return nil
+}
+
+func (c *OneBotChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
+	if !strings.HasPrefix(chatID, "group:") {
+		return channels.ReactionSupport{}
+	}
+	return channels.ReactionSupport{Allowed: []string{"like", "👍"}}
 }
 
 func (c *OneBotChannel) Start(ctx context.Context) error {

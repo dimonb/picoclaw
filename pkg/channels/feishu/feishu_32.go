@@ -55,6 +55,16 @@ func (c *FeishuChannel) ReactToMessage(ctx context.Context, chatID, messageID st
 	return func() {}, errUnsupported
 }
 
+// SetMessageReaction is a stub method to satisfy MessageReactor
+func (c *FeishuChannel) SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	return errUnsupported
+}
+
+// GetReactionSupport is a stub method to satisfy MessageReactor
+func (c *FeishuChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
+	return channels.ReactionSupport{}
+}
+
 // SendMedia is a stub method to satisfy MediaSender
 func (c *FeishuChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) error {
 	return errUnsupported

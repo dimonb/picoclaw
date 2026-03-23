@@ -3,14 +3,18 @@ package tools
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
+	"strings"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
 )
 
-type SendCallback func(channel, chatID, content string) error
+type SendCallback func(msg bus.OutboundMessage) error
+
+type EditCallback func(ctx context.Context, channel, chatID, messageID, content string) error
 
 type MessageTool struct {
 	sendCallback SendCallback
-	sentInRound  atomic.Bool // Tracks whether a message was sent in the current processing round
+	editCallback EditCallback
 }
 
 func NewMessageTool() *MessageTool {
@@ -22,7 +26,7 @@ func (t *MessageTool) Name() string {
 }
 
 func (t *MessageTool) Description() string {
-	return "Send a message to user on a chat channel. Use this when you want to communicate something."
+	return "Send a new message or edit an existing one. Use explicit platform message IDs for reply_to and edit_message_id."
 }
 
 func (t *MessageTool) Parameters() map[string]any {
@@ -31,7 +35,7 @@ func (t *MessageTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"content": map[string]any{
 				"type":        "string",
-				"description": "The message content to send",
+				"description": "The message text to send or edit",
 			},
 			"channel": map[string]any{
 				"type":        "string",
@@ -41,24 +45,25 @@ func (t *MessageTool) Parameters() map[string]any {
 				"type":        "string",
 				"description": "Optional: target chat/user ID",
 			},
+			"reply_to": map[string]any{
+				"type":        "string",
+				"description": "Optional platform message ID to reply to when sending a new message",
+			},
+			"edit_message_id": map[string]any{
+				"type":        "string",
+				"description": "Optional platform message ID to edit instead of sending a new message",
+			},
 		},
 		"required": []string{"content"},
 	}
 }
 
-// ResetSentInRound resets the per-round send tracker.
-// Called by the agent loop at the start of each inbound message processing round.
-func (t *MessageTool) ResetSentInRound() {
-	t.sentInRound.Store(false)
-}
-
-// HasSentInRound returns true if the message tool sent a message during the current round.
-func (t *MessageTool) HasSentInRound() bool {
-	return t.sentInRound.Load()
-}
-
 func (t *MessageTool) SetSendCallback(callback SendCallback) {
 	t.sendCallback = callback
+}
+
+func (t *MessageTool) SetEditCallback(callback EditCallback) {
+	t.editCallback = callback
 }
 
 func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
@@ -66,37 +71,60 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 	if !ok {
 		return &ToolResult{ForLLM: "content is required", IsError: true}
 	}
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return &ToolResult{ForLLM: "content is required", IsError: true}
+	}
 
 	channel, _ := args["channel"].(string)
 	chatID, _ := args["chat_id"].(string)
-
 	if channel == "" {
 		channel = ToolChannel(ctx)
 	}
 	if chatID == "" {
 		chatID = ToolChatID(ctx)
 	}
-
+	channel = strings.TrimSpace(channel)
+	chatID = strings.TrimSpace(chatID)
 	if channel == "" || chatID == "" {
 		return &ToolResult{ForLLM: "No target channel/chat specified", IsError: true}
+	}
+
+	replyTo, _ := args["reply_to"].(string)
+	replyTo = strings.TrimSpace(replyTo)
+	editMessageID, _ := args["edit_message_id"].(string)
+	editMessageID = strings.TrimSpace(editMessageID)
+	if replyTo != "" && editMessageID != "" {
+		return &ToolResult{ForLLM: "reply_to and edit_message_id cannot be used together", IsError: true}
+	}
+
+	if editMessageID != "" {
+		if t.editCallback == nil {
+			return &ToolResult{ForLLM: "Message editing not configured", IsError: true}
+		}
+		if err := t.editCallback(ctx, channel, chatID, editMessageID, content); err != nil {
+			return &ToolResult{ForLLM: fmt.Sprintf("editing message: %v", err), IsError: true, Err: err}
+		}
+		return SilentResult(fmt.Sprintf("Message edited in %s:%s (%s)", channel, chatID, editMessageID))
 	}
 
 	if t.sendCallback == nil {
 		return &ToolResult{ForLLM: "Message sending not configured", IsError: true}
 	}
 
-	if err := t.sendCallback(channel, chatID, content); err != nil {
-		return &ToolResult{
-			ForLLM:  fmt.Sprintf("sending message: %v", err),
-			IsError: true,
-			Err:     err,
-		}
+	msg := bus.OutboundMessage{
+		Channel:          channel,
+		ChatID:           chatID,
+		Content:          content,
+		ReplyToMessageID: replyTo,
+	}
+	if err := t.sendCallback(msg); err != nil {
+		return &ToolResult{ForLLM: fmt.Sprintf("sending message: %v", err), IsError: true, Err: err}
 	}
 
-	t.sentInRound.Store(true)
-	// Silent: user already received the message directly
-	return &ToolResult{
-		ForLLM: fmt.Sprintf("Message sent to %s:%s", channel, chatID),
-		Silent: true,
+	status := fmt.Sprintf("Message sent to %s:%s", channel, chatID)
+	if replyTo != "" {
+		status = fmt.Sprintf("%s in reply to %s", status, replyTo)
 	}
+	return SilentResult(status)
 }

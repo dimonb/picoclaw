@@ -1158,3 +1158,66 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 	_, err := channel.Send(ctx, msg)
 	return err
 }
+
+func (m *Manager) EditMessage(ctx context.Context, channelName, chatID, messageID, content string) error {
+	ch, ok := m.GetChannel(channelName)
+	if !ok {
+		return fmt.Errorf("channel %s not found", channelName)
+	}
+	editor, ok := ch.(MessageEditor)
+	if !ok {
+		return fmt.Errorf("channel %s does not support message editing", channelName)
+	}
+	return editor.EditMessage(ctx, chatID, messageID, content)
+}
+
+func (m *Manager) SetMessageReaction(ctx context.Context, channelName, chatID, messageID, emoji string) error {
+	ch, ok := m.GetChannel(channelName)
+	if !ok {
+		return fmt.Errorf("channel %s not found", channelName)
+	}
+	reactor, ok := ch.(MessageReactor)
+	if !ok {
+		return fmt.Errorf("channel %s does not support final message reactions", channelName)
+	}
+	return reactor.SetMessageReaction(ctx, chatID, messageID, emoji)
+}
+
+func (m *Manager) GetReactionSupport(ctx context.Context, channelName, chatID string) ReactionSupport {
+	ch, ok := m.GetChannel(channelName)
+	if !ok {
+		return ReactionSupport{}
+	}
+	reactor, ok := ch.(MessageReactor)
+	if !ok {
+		return ReactionSupport{}
+	}
+	return reactor.GetReactionSupport(ctx, chatID)
+}
+
+// CleanupState stops typing, undoes any inbound temporary reaction, and deletes
+// the placeholder for the given channel/chat when the turn finishes without a
+// normal outbound send path (e.g. reaction-only or edit-only final action).
+func (m *Manager) CleanupState(ctx context.Context, channelName, chatID string) {
+	key := channelName + ":" + chatID
+
+	if v, loaded := m.typingStops.LoadAndDelete(key); loaded {
+		if entry, ok := v.(typingEntry); ok {
+			entry.stop()
+		}
+	}
+	if v, loaded := m.reactionUndos.LoadAndDelete(key); loaded {
+		if entry, ok := v.(reactionEntry); ok {
+			entry.undo()
+		}
+	}
+	if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
+		if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
+			if ch, ok := m.GetChannel(channelName); ok {
+				if deleter, ok := ch.(MessageDeleter); ok {
+					_ = deleter.DeleteMessage(ctx, chatID, entry.id)
+				}
+			}
+		}
+	}
+}

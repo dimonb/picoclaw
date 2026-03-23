@@ -515,6 +515,25 @@ PicoClaw natively supports [MCP](https://modelcontextprotocol.io/) — connect a
 
 For full MCP configuration (stdio, SSE, HTTP transports, Tool Discovery), see [Tools Configuration - MCP](docs/tools_configuration.md#mcp-tool).
 
+## Final Message Control (`<meta>{...}</meta>`)
+
+When a model needs to control how the final assistant response is delivered, it can prefix the final answer with a single JSON block inside `<meta>...</meta>`.
+
+Supported fields:
+
+- `reply_to` — send the final text as a reply to a specific platform message ID
+- `edit_message_id` — edit an existing platform message instead of sending a new one
+- `reaction` — add a final reaction to a specific platform message
+- `send_final` — set to `false` if the visible user-facing text was already sent via the `message` tool and no additional final text message should be sent
+
+Example:
+
+```text
+<meta>{"send_final":false,"reaction":{"message_id":"258","emoji":"👍"}}</meta>
+```
+
+For message delivery control, always use explicit platform message IDs from context.
+
 ## <img src="assets/clawdchat-icon.png" width="24" height="24" alt="ClawdChat"> Join the Agent Social Network
 
 Connect PicoClaw to the Agent Social Network simply by sending a single message via the CLI or any integrated Chat App.

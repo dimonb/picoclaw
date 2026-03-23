@@ -25,6 +25,15 @@ import (
 
 type fakeChannel struct{ id string }
 
+type deliveryTestChannel struct {
+	fakeChannel
+	editErr        error
+	edits          []struct{ chatID, messageID, content string }
+	reactions      []struct{ chatID, messageID, emoji string }
+	cleanupDeletes []struct{ chatID, messageID string }
+	sendMessageIDs []string
+}
+
 func (f *fakeChannel) Name() string                    { return "fake" }
 func (f *fakeChannel) Start(ctx context.Context) error { return nil }
 func (f *fakeChannel) Stop(ctx context.Context) error  { return nil }
@@ -69,6 +78,32 @@ func newStartedTestChannelManager(
 		}
 	})
 	return cm
+}
+
+func (d *deliveryTestChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
+	if msg.OnDelivered != nil {
+		msg.OnDelivered(d.sendMessageIDs)
+	}
+	return d.sendMessageIDs, nil
+}
+
+func (d *deliveryTestChannel) EditMessage(ctx context.Context, chatID, messageID, content string) error {
+	d.edits = append(d.edits, struct{ chatID, messageID, content string }{chatID: chatID, messageID: messageID, content: content})
+	return d.editErr
+}
+
+func (d *deliveryTestChannel) SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	d.reactions = append(d.reactions, struct{ chatID, messageID, emoji string }{chatID: chatID, messageID: messageID, emoji: emoji})
+	return nil
+}
+
+func (d *deliveryTestChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
+	return channels.ReactionSupport{Allowed: []string{"✅"}}
+}
+
+func (d *deliveryTestChannel) DeleteMessage(ctx context.Context, chatID, messageID string) error {
+	d.cleanupDeletes = append(d.cleanupDeletes, struct{ chatID, messageID string }{chatID: chatID, messageID: messageID})
+	return nil
 }
 
 type recordingProvider struct {
@@ -1712,6 +1747,133 @@ func TestProcessMessage_SwitchModelRejectsUnknownAlias(t *testing.T) {
 
 	if provider.calls != 0 {
 		t.Fatalf("LLM should not be called for rejected /switch and /show, calls=%d", provider.calls)
+	}
+}
+
+func TestResolveFinalResponse_MetaReplyAndReaction(t *testing.T) {
+	response := resolveFinalResponse(`<meta>{"reply_to":"123","reaction":{"message_id":"123","emoji":"✅"}}</meta>
+Done`)
+	if response.Content != "Done" {
+		t.Fatalf("content = %q", response.Content)
+	}
+	if response.ReplyToMessageID != "123" {
+		t.Fatalf("reply_to = %q", response.ReplyToMessageID)
+	}
+	if response.Reaction == nil || response.Reaction.MessageID != "123" || response.Reaction.Emoji != "✅" {
+		t.Fatalf("unexpected reaction: %#v", response.Reaction)
+	}
+}
+
+func TestResolveFinalResponse_MetaEditClearsReply(t *testing.T) {
+	response := resolveFinalResponse(`<meta>{"reply_to":"123","edit_message_id":"456"}</meta>
+Updated`)
+	if response.EditMessageID != "456" {
+		t.Fatalf("edit_message_id = %q", response.EditMessageID)
+	}
+	if response.ReplyToMessageID != "" {
+		t.Fatalf("reply_to should be empty when edit_message_id is set, got %q", response.ReplyToMessageID)
+	}
+}
+
+func TestResolveFinalResponse_MetaCanSuppressFinalSend(t *testing.T) {
+	response := resolveFinalResponse(`<meta>{"reply_to":"123","send_final":false,"reaction":{"message_id":"123","emoji":"✅"}}</meta>
+Done`)
+	if !response.SkipFinalSend {
+		t.Fatal("expected SkipFinalSend=true")
+	}
+	if response.Content != "" {
+		t.Fatalf("content should be cleared when send_final=false, got %q", response.Content)
+	}
+	if response.Reaction == nil || response.Reaction.MessageID != "123" || response.Reaction.Emoji != "✅" {
+		t.Fatalf("unexpected reaction: %#v", response.Reaction)
+	}
+}
+
+func TestAppendMessageCapabilityNoteUpdatesSystemParts(t *testing.T) {
+	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+
+	manager, err := channels.NewManager(cfg, msgBus, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	manager.RegisterChannel("test", &deliveryTestChannel{})
+	al.channelManager = manager
+	_ = provider
+
+	messages := []providers.Message{{
+		Role:    "system",
+		Content: "base",
+		SystemParts: []providers.ContentBlock{
+			{Type: "text", Text: "base"},
+		},
+	}}
+
+	messages = al.appendMessageCapabilityNote(context.Background(), messages, "test", "chat1", "msg1", "parent1")
+	if !strings.Contains(messages[0].Content, "Current message ID: msg1") {
+		t.Fatalf("system content missing capability note: %q", messages[0].Content)
+	}
+	if len(messages[0].SystemParts) != 2 {
+		t.Fatalf("expected appended system part, got %d", len(messages[0].SystemParts))
+	}
+	if !strings.Contains(messages[0].SystemParts[1].Text, "Current message ID: msg1") {
+		t.Fatalf("system part missing capability note: %#v", messages[0].SystemParts[1])
+	}
+}
+
+func TestPublishAgentResponseIfNeeded_SuppressesFinalSendWhenMetaRequestsIt(t *testing.T) {
+	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	_ = provider
+
+	manager, err := channels.NewManager(cfg, msgBus, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ch := &deliveryTestChannel{}
+	manager.RegisterChannel("test", ch)
+	al.channelManager = manager
+
+	al.publishAgentResponseIfNeeded(context.Background(), agentResponse{
+		SkipFinalSend: true,
+		Reaction:      &finalReactionAction{MessageID: "msg-1", Emoji: "✅"},
+	}, "test", "chat1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if _, ok := msgBus.SubscribeOutbound(ctx); ok {
+		t.Fatal("did not expect outbound message when send_final=false")
+	}
+	if len(ch.reactions) != 1 {
+		t.Fatalf("expected one reaction, got %d", len(ch.reactions))
+	}
+}
+
+func TestPublishAgentResponseIfNeeded_FallsBackToSendOnEditError(t *testing.T) {
+	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
+	defer cleanup()
+	_ = provider
+
+	manager, err := channels.NewManager(cfg, msgBus, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	ch := &deliveryTestChannel{editErr: fmt.Errorf("boom"), sendMessageIDs: []string{"sent-1"}}
+	manager.RegisterChannel("test", ch)
+	al.channelManager = manager
+
+	response := agentResponse{Content: "fallback text", EditMessageID: "edit-1"}
+	al.publishAgentResponseIfNeeded(context.Background(), response, "test", "chat1")
+
+	outbound, ok := msgBus.SubscribeOutbound(context.Background())
+	if !ok {
+		t.Fatal("expected outbound message after edit fallback")
+	}
+	if outbound.Content != "fallback text" {
+		t.Fatalf("unexpected outbound content: %q", outbound.Content)
+	}
+	if len(ch.edits) != 1 {
+		t.Fatalf("expected one edit attempt, got %d", len(ch.edits))
 	}
 }
 

@@ -400,6 +400,36 @@ func (c *TelegramChannel) DeleteMessage(ctx context.Context, chatID string, mess
 	})
 }
 
+func (c *TelegramChannel) SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	cid, _, err := parseTelegramChatID(chatID)
+	if err != nil {
+		return err
+	}
+	mid, err := strconv.Atoi(strings.TrimSpace(messageID))
+	if err != nil {
+		return err
+	}
+	return c.bot.SetMessageReaction(ctx, (&telego.SetMessageReactionParams{}).
+		WithChatID(tu.ID(cid)).
+		WithMessageID(mid).
+		WithReaction(tu.ReactionEmoji(emoji)))
+}
+
+func (c *TelegramChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
+	allowed := c.config.Channels.Telegram.AllowedReactionEmoji
+	if len(allowed) == 0 {
+		return channels.ReactionSupport{AnyUnicode: true}
+	}
+	out := make([]string, 0, len(allowed))
+	for _, value := range allowed {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return channels.ReactionSupport{Allowed: out}
+}
+
 // SendPlaceholder implements channels.PlaceholderCapable.
 // It sends a placeholder message (e.g. "Thinking... 💭") that will later be
 // edited to the actual response via EditMessage (channels.MessageEditor).

@@ -332,12 +332,6 @@ func (al *AgentLoop) continueResponse(
 		return agentResponse{}, fmt.Errorf("no agent available for session %q", sessionKey)
 	}
 
-	if tool, ok := agent.Tools.Get("message"); ok {
-		if resetter, ok := tool.(interface{ ResetSentInRound() }); ok {
-			resetter.ResetSentInRound()
-		}
-	}
-
 	return al.continueWithSteeringMessages(ctx, agent, sessionKey, channel, chatID, steeringMsgs)
 }
 

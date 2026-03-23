@@ -250,6 +250,24 @@ func (c *DiscordChannel) EditMessage(ctx context.Context, chatID string, message
 	return err
 }
 
+// SetMessageReaction implements channels.MessageReactor.
+func (c *DiscordChannel) SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	if strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("discord channel ID is empty")
+	}
+	if strings.TrimSpace(messageID) == "" {
+		return fmt.Errorf("discord message ID is empty")
+	}
+	if strings.TrimSpace(emoji) == "" {
+		return fmt.Errorf("discord emoji is empty")
+	}
+	return c.session.MessageReactionAdd(chatID, messageID, emoji)
+}
+
+func (c *DiscordChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
+	return channels.ReactionSupport{AnyUnicode: true}
+}
+
 // SendPlaceholder implements channels.PlaceholderCapable.
 // It sends a placeholder message that will later be edited to the actual
 // response via EditMessage (channels.MessageEditor).

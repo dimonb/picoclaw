@@ -32,6 +32,18 @@ type ReactionCapable interface {
 	ReactToMessage(ctx context.Context, chatID, messageID string) (undo func(), err error)
 }
 
+type ReactionSupport struct {
+	AnyUnicode bool
+	Allowed    []string
+}
+
+// MessageReactor is implemented by channels that support setting an explicit
+// final reaction on a specific message and can describe their supported emoji set.
+type MessageReactor interface {
+	SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error
+	GetReactionSupport(ctx context.Context, chatID string) ReactionSupport
+}
+
 // PlaceholderCapable — channels that can send a placeholder message
 // (e.g. "Thinking... 💭") that will later be edited to the actual response.
 // The channel MUST also implement MessageEditor for the placeholder to be useful.

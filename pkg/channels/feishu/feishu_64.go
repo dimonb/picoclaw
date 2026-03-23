@@ -245,47 +245,18 @@ func (c *FeishuChannel) SendPlaceholder(ctx context.Context, chatID string) (str
 // ReactToMessage implements channels.ReactionCapable.
 // Adds a reaction (randomly chosen from config) and returns an undo function to remove it.
 func (c *FeishuChannel) ReactToMessage(ctx context.Context, chatID, messageID string) (func(), error) {
-	// Get emoji list from config
 	emojiList := c.config.RandomReactionEmoji
 	var chosenEmoji string
 	if len(emojiList) == 0 {
-		// Default to "Pin" if no config
 		chosenEmoji = "Pin"
 	} else {
 		idx := rand.Intn(len(emojiList))
 		chosenEmoji = emojiList[idx]
 	}
 
-	req := larkim.NewCreateMessageReactionReqBuilder().
-		MessageId(messageID).
-		Body(larkim.NewCreateMessageReactionReqBodyBuilder().
-			ReactionType(larkim.NewEmojiBuilder().EmojiType(chosenEmoji).Build()).
-			Build()).
-		Build()
-
-	resp, err := c.client.Im.V1.MessageReaction.Create(ctx, req)
+	reactionID, err := c.createReaction(ctx, messageID, chosenEmoji)
 	if err != nil {
-		logger.ErrorCF("feishu", "Failed to add reaction", map[string]any{
-			"emoji":      chosenEmoji,
-			"message_id": messageID,
-			"error":      err.Error(),
-		})
-		return func() {}, fmt.Errorf("feishu react: %w", err)
-	}
-	if !resp.Success() {
-		c.invalidateTokenOnAuthError(resp.Code)
-		logger.ErrorCF("feishu", "Reaction API error", map[string]any{
-			"emoji":      chosenEmoji,
-			"message_id": messageID,
-			"code":       resp.Code,
-			"msg":        resp.Msg,
-		})
-		return func() {}, fmt.Errorf("feishu react api error (code=%d msg=%s)", resp.Code, resp.Msg)
-	}
-
-	var reactionID string
-	if resp.Data != nil && resp.Data.ReactionId != nil {
-		reactionID = *resp.Data.ReactionId
+		return func() {}, err
 	}
 	if reactionID == "" {
 		return func() {}, nil
@@ -303,6 +274,53 @@ func (c *FeishuChannel) ReactToMessage(ctx context.Context, chatID, messageID st
 		_, _ = c.client.Im.V1.MessageReaction.Delete(context.Background(), delReq)
 	}
 	return undo, nil
+}
+
+// SetMessageReaction implements channels.MessageReactor.
+func (c *FeishuChannel) SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	_, err := c.createReaction(ctx, messageID, strings.TrimSpace(emoji))
+	return err
+}
+
+func (c *FeishuChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
+	allowed := append([]string(nil), c.config.RandomReactionEmoji...)
+	if len(allowed) == 0 {
+		allowed = []string{"Pin"}
+	}
+	return channels.ReactionSupport{Allowed: allowed}
+}
+
+func (c *FeishuChannel) createReaction(ctx context.Context, messageID, emoji string) (string, error) {
+	req := larkim.NewCreateMessageReactionReqBuilder().
+		MessageId(messageID).
+		Body(larkim.NewCreateMessageReactionReqBodyBuilder().
+			ReactionType(larkim.NewEmojiBuilder().EmojiType(emoji).Build()).
+			Build()).
+		Build()
+
+	resp, err := c.client.Im.V1.MessageReaction.Create(ctx, req)
+	if err != nil {
+		logger.ErrorCF("feishu", "Failed to add reaction", map[string]any{
+			"emoji":      emoji,
+			"message_id": messageID,
+			"error":      err.Error(),
+		})
+		return "", fmt.Errorf("feishu react: %w", err)
+	}
+	if !resp.Success() {
+		c.invalidateTokenOnAuthError(resp.Code)
+		logger.ErrorCF("feishu", "Reaction API error", map[string]any{
+			"emoji":      emoji,
+			"message_id": messageID,
+			"code":       resp.Code,
+			"msg":        resp.Msg,
+		})
+		return "", fmt.Errorf("feishu react api error (code=%d msg=%s)", resp.Code, resp.Msg)
+	}
+	if resp.Data != nil && resp.Data.ReactionId != nil {
+		return *resp.Data.ReactionId, nil
+	}
+	return "", nil
 }
 
 // SendMedia implements channels.MediaSender.
