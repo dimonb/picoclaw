@@ -169,7 +169,7 @@ func TestGatewayStartReady_LocalModelWithoutAPIKey(t *testing.T) {
 	defer cleanup()
 	resetModelProbeHooks(t)
 
-	probeOpenAICompatibleModelFunc = func(apiBase, modelID string) bool {
+	probeOpenAICompatibleModelFunc = func(apiBase, modelID, apiKey string) bool {
 		return false
 	}
 
@@ -206,8 +206,8 @@ func TestGatewayStartReady_LocalModelWithRunningService(t *testing.T) {
 	defer cleanup()
 	resetModelProbeHooks(t)
 
-	probeOpenAICompatibleModelFunc = func(apiBase, modelID string) bool {
-		return apiBase == "http://127.0.0.1:8000/v1" && modelID == "custom-model"
+	probeOpenAICompatibleModelFunc = func(apiBase, modelID, apiKey string) bool {
+		return apiBase == "http://127.0.0.1:8000/v1" && modelID == "custom-model" && apiKey == ""
 	}
 
 	cfg, err := config.LoadConfig(configPath)
@@ -240,7 +240,7 @@ func TestGatewayStartReady_RemoteVLLMWithAPIKeyDoesNotProbe(t *testing.T) {
 	defer cleanup()
 	resetModelProbeHooks(t)
 
-	probeOpenAICompatibleModelFunc = func(apiBase, modelID string) bool {
+	probeOpenAICompatibleModelFunc = func(apiBase, modelID, apiKey string) bool {
 		t.Fatalf("unexpected OpenAI-compatible probe for %q (%q)", apiBase, modelID)
 		return false
 	}
@@ -596,6 +596,11 @@ func TestGatewayStatusReturnsErrorAfterStartupWindowExpires(t *testing.T) {
 func TestGatewayStatusReturnsRestartingDuringRestartGap(t *testing.T) {
 	resetGatewayTestState(t)
 
+	// Mock health check to return error, so it won't override our "restarting" status
+	gatewayHealthGet = func(url string, timeout time.Duration) (*http.Response, error) {
+		return nil, errors.New("mock health check error")
+	}
+
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	h := NewHandler(configPath)
 	mux := http.NewServeMux()
@@ -737,6 +742,11 @@ func TestGatewayRestartKeepsOldProcessWhenItDoesNotExitInTime(t *testing.T) {
 
 func TestGatewayRestartReturnsErrorStatusWhenReplacementFailsToStart(t *testing.T) {
 	resetGatewayTestState(t)
+
+	// Mock health check to return error, so it won't override our "error" status
+	gatewayHealthGet = func(url string, timeout time.Duration) (*http.Response, error) {
+		return nil, errors.New("mock health check error")
+	}
 
 	configPath := filepath.Join(t.TempDir(), "config.json")
 	cfg := config.DefaultConfig()

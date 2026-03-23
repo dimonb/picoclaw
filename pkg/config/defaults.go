@@ -15,7 +15,7 @@ func DefaultConfig() *Config {
 	// Determine the base path for the workspace.
 	// Priority: $PICOCLAW_HOME > ~/.picoclaw
 	var homePath string
-	if picoclawHome := os.Getenv("PICOCLAW_HOME"); picoclawHome != "" {
+	if picoclawHome := os.Getenv(EnvHome); picoclawHome != "" {
 		homePath = picoclawHome
 	} else {
 		userHome, _ := os.UserHomeDir()
@@ -36,6 +36,11 @@ func DefaultConfig() *Config {
 				SummarizeMessageThreshold: 20,
 				SummarizeKeepMessages:     4,
 				SummarizeTokenPercent:     75,
+				SteeringMode:              "one-at-a-time",
+				ToolFeedback: ToolFeedbackConfig{
+					Enabled:       true,
+					MaxArgsLength: 300,
+				},
 			},
 		},
 		Bindings: []AgentBinding{},
@@ -60,6 +65,8 @@ func DefaultConfig() *Config {
 					Enabled: true,
 					Text:    "Thinking... 💭",
 				},
+				Streaming:     StreamingConfig{Enabled: true, ThrottleSeconds: 3, MinGrowthChars: 200},
+				UseMarkdownV2: false,
 			},
 			Feishu: FeishuConfig{
 				Enabled:           false,
@@ -82,11 +89,12 @@ func DefaultConfig() *Config {
 				AllowFrom: FlexibleStringSlice{},
 			},
 			QQ: QQConfig{
-				Enabled:          false,
-				AppID:            "",
-				AppSecret:        "",
-				AllowFrom:        FlexibleStringSlice{},
-				MaxMessageLength: 2000,
+				Enabled:              false,
+				AppID:                "",
+				AppSecret:            "",
+				AllowFrom:            FlexibleStringSlice{},
+				MaxMessageLength:     2000,
+				MaxBase64FileSizeMiB: 0,
 			},
 			DingTalk: DingTalkConfig{
 				Enabled:      false,
@@ -159,14 +167,23 @@ func DefaultConfig() *Config {
 				ReplyTimeout:   5,
 			},
 			WeComAIBot: WeComAIBotConfig{
-				Enabled:        false,
-				Token:          "",
-				EncodingAESKey: "",
-				WebhookPath:    "/webhook/wecom-aibot",
-				AllowFrom:      FlexibleStringSlice{},
-				ReplyTimeout:   5,
-				MaxSteps:       10,
-				WelcomeMessage: "Hello! I'm your AI assistant. How can I help you today?",
+				Enabled:           false,
+				Token:             "",
+				EncodingAESKey:    "",
+				WebhookPath:       "/webhook/wecom-aibot",
+				AllowFrom:         FlexibleStringSlice{},
+				ReplyTimeout:      5,
+				MaxSteps:          10,
+				WelcomeMessage:    "Hello! I'm your AI assistant. How can I help you today?",
+				ProcessingMessage: DefaultWeComAIBotProcessingMessage,
+			},
+			Weixin: WeixinConfig{
+				Enabled:    false,
+				Token:      "",
+				BaseURL:    "https://ilinkai.weixin.qq.com/",
+				CDNBaseURL: "https://novac2c.cdn.weixin.qq.com/c2c",
+				AllowFrom:  FlexibleStringSlice{},
+				Proxy:      "",
 			},
 			Pico: PicoConfig{
 				Enabled:        false,
@@ -176,6 +193,14 @@ func DefaultConfig() *Config {
 				WriteTimeout:   10,
 				MaxConnections: 100,
 				AllowFrom:      FlexibleStringSlice{},
+			},
+		},
+		Hooks: HooksConfig{
+			Enabled: true,
+			Defaults: HookDefaultsConfig{
+				ObserverTimeoutMS:    500,
+				InterceptorTimeoutMS: 5000,
+				ApprovalTimeoutMS:    60000,
 			},
 		},
 		Providers: ProvidersConfig{
@@ -400,6 +425,7 @@ func DefaultConfig() *Config {
 			Host:      "127.0.0.1",
 			Port:      18790,
 			HotReload: false,
+			LogLevel:  "fatal",
 		},
 		Tools: ToolsConfig{
 			MediaCleanup: MediaCleanupConfig{
@@ -413,8 +439,10 @@ func DefaultConfig() *Config {
 				ToolConfig: ToolConfig{
 					Enabled: true,
 				},
+				PreferNative:    true,
 				Proxy:           "",
 				FetchLimitBytes: 10 * 1024 * 1024, // 10MB by default
+				Format:          "plaintext",
 				Brave: BraveConfig{
 					Enabled:    false,
 					APIKey:     "",
@@ -448,6 +476,12 @@ func DefaultConfig() *Config {
 					BaseURL:      "https://open.bigmodel.cn/api/paas/v4/web_search",
 					SearchEngine: "search_std",
 					MaxResults:   5,
+				},
+				BaiduSearch: BaiduSearchConfig{
+					Enabled:    false,
+					APIKey:     "",
+					BaseURL:    "https://qianfan.baidubce.com/v2/ai_search/web_search",
+					MaxResults: 10,
 				},
 			},
 			Cron: CronToolsConfig{
@@ -564,6 +598,7 @@ func DefaultConfig() *Config {
 			MonitorUSB: true,
 		},
 		Voice: VoiceConfig{
+			ModelName:         "",
 			EchoTranscription: false,
 		},
 		BuildInfo: BuildInfo{

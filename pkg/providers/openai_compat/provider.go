@@ -139,6 +139,24 @@ func (p *Provider) Chat(
 	return p.chatCompletions(ctx, messages, tools, normalizedModel, options)
 }
 
+// buildRequestBody constructs the chat/completions request body shared by
+// ChatStream and any legacy call sites that still need the old path directly.
+func (p *Provider) buildRequestBody(
+	messages []Message,
+	tools []ToolDefinition,
+	model string,
+	options map[string]any,
+) map[string]any {
+	return buildChatCompletionsRequestBody(
+		messages,
+		tools,
+		normalizeModel(model, p.apiBase),
+		options,
+		p.maxTokensField,
+		p.apiBase,
+	)
+}
+
 func (p *Provider) chatCompletions(
 	ctx context.Context,
 	messages []Message,
@@ -177,8 +195,11 @@ func buildChatCompletionsRequestBody(
 		"messages": common.SerializeMessages(messages),
 	}
 
-	if len(tools) > 0 {
-		requestBody["tools"] = tools
+	// When fallback uses a different provider (e.g. DeepSeek), that provider must not inject web_search_preview.
+	nativeSearch, _ := options["native_search"].(bool)
+	nativeSearch = nativeSearch && isNativeSearchHost(apiBase)
+	if len(tools) > 0 || nativeSearch {
+		requestBody["tools"] = buildToolsList(tools, nativeSearch)
 		requestBody["tool_choice"] = "auto"
 	}
 
@@ -785,6 +806,214 @@ func decodeToolCallArguments(raw json.RawMessage, name string) map[string]any {
 	}
 }
 
+// ChatStream implements streaming via OpenAI-compatible SSE (stream: true).
+// onChunk receives the accumulated text so far on each text delta.
+func (p *Provider) ChatStream(
+	ctx context.Context,
+	messages []Message,
+	tools []ToolDefinition,
+	model string,
+	options map[string]any,
+	onChunk func(accumulated string),
+) (*LLMResponse, error) {
+	if p.apiBase == "" {
+		return nil, fmt.Errorf("API base not configured")
+	}
+
+	requestBody := p.buildRequestBody(messages, tools, model, options)
+	requestBody["stream"] = true
+
+	jsonData, err := json.Marshal(requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "POST", p.apiBase+"/chat/completions", bytes.NewReader(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	if p.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+	}
+
+	// Use a client without Timeout for streaming since http.Client.Timeout
+	// covers the entire body read lifecycle and would kill long streams.
+	streamClient := &http.Client{Transport: p.httpClient.Transport}
+	resp, err := streamClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to send request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, common.HandleErrorResponse(resp, p.apiBase)
+	}
+
+	return parseStreamResponse(ctx, resp.Body, onChunk)
+}
+
+// parseStreamResponse parses an OpenAI-compatible SSE stream.
+func parseStreamResponse(
+	ctx context.Context,
+	reader io.Reader,
+	onChunk func(accumulated string),
+) (*LLMResponse, error) {
+	var textContent strings.Builder
+	var finishReason string
+	var usage *UsageInfo
+
+	type toolAccum struct {
+		id       string
+		name     string
+		argsJSON strings.Builder
+	}
+	activeTools := map[int]*toolAccum{}
+
+	scanner := bufio.NewScanner(reader)
+	scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)
+	for scanner.Scan() {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		data := strings.TrimPrefix(line, "data: ")
+		if data == "[DONE]" {
+			break
+		}
+
+		var chunk struct {
+			Choices []struct {
+				Delta struct {
+					Content   string `json:"content"`
+					ToolCalls []struct {
+						Index    int    `json:"index"`
+						ID       string `json:"id"`
+						Function *struct {
+							Name      string `json:"name"`
+							Arguments string `json:"arguments"`
+						} `json:"function"`
+					} `json:"tool_calls"`
+				} `json:"delta"`
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+			Usage *UsageInfo `json:"usage"`
+		}
+
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			continue
+		}
+		if chunk.Usage != nil {
+			usage = chunk.Usage
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+
+		choice := chunk.Choices[0]
+		if choice.Delta.Content != "" {
+			textContent.WriteString(choice.Delta.Content)
+			if onChunk != nil {
+				onChunk(textContent.String())
+			}
+		}
+
+		for _, tc := range choice.Delta.ToolCalls {
+			acc, ok := activeTools[tc.Index]
+			if !ok {
+				acc = &toolAccum{}
+				activeTools[tc.Index] = acc
+			}
+			if tc.ID != "" {
+				acc.id = tc.ID
+			}
+			if tc.Function != nil {
+				if tc.Function.Name != "" {
+					acc.name = tc.Function.Name
+				}
+				if tc.Function.Arguments != "" {
+					acc.argsJSON.WriteString(tc.Function.Arguments)
+				}
+			}
+		}
+
+		if choice.FinishReason != nil {
+			finishReason = *choice.FinishReason
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("streaming read error: %w", err)
+	}
+
+	var toolCalls []ToolCall
+	for i := 0; i < len(activeTools); i++ {
+		acc, ok := activeTools[i]
+		if !ok {
+			continue
+		}
+
+		args := make(map[string]any)
+		raw := acc.argsJSON.String()
+		if raw != "" {
+			if err := json.Unmarshal([]byte(raw), &args); err != nil {
+				log.Printf("openai_compat stream: failed to decode tool call arguments for %q: %v", acc.name, err)
+				args["raw"] = raw
+			}
+		}
+
+		toolCalls = append(toolCalls, ToolCall{
+			ID:        acc.id,
+			Name:      acc.name,
+			Arguments: args,
+		})
+	}
+
+	if finishReason == "" {
+		finishReason = "stop"
+	}
+
+	return &LLMResponse{
+		Content:      textContent.String(),
+		ToolCalls:    toolCalls,
+		FinishReason: finishReason,
+		Usage:        usage,
+	}, nil
+}
+
+func buildToolsList(tools []ToolDefinition, nativeSearch bool) []any {
+	result := make([]any, 0, len(tools)+1)
+	for _, t := range tools {
+		if nativeSearch && strings.EqualFold(t.Function.Name, "web_search") {
+			continue
+		}
+		result = append(result, t)
+	}
+	if nativeSearch {
+		result = append(result, map[string]any{"type": "web_search_preview"})
+	}
+	return result
+}
+
+func (p *Provider) SupportsNativeSearch() bool {
+	return isNativeSearchHost(p.apiBase)
+}
+
+func isNativeSearchHost(apiBase string) bool {
+	u, err := url.Parse(apiBase)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	return host == "api.openai.com" || strings.HasSuffix(host, ".openai.azure.com")
+}
+
 func normalizeModel(model, apiBase string) string {
 	before, after, ok := strings.Cut(model, "/")
 	if !ok {
@@ -798,7 +1027,7 @@ func normalizeModel(model, apiBase string) string {
 	prefix := strings.ToLower(before)
 	switch prefix {
 	case "litellm", "moonshot", "nvidia", "groq", "ollama", "deepseek", "google",
-		"openrouter", "zhipu", "mistral", "vivgrid", "minimax":
+		"openrouter", "zhipu", "mistral", "vivgrid", "minimax", "novita":
 		return after
 	default:
 		return model

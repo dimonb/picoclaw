@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -48,6 +50,11 @@ type stubConstructor struct {
 	multipartCalls []stubMultipartCall
 }
 
+type multipartCall struct {
+	Parameters map[string]string
+	FileSizes  map[string]int
+}
+
 func (s *stubConstructor) JSONRequest(parameters any) (*ta.RequestData, error) {
 	body, err := json.Marshal(parameters)
 	if err != nil {
@@ -88,6 +95,36 @@ func (s *stubConstructor) MultipartRequest(
 	}, nil
 }
 
+type multipartRecordingConstructor struct {
+	stubConstructor
+	calls []multipartCall
+}
+
+func (s *multipartRecordingConstructor) MultipartRequest(
+	parameters map[string]string,
+	files map[string]ta.NamedReader,
+) (*ta.RequestData, error) {
+	call := multipartCall{
+		Parameters: make(map[string]string, len(parameters)),
+		FileSizes:  make(map[string]int, len(files)),
+	}
+	for k, v := range parameters {
+		call.Parameters[k] = v
+	}
+	for field, file := range files {
+		if file == nil {
+			continue
+		}
+		data, err := io.ReadAll(file)
+		if err != nil {
+			return nil, err
+		}
+		call.FileSizes[field] = len(data)
+	}
+	s.calls = append(s.calls, call)
+	return &ta.RequestData{}, nil
+}
+
 // successResponse returns a ta.Response that telego will treat as a successful SendMessage.
 func successResponse(t *testing.T) *ta.Response {
 	return successResponseWithID(t, 1)
@@ -111,7 +148,11 @@ func newTestChannel(t *testing.T, caller *stubCaller) *TelegramChannel {
 	return newTestChannelWithConstructor(t, caller, &stubConstructor{})
 }
 
-func newTestChannelWithConstructor(t *testing.T, caller *stubCaller, constructor *stubConstructor) *TelegramChannel {
+func newTestChannelWithConstructor(
+	t *testing.T,
+	caller *stubCaller,
+	constructor ta.RequestConstructor,
+) *TelegramChannel {
 	t.Helper()
 
 	bot, err := telego.NewBot(testToken,
@@ -130,6 +171,7 @@ func newTestChannelWithConstructor(t *testing.T, caller *stubCaller, constructor
 		BaseChannel: base,
 		bot:         bot,
 		chatIDs:     make(map[string]int64),
+		config:      config.DefaultConfig(),
 	}
 }
 
@@ -139,6 +181,96 @@ func decodeCallBody(t *testing.T, call stubCall) map[string]any {
 	var body map[string]any
 	require.NoError(t, json.Unmarshal(call.Data.BodyRaw, &body))
 	return body
+}
+
+func TestSendMedia_ImageFallbacksToDocumentOnInvalidDimensions(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			switch {
+			case strings.Contains(url, "sendPhoto"):
+				return nil, errors.New(`api: 400 "Bad Request: PHOTO_INVALID_DIMENSIONS"`)
+			case strings.Contains(url, "sendDocument"):
+				return successResponse(t), nil
+			default:
+				t.Fatalf("unexpected API call: %s", url)
+				return nil, nil
+			}
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	localPath := filepath.Join(tmpDir, "woodstock-en-10s.png")
+	content := []byte("fake-png-content")
+	require.NoError(t, os.WriteFile(localPath, content, 0o644))
+
+	ref, err := store.Store(
+		localPath,
+		media.MediaMeta{Filename: "woodstock-en-10s.png", ContentType: "image/png"},
+		"scope-1",
+	)
+	require.NoError(t, err)
+
+	err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{{
+			Type:    "image",
+			Ref:     ref,
+			Caption: "caption",
+		}},
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 2)
+	assert.Contains(t, caller.calls[0].URL, "sendPhoto")
+	assert.Contains(t, caller.calls[1].URL, "sendDocument")
+	require.Len(t, constructor.calls, 2)
+	assert.Equal(t, len(content), constructor.calls[0].FileSizes["photo"])
+	assert.Equal(t, len(content), constructor.calls[1].FileSizes["document"])
+	assert.Equal(t, "caption", constructor.calls[1].Parameters["caption"])
+}
+
+func TestSendMedia_ImageNonDimensionErrorDoesNotFallback(t *testing.T) {
+	constructor := &multipartRecordingConstructor{}
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return nil, errors.New(`api: 500 "server exploded"`)
+		},
+	}
+	ch := newTestChannelWithConstructor(t, caller, constructor)
+
+	store := media.NewFileMediaStore()
+	ch.SetMediaStore(store)
+
+	tmpDir := t.TempDir()
+	localPath := filepath.Join(tmpDir, "image.png")
+	require.NoError(t, os.WriteFile(localPath, []byte("fake-png-content"), 0o644))
+
+	ref, err := store.Store(
+		localPath,
+		media.MediaMeta{Filename: "image.png", ContentType: "image/png"},
+		"scope-1",
+	)
+	require.NoError(t, err)
+
+	err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID: "12345",
+		Parts: []bus.MediaPart{{
+			Type: "image",
+			Ref:  ref,
+		}},
+	})
+
+	require.Error(t, err)
+	assert.ErrorIs(t, err, channels.ErrTemporary)
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "sendPhoto")
+	require.Len(t, constructor.calls, 1)
+	assert.NotContains(t, caller.calls[0].URL, "sendDocument")
 }
 
 func TestSend_Wrapper(t *testing.T) {
@@ -376,6 +508,41 @@ func TestSendMessageWithID_MarkdownShortButHTMLLong_MultipleCalls(t *testing.T) 
 		"markdown-short but HTML-long message should be split into multiple SendMessage calls",
 	)
 	assert.Equal(t, "1,2", msgID)
+}
+
+func TestSend_HTMLOverflow_WordBoundary(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return successResponse(t), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+
+	prefix := strings.Repeat("**a** ", 430)
+	targetWord := "TARGETWORDTHATSTAYSTOGETHER"
+	suffix := strings.Repeat(" **b**", 230)
+	content := prefix + targetWord + suffix
+
+	assert.LessOrEqual(t, len([]rune(content)), 4000)
+
+	err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "123456",
+		Content: content,
+	})
+
+	assert.NoError(t, err)
+
+	foundFullWord := false
+	for _, call := range caller.calls {
+		body := decodeCallBody(t, call)
+		text, _ := body["text"].(string)
+		if strings.Contains(text, targetWord) {
+			foundFullWord = true
+			break
+		}
+	}
+
+	assert.True(t, foundFullWord, "The target word should not be split between chunks")
 }
 
 func TestEditMessage_MultipleChunkIDs(t *testing.T) {

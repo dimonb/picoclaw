@@ -77,6 +77,22 @@ func TestAgentModelConfig_MarshalObject(t *testing.T) {
 	}
 }
 
+func TestProvidersConfig_IsEmpty(t *testing.T) {
+	var empty ProvidersConfig
+	if !empty.IsEmpty() {
+		t.Fatal("empty ProvidersConfig should report empty")
+	}
+
+	novita := ProvidersConfig{
+		Novita: ProviderConfig{
+			APIKey: "test-key",
+		},
+	}
+	if novita.IsEmpty() {
+		t.Fatal("ProvidersConfig with novita settings should not report empty")
+	}
+}
+
 func TestAgentConfig_FullParse(t *testing.T) {
 	jsonData := `{
 		"agents": {
@@ -436,6 +452,45 @@ func TestDefaultConfig_OpenAIWebSearchEnabled(t *testing.T) {
 	}
 }
 
+func TestDefaultConfig_WebPreferNativeEnabled(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.Tools.Web.PreferNative {
+		t.Fatal("DefaultConfig().Tools.Web.PreferNative should be true")
+	}
+}
+
+func TestLoadConfig_WebPreferNativeDefaultsTrueWhenUnset(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"tools":{"web":{"enabled":true}}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if !cfg.Tools.Web.PreferNative {
+		t.Fatal("PreferNative should remain true when unset in config file")
+	}
+}
+
+func TestLoadConfig_WebPreferNativeCanBeDisabled(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"tools":{"web":{"prefer_native":false}}}`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if cfg.Tools.Web.PreferNative {
+		t.Fatal("PreferNative should be false when disabled in config file")
+	}
+}
+
 func TestDefaultConfig_ExecAllowRemoteEnabled(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.Tools.Exec.AllowRemote {
@@ -447,6 +502,29 @@ func TestDefaultConfig_CronAllowCommandEnabled(t *testing.T) {
 	cfg := DefaultConfig()
 	if !cfg.Tools.Cron.AllowCommand {
 		t.Fatal("DefaultConfig().Tools.Cron.AllowCommand should be true")
+	}
+}
+
+func TestDefaultConfig_HooksDefaults(t *testing.T) {
+	cfg := DefaultConfig()
+	if !cfg.Hooks.Enabled {
+		t.Fatal("DefaultConfig().Hooks.Enabled should be true")
+	}
+	if cfg.Hooks.Defaults.ObserverTimeoutMS != 500 {
+		t.Fatalf("ObserverTimeoutMS = %d, want 500", cfg.Hooks.Defaults.ObserverTimeoutMS)
+	}
+	if cfg.Hooks.Defaults.InterceptorTimeoutMS != 5000 {
+		t.Fatalf("InterceptorTimeoutMS = %d, want 5000", cfg.Hooks.Defaults.InterceptorTimeoutMS)
+	}
+	if cfg.Hooks.Defaults.ApprovalTimeoutMS != 60000 {
+		t.Fatalf("ApprovalTimeoutMS = %d, want 60000", cfg.Hooks.Defaults.ApprovalTimeoutMS)
+	}
+}
+
+func TestDefaultConfig_LogLevel(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.Gateway.LogLevel != "fatal" {
+		t.Errorf("LogLevel = %q, want \"fatal\"", cfg.Gateway.LogLevel)
 	}
 }
 
@@ -532,6 +610,88 @@ func TestLoadConfig_WebToolsProxy(t *testing.T) {
 	}
 	if cfg.Tools.Web.Proxy != "http://127.0.0.1:7890" {
 		t.Fatalf("Tools.Web.Proxy = %q, want %q", cfg.Tools.Web.Proxy, "http://127.0.0.1:7890")
+	}
+}
+
+func TestLoadConfig_HooksProcessConfig(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.json")
+	configJSON := `{
+  "hooks": {
+    "processes": {
+      "review-gate": {
+        "enabled": true,
+        "transport": "stdio",
+        "command": ["uvx", "picoclaw-hook-reviewer"],
+        "dir": "/tmp/hooks",
+        "env": {
+          "HOOK_MODE": "rewrite"
+        },
+        "observe": ["turn_start", "turn_end"],
+        "intercept": ["before_tool", "approve_tool"]
+      }
+    },
+    "builtins": {
+      "audit": {
+        "enabled": true,
+        "priority": 5,
+        "config": {
+          "label": "audit"
+        }
+      }
+    }
+  }
+}`
+	if err := os.WriteFile(configPath, []byte(configJSON), 0o600); err != nil {
+		t.Fatalf("os.WriteFile() error: %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+
+	processCfg, ok := cfg.Hooks.Processes["review-gate"]
+	if !ok {
+		t.Fatal("expected review-gate process hook")
+	}
+	if !processCfg.Enabled {
+		t.Fatal("expected review-gate process hook to be enabled")
+	}
+	if processCfg.Transport != "stdio" {
+		t.Fatalf("Transport = %q, want stdio", processCfg.Transport)
+	}
+	if len(processCfg.Command) != 2 || processCfg.Command[0] != "uvx" {
+		t.Fatalf("Command = %v", processCfg.Command)
+	}
+	if processCfg.Dir != "/tmp/hooks" {
+		t.Fatalf("Dir = %q, want /tmp/hooks", processCfg.Dir)
+	}
+	if processCfg.Env["HOOK_MODE"] != "rewrite" {
+		t.Fatalf("HOOK_MODE = %q, want rewrite", processCfg.Env["HOOK_MODE"])
+	}
+	if len(processCfg.Observe) != 2 || processCfg.Observe[1] != "turn_end" {
+		t.Fatalf("Observe = %v", processCfg.Observe)
+	}
+	if len(processCfg.Intercept) != 2 || processCfg.Intercept[1] != "approve_tool" {
+		t.Fatalf("Intercept = %v", processCfg.Intercept)
+	}
+
+	builtinCfg, ok := cfg.Hooks.Builtins["audit"]
+	if !ok {
+		t.Fatal("expected audit builtin hook")
+	}
+	if !builtinCfg.Enabled {
+		t.Fatal("expected audit builtin hook to be enabled")
+	}
+	if builtinCfg.Priority != 5 {
+		t.Fatalf("Priority = %d, want 5", builtinCfg.Priority)
+	}
+	if !strings.Contains(string(builtinCfg.Config), `"audit"`) {
+		t.Fatalf("Config = %s", string(builtinCfg.Config))
+	}
+	if cfg.Hooks.Defaults.ApprovalTimeoutMS != 60000 {
+		t.Fatalf("ApprovalTimeoutMS = %d, want 60000", cfg.Hooks.Defaults.ApprovalTimeoutMS)
 	}
 }
 
@@ -1052,5 +1212,40 @@ func TestLoadConfig_UsesPassphraseProvider(t *testing.T) {
 	}
 	if cfg.ModelList[0].APIKey != plainKey {
 		t.Errorf("api_key = %q, want %q", cfg.ModelList[0].APIKey, plainKey)
+	}
+}
+
+func TestConfigParsesLogLevel(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	data := `{"gateway":{"log_level":"debug"}}`
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.Gateway.LogLevel != "debug" {
+		t.Errorf("LogLevel = %q, want \"debug\"", cfg.Gateway.LogLevel)
+	}
+}
+
+func TestConfigLogLevelEmpty(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	data := `{}`
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	cfg, err := LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	// When config omits log_level, the DefaultConfig value ("fatal") is preserved.
+	if cfg.Gateway.LogLevel != "fatal" {
+		t.Errorf("LogLevel = %q, want \"fatal\"", cfg.Gateway.LogLevel)
 	}
 }

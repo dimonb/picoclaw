@@ -156,9 +156,99 @@ func (d *sessionDispatcher) process(task workerTask) {
 			return
 		}
 	}
+	defer func() {
+		if d.al.channelManager != nil {
+			d.al.channelManager.InvokeTypingStop(task.msg.Channel, task.msg.ChatID)
+		}
+	}()
+
+	drainCancel := func() {}
+	if activeScope, activeAgentID, ok := d.al.resolveSteeringTarget(task.msg); ok {
+		drainCtx, cancel := context.WithCancel(task.ctx)
+		drainCancel = cancel
+		go d.al.drainBusToSteering(drainCtx, activeScope, activeAgentID)
+	}
+	drainCanceled := false
+	cancelDrain := func() {
+		if drainCanceled {
+			return
+		}
+		drainCancel()
+		drainCanceled = true
+	}
+	defer cancelDrain()
+
 	response, err := d.al.processMessage(task.ctx, task.msg)
 	if err != nil {
 		response = agentResponse{Content: fmt.Sprintf("Error processing message: %v", err)}
 	}
-	d.al.deliverAgentResponse(task.ctx, task.msg.Channel, task.msg.ChatID, response)
+
+	finalResponse := response
+
+	target, targetErr := d.al.buildContinuationTarget(task.msg)
+	if targetErr != nil {
+		logger.WarnCF("agent", "Failed to build steering continuation target", map[string]any{
+			"channel": task.msg.Channel,
+			"error":   targetErr.Error(),
+		})
+		d.al.deliverAgentResponse(task.ctx, task.msg.Channel, task.msg.ChatID, finalResponse)
+		return
+	}
+	if target == nil {
+		cancelDrain()
+		d.al.deliverAgentResponse(task.ctx, task.msg.Channel, task.msg.ChatID, finalResponse)
+		return
+	}
+
+	for d.al.pendingSteeringCountForScope(target.SessionKey) > 0 {
+		logger.InfoCF("agent", "Continuing queued steering after turn end", map[string]any{
+			"channel":     target.Channel,
+			"chat_id":     target.ChatID,
+			"session_key": target.SessionKey,
+			"queue_depth": d.al.pendingSteeringCountForScope(target.SessionKey),
+		})
+
+		continued, continueErr := d.al.Continue(task.ctx, target.SessionKey, target.Channel, target.ChatID)
+		if continueErr != nil {
+			logger.WarnCF("agent", "Failed to continue queued steering", map[string]any{
+				"channel": target.Channel,
+				"chat_id": target.ChatID,
+				"error":   continueErr.Error(),
+			})
+			return
+		}
+		if continued == "" {
+			break
+		}
+
+		finalResponse = agentResponse{Content: continued}
+	}
+
+	cancelDrain()
+
+	for d.al.pendingSteeringCountForScope(target.SessionKey) > 0 {
+		logger.InfoCF("agent", "Draining steering queued during turn shutdown", map[string]any{
+			"channel":     target.Channel,
+			"chat_id":     target.ChatID,
+			"session_key": target.SessionKey,
+			"queue_depth": d.al.pendingSteeringCountForScope(target.SessionKey),
+		})
+
+		continued, continueErr := d.al.Continue(task.ctx, target.SessionKey, target.Channel, target.ChatID)
+		if continueErr != nil {
+			logger.WarnCF("agent", "Failed to continue queued steering after shutdown drain", map[string]any{
+				"channel": target.Channel,
+				"chat_id": target.ChatID,
+				"error":   continueErr.Error(),
+			})
+			return
+		}
+		if continued == "" {
+			break
+		}
+
+		finalResponse = agentResponse{Content: continued}
+	}
+
+	d.al.deliverAgentResponse(task.ctx, target.Channel, target.ChatID, finalResponse)
 }

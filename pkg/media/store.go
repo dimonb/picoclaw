@@ -16,11 +16,25 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
+// CleanupPolicy controls how the MediaStore treats the underlying file when
+// a ref is released or expires.
+type CleanupPolicy string
+
+const (
+	// CleanupPolicyDeleteOnCleanup means the file is store-managed and may be
+	// deleted once the final ref for that path is gone.
+	CleanupPolicyDeleteOnCleanup CleanupPolicy = "delete_on_cleanup"
+	// CleanupPolicyForgetOnly means the store should only drop ref mappings and
+	// must never delete the underlying file.
+	CleanupPolicyForgetOnly CleanupPolicy = "forget_only"
+)
+
 // MediaMeta holds metadata about a stored media file.
 type MediaMeta struct {
-	Filename    string `json:"filename,omitempty"`
-	ContentType string `json:"content_type,omitempty"`
-	Source      string `json:"source,omitempty"` // "telegram", "discord", "tool:image-gen", etc.
+	Filename      string        `json:"filename,omitempty"`
+	ContentType   string        `json:"content_type,omitempty"`
+	Source        string        `json:"source,omitempty"` // "telegram", "discord", "tool:image-gen", etc.
+	CleanupPolicy CleanupPolicy `json:"cleanup_policy,omitempty"`
 }
 
 // MediaStore manages the lifecycle of media files associated with processing scopes.
@@ -28,6 +42,8 @@ type MediaStore interface {
 	// Store registers an existing local file under the given scope.
 	// Returns a ref identifier (e.g. "media://<id>").
 	// In disk-backed mode the file is copied into the managed media directory.
+	// If meta.CleanupPolicy is empty, CleanupPolicyDeleteOnCleanup is assumed for
+	// lifecycle behavior, but the stored metadata remains unchanged.
 	Store(localPath string, meta MediaMeta, scope string) (ref string, err error)
 
 	// Resolve returns the local path for a given ref.
@@ -62,6 +78,11 @@ type persistedEntry struct {
 	Meta     MediaMeta `json:"meta"`
 }
 
+type pathRefState struct {
+	refCount       int
+	deleteEligible bool
+}
+
 // MediaCleanerConfig configures the background TTL cleanup.
 type MediaCleanerConfig struct {
 	Enabled  bool
@@ -77,6 +98,8 @@ type FileMediaStore struct {
 	scopeToRefs map[string]map[string]struct{}
 	refToScope  map[string]string
 	baseDir     string
+	refToPath   map[string]string
+	pathStates  map[string]pathRefState
 
 	cleanerCfg MediaCleanerConfig
 	stop       chan struct{}
@@ -112,6 +135,8 @@ func newFileMediaStore(baseDir string, cfg MediaCleanerConfig, withCleanup bool)
 		refs:        make(map[string]mediaEntry),
 		scopeToRefs: make(map[string]map[string]struct{}),
 		refToScope:  make(map[string]string),
+		refToPath:   make(map[string]string),
+		pathStates:  make(map[string]pathRefState),
 		nowFunc:     time.Now,
 	}
 	if withCleanup {
@@ -144,6 +169,7 @@ func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (
 	ref := mediaRef(refID)
 	storedAt := s.nowFunc()
 	storedPath := localPath
+	cleanupPolicy := normalizeCleanupPolicy(meta.CleanupPolicy)
 
 	if s.baseDir != "" {
 		storedPath = s.blobPath(refID)
@@ -166,6 +192,18 @@ func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (
 	}
 	s.scopeToRefs[scope][ref] = struct{}{}
 	s.refToScope[ref] = scope
+	s.refToPath[ref] = storedPath
+
+	pathState := s.pathStates[storedPath]
+	if pathState.refCount == 0 {
+		pathState.deleteEligible = cleanupPolicy == CleanupPolicyDeleteOnCleanup
+	} else if cleanupPolicy == CleanupPolicyForgetOnly {
+		// Be conservative: once a path is borrowed externally, never let this
+		// lifecycle auto-delete it even if store-managed refs also exist.
+		pathState.deleteEligible = false
+	}
+	pathState.refCount++
+	s.pathStates[storedPath] = pathState
 
 	return ref, nil
 }
@@ -213,25 +251,73 @@ func (s *FileMediaStore) CleanExpired() int {
 
 	s.mu.Lock()
 	cutoff := s.nowFunc().Add(-s.cleanerCfg.MaxAge)
-	var expired []detachedEntry
+	var expiredDeletes []detachedEntry
+	expiredCount := 0
 
 	for ref, entry := range s.refs {
 		if entry.storedAt.Before(cutoff) {
-			expired = append(expired, detachedEntry{ref: ref, path: entry.path})
-			s.detachRefLocked(ref)
+			expiredCount++
+			path, shouldDelete := s.releaseRefLocked(ref, entry.path)
+			if shouldDelete {
+				expiredDeletes = append(expiredDeletes, detachedEntry{ref: ref, path: path})
+			}
 		}
 	}
 	s.mu.Unlock()
 
-	if s.baseDir != "" {
-		return len(expired)
-	}
-
-	for _, entry := range expired {
+	for _, entry := range expiredDeletes {
 		s.deleteEntryFiles(entry.ref, entry.path)
 	}
 
-	return len(expired)
+	return expiredCount
+}
+
+func normalizeCleanupPolicy(policy CleanupPolicy) CleanupPolicy {
+	switch policy {
+	case "", CleanupPolicyDeleteOnCleanup:
+		return CleanupPolicyDeleteOnCleanup
+	case CleanupPolicyForgetOnly:
+		return CleanupPolicyForgetOnly
+	default:
+		return CleanupPolicyDeleteOnCleanup
+	}
+}
+
+func (s *FileMediaStore) releaseRefLocked(ref, fallbackPath string) (string, bool) {
+	path := fallbackPath
+	if storedPath, ok := s.refToPath[ref]; ok {
+		path = storedPath
+		delete(s.refToPath, ref)
+	}
+
+	if scope, ok := s.refToScope[ref]; ok {
+		if scopeRefs, exists := s.scopeToRefs[scope]; exists {
+			delete(scopeRefs, ref)
+			if len(scopeRefs) == 0 {
+				delete(s.scopeToRefs, scope)
+			}
+		}
+	}
+
+	delete(s.refs, ref)
+	delete(s.refToScope, ref)
+
+	if path == "" {
+		return "", false
+	}
+
+	pathState, ok := s.pathStates[path]
+	if !ok {
+		return "", false
+	}
+	if pathState.refCount <= 1 {
+		delete(s.pathStates, path)
+		return path, pathState.deleteEligible
+	}
+
+	pathState.refCount--
+	s.pathStates[path] = pathState
+	return "", false
 }
 
 // Start begins the background cleanup goroutine if cleanup is enabled.
@@ -305,24 +391,15 @@ func (s *FileMediaStore) detachScope(scope string) []detachedEntry {
 		if entry, exists := s.refs[ref]; exists {
 			path = entry.path
 		}
-		entries = append(entries, detachedEntry{ref: ref, path: path})
-		s.detachRefLocked(ref)
+		if removablePath, shouldDelete := s.releaseRefLocked(ref, path); shouldDelete {
+			entries = append(entries, detachedEntry{ref: ref, path: removablePath})
+		}
 	}
 	return entries
 }
 
 func (s *FileMediaStore) detachRefLocked(ref string) {
-	scope, ok := s.refToScope[ref]
-	if ok {
-		if scopeRefs, exists := s.scopeToRefs[scope]; exists {
-			delete(scopeRefs, ref)
-			if len(scopeRefs) == 0 {
-				delete(s.scopeToRefs, scope)
-			}
-		}
-	}
-	delete(s.refs, ref)
-	delete(s.refToScope, ref)
+	s.releaseRefLocked(ref, "")
 }
 
 func (s *FileMediaStore) deleteEntryFiles(ref, path string) {

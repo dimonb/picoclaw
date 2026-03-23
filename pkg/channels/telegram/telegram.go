@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -232,6 +233,8 @@ func (c *TelegramChannel) SendMessageWithIDs(ctx context.Context, msg bus.Outbou
 		return nil, nil
 	}
 
+	useMarkdownV2 := c.config != nil && c.config.Channels.Telegram.UseMarkdownV2
+
 	// The Manager already splits messages to ≤4000 chars (WithMaxMessageLength),
 	// so msg.Content is guaranteed to be within that limit. We still need to
 	// check if HTML expansion pushes it beyond Telegram's 4096-char API limit.
@@ -242,10 +245,10 @@ func (c *TelegramChannel) SendMessageWithIDs(ctx context.Context, msg bus.Outbou
 		chunk := queue[0]
 		queue = queue[1:]
 
-		htmlContent := markdownToTelegramHTML(chunk)
+		parsedContent := parseContent(chunk, useMarkdownV2)
 
-		if len([]rune(htmlContent)) > 4096 {
-			ratio := float64(len([]rune(chunk))) / float64(len([]rune(htmlContent)))
+		if len([]rune(parsedContent)) > 4096 {
+			ratio := float64(len([]rune(chunk))) / float64(len([]rune(parsedContent)))
 			smallerLen := int(float64(4096) * ratio * 0.95) // 5% safety margin
 			if smallerLen < 100 {
 				smallerLen = 100
@@ -257,7 +260,14 @@ func (c *TelegramChannel) SendMessageWithIDs(ctx context.Context, msg bus.Outbou
 			continue
 		}
 
-		msgID, err := c.sendHTMLChunk(ctx, chatID, threadID, replyToID, htmlContent, chunk)
+		msgID, err := c.sendChunk(ctx, sendChunkParams{
+			chatID:        chatID,
+			threadID:      threadID,
+			content:       parsedContent,
+			replyToID:     replyToID,
+			mdFallback:    chunk,
+			useMarkdownV2: useMarkdownV2,
+		})
 		if err != nil {
 			return nil, err
 		}
@@ -269,28 +279,33 @@ func (c *TelegramChannel) SendMessageWithIDs(ctx context.Context, msg bus.Outbou
 	return messageIDs, nil
 }
 
-// sendHTMLChunk sends a single HTML message, falling back to the original
-// markdown as plain text on parse failure so users never see raw HTML tags.
-func (c *TelegramChannel) sendHTMLChunk(
-	ctx context.Context,
-	chatID int64,
-	threadID int,
-	replyToMessageID string,
-	htmlContent, mdFallback string,
-) (string, error) {
-	tgMsg := tu.Message(tu.ID(chatID), htmlContent)
-	tgMsg.ParseMode = telego.ModeHTML
-	tgMsg.MessageThreadID = threadID
-	if replyParams, ok := telegramReplyParameters(replyToMessageID); ok {
+type sendChunkParams struct {
+	chatID        int64
+	threadID      int
+	content       string
+	replyToID     string
+	mdFallback    string
+	useMarkdownV2 bool
+}
+
+// sendChunk sends a single HTML/MarkdownV2 message, falling back to plain text
+// so users never see broken formatting markup.
+func (c *TelegramChannel) sendChunk(ctx context.Context, params sendChunkParams) (string, error) {
+	tgMsg := tu.Message(tu.ID(params.chatID), params.content)
+	tgMsg.MessageThreadID = params.threadID
+	if params.useMarkdownV2 {
+		tgMsg.WithParseMode(telego.ModeMarkdownV2)
+	} else {
+		tgMsg.WithParseMode(telego.ModeHTML)
+	}
+	if replyParams, ok := telegramReplyParameters(params.replyToID); ok {
 		tgMsg.ReplyParameters = replyParams
 	}
 
 	msg, err := c.bot.SendMessage(ctx, tgMsg)
 	if err != nil {
-		logger.ErrorCF("telegram", "HTML parse failed, falling back to plain text", map[string]any{
-			"error": err.Error(),
-		})
-		tgMsg.Text = mdFallback
+		logParseFailed(err, params.useMarkdownV2)
+		tgMsg.Text = params.mdFallback
 		tgMsg.ParseMode = ""
 		msg, err = c.bot.SendMessage(ctx, tgMsg)
 		if err != nil {
@@ -351,6 +366,10 @@ func telegramReplyParameters(replyToMessageID string) (*telego.ReplyParameters, 
 	}, true
 }
 
+// maxTypingDuration prevents typing indicators from running indefinitely when
+// the producer never calls the returned stop function.
+const maxTypingDuration = 5 * time.Minute
+
 // StartTyping implements channels.TypingCapable.
 // It sends ChatAction(typing) immediately and then repeats every 4 seconds
 // (Telegram's typing indicator expires after ~5s) in a background goroutine.
@@ -368,12 +387,14 @@ func (c *TelegramChannel) StartTyping(ctx context.Context, chatID string) (func(
 	_ = c.bot.SendChatAction(ctx, action)
 
 	typingCtx, cancel := context.WithCancel(ctx)
+	maxCtx, maxCancel := context.WithTimeout(typingCtx, maxTypingDuration)
 	go func() {
+		defer maxCancel()
 		ticker := time.NewTicker(4 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-typingCtx.Done():
+			case <-maxCtx.Done():
 				return
 			case <-ticker.C:
 				a := tu.ChatAction(tu.ID(cid), telego.ChatActionTyping)
@@ -388,6 +409,7 @@ func (c *TelegramChannel) StartTyping(ctx context.Context, chatID string) (func(
 
 // EditMessage implements channels.MessageEditor.
 func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messageID string, content string) error {
+	useMarkdownV2 := c.config != nil && c.config.Channels.Telegram.UseMarkdownV2
 	cid, _, err := parseTelegramChatID(chatID)
 	if err != nil {
 		return err
@@ -396,13 +418,13 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 	if err != nil {
 		return err
 	}
-	chunks := telegramMessageChunks(content)
+	chunks := telegramMessageChunks(content, useMarkdownV2)
 	if len(messageIDs) != len(chunks) {
 		return fmt.Errorf("telegram edit: chunk count changed from %d to %d", len(messageIDs), len(chunks))
 	}
 
 	for i, mid := range messageIDs {
-		if err := c.editHTMLChunk(ctx, cid, mid, chunks[i].HTML, chunks[i].Markdown); err != nil {
+		if err := c.editChunk(ctx, cid, mid, chunks[i].Parsed, chunks[i].Markdown, useMarkdownV2); err != nil {
 			return err
 		}
 	}
@@ -546,6 +568,22 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				params.ReplyParameters = replyParams
 			}
 			_, err = c.bot.SendPhoto(ctx, params)
+			if err != nil && strings.Contains(err.Error(), "PHOTO_INVALID_DIMENSIONS") {
+				if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
+					file.Close()
+					return fmt.Errorf("telegram rewind media after photo failure: %w", channels.ErrTemporary)
+				}
+				docParams := &telego.SendDocumentParams{
+					ChatID:          tu.ID(chatID),
+					MessageThreadID: threadID,
+					Document:        telegramInputFile(file, part, localPath),
+					Caption:         part.Caption,
+				}
+				if replyParams, ok := telegramReplyParameters(msg.ReplyToMessageID); ok {
+					docParams.ReplyParameters = replyParams
+				}
+				_, err = c.bot.SendDocument(ctx, docParams)
+			}
 		case "audio":
 			params := &telego.SendAudioParams{
 				ChatID:          tu.ID(chatID),
@@ -841,6 +879,13 @@ func (c *TelegramChannel) downloadFile(ctx context.Context, fileID, ext string) 
 	return c.downloadFileWithInfo(file, ext)
 }
 
+func parseContent(text string, useMarkdownV2 bool) string {
+	if useMarkdownV2 {
+		return markdownToTelegramMarkdownV2(text)
+	}
+	return markdownToTelegramHTML(text)
+}
+
 // parseTelegramChatID splits "chatID/threadID" into its components.
 // Returns threadID=0 when no "/" is present (non-forum messages).
 func parseTelegramChatID(chatID string) (int64, int, error) {
@@ -880,10 +925,10 @@ func (c *TelegramChannel) topicAgentID(chatID int64, threadID int) string {
 
 type telegramMessageChunk struct {
 	Markdown string
-	HTML     string
+	Parsed   string
 }
 
-func telegramMessageChunks(content string) []telegramMessageChunk {
+func telegramMessageChunks(content string, useMarkdownV2 bool) []telegramMessageChunk {
 	queue := []string{content}
 	chunks := make([]telegramMessageChunk, 0, 1)
 
@@ -891,9 +936,9 @@ func telegramMessageChunks(content string) []telegramMessageChunk {
 		chunk := queue[0]
 		queue = queue[1:]
 
-		htmlContent := markdownToTelegramHTML(chunk)
-		if len([]rune(htmlContent)) > 4096 {
-			ratio := float64(len([]rune(chunk))) / float64(len([]rune(htmlContent)))
+		parsedContent := parseContent(chunk, useMarkdownV2)
+		if len([]rune(parsedContent)) > 4096 {
+			ratio := float64(len([]rune(chunk))) / float64(len([]rune(parsedContent)))
 			smallerLen := int(float64(4096) * ratio * 0.95) // 5% safety margin
 			if smallerLen < 100 {
 				smallerLen = 100
@@ -905,7 +950,7 @@ func telegramMessageChunks(content string) []telegramMessageChunk {
 
 		chunks = append(chunks, telegramMessageChunk{
 			Markdown: chunk,
-			HTML:     htmlContent,
+			Parsed:   parsedContent,
 		})
 	}
 
@@ -936,19 +981,22 @@ func parseTelegramMessageIDs(messageID string) ([]int, error) {
 	return ids, nil
 }
 
-func (c *TelegramChannel) editHTMLChunk(
+func (c *TelegramChannel) editChunk(
 	ctx context.Context,
 	chatID int64,
 	messageID int,
-	htmlContent, mdFallback string,
+	parsedContent, mdFallback string,
+	useMarkdownV2 bool,
 ) error {
-	editMsg := tu.EditMessageText(tu.ID(chatID), messageID, htmlContent)
-	editMsg.ParseMode = telego.ModeHTML
+	editMsg := tu.EditMessageText(tu.ID(chatID), messageID, parsedContent)
+	if useMarkdownV2 {
+		editMsg.WithParseMode(telego.ModeMarkdownV2)
+	} else {
+		editMsg.WithParseMode(telego.ModeHTML)
+	}
 
 	if _, err := c.bot.EditMessageText(ctx, editMsg); err != nil {
-		logger.ErrorCF("telegram", "HTML edit failed, falling back to plain text", map[string]any{
-			"error": err.Error(),
-		})
+		logParseFailed(err, useMarkdownV2)
 		editMsg.Text = mdFallback
 		editMsg.ParseMode = ""
 		if _, err = c.bot.EditMessageText(ctx, editMsg); err != nil {
@@ -959,115 +1007,15 @@ func (c *TelegramChannel) editHTMLChunk(
 	return nil
 }
 
-func markdownToTelegramHTML(text string) string {
-	if text == "" {
-		return ""
+func logParseFailed(err error, useMarkdownV2 bool) {
+	parsingName := "HTML"
+	if useMarkdownV2 {
+		parsingName = "MarkdownV2"
 	}
 
-	codeBlocks := extractCodeBlocks(text)
-	text = codeBlocks.text
-
-	inlineCodes := extractInlineCodes(text)
-	text = inlineCodes.text
-
-	text = reHeading.ReplaceAllString(text, "$1")
-
-	text = reBlockquote.ReplaceAllString(text, "$1")
-
-	// If LLM emitted HTML tags directly, convert them to markdown so the
-	// normal pipeline can re-emit proper HTML after escapeHTML runs.
-	text = reHTMLBold.ReplaceAllString(text, "**$1**")
-	text = reHTMLItalic.ReplaceAllString(text, "_$1_")
-	text = reHTMLStrike.ReplaceAllString(text, "~~$1~~")
-
-	text = escapeHTML(text)
-
-	text = reLink.ReplaceAllString(text, `<a href="$2">$1</a>`)
-
-	text = reBoldStar.ReplaceAllString(text, "<b>$1</b>")
-
-	text = reBoldUnder.ReplaceAllString(text, "<b>$1</b>")
-
-	text = reItalic.ReplaceAllStringFunc(text, func(s string) string {
-		match := reItalic.FindStringSubmatch(s)
-		if len(match) < 2 {
-			return s
-		}
-		return "<i>" + match[1] + "</i>"
+	logger.ErrorCF("telegram", fmt.Sprintf("%s parse failed, falling back to plain text", parsingName), map[string]any{
+		"error": err.Error(),
 	})
-
-	text = reStrike.ReplaceAllString(text, "<s>$1</s>")
-
-	text = reListItem.ReplaceAllString(text, "• ")
-
-	for i, code := range inlineCodes.codes {
-		escaped := escapeHTML(code)
-		text = strings.ReplaceAll(text, fmt.Sprintf("\x00IC%d\x00", i), fmt.Sprintf("<code>%s</code>", escaped))
-	}
-
-	for i, code := range codeBlocks.codes {
-		escaped := escapeHTML(code)
-		text = strings.ReplaceAll(
-			text,
-			fmt.Sprintf("\x00CB%d\x00", i),
-			fmt.Sprintf("<pre><code>%s</code></pre>", escaped),
-		)
-	}
-
-	return text
-}
-
-type codeBlockMatch struct {
-	text  string
-	codes []string
-}
-
-func extractCodeBlocks(text string) codeBlockMatch {
-	matches := reCodeBlock.FindAllStringSubmatch(text, -1)
-
-	codes := make([]string, 0, len(matches))
-	for _, match := range matches {
-		codes = append(codes, match[1])
-	}
-
-	i := 0
-	text = reCodeBlock.ReplaceAllStringFunc(text, func(m string) string {
-		placeholder := fmt.Sprintf("\x00CB%d\x00", i)
-		i++
-		return placeholder
-	})
-
-	return codeBlockMatch{text: text, codes: codes}
-}
-
-type inlineCodeMatch struct {
-	text  string
-	codes []string
-}
-
-func extractInlineCodes(text string) inlineCodeMatch {
-	matches := reInlineCode.FindAllStringSubmatch(text, -1)
-
-	codes := make([]string, 0, len(matches))
-	for _, match := range matches {
-		codes = append(codes, match[1])
-	}
-
-	i := 0
-	text = reInlineCode.ReplaceAllStringFunc(text, func(m string) string {
-		placeholder := fmt.Sprintf("\x00IC%d\x00", i)
-		i++
-		return placeholder
-	})
-
-	return inlineCodeMatch{text: text, codes: codes}
-}
-
-func escapeHTML(text string) string {
-	text = strings.ReplaceAll(text, "&", "&amp;")
-	text = strings.ReplaceAll(text, "<", "&lt;")
-	text = strings.ReplaceAll(text, ">", "&gt;")
-	return text
 }
 
 // isBotMentioned checks if the bot is mentioned in the message via entities.

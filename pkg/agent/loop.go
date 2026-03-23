@@ -17,7 +17,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	"unicode/utf8"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
@@ -37,10 +36,17 @@ import (
 )
 
 type AgentLoop struct {
-	bus            *bus.MessageBus
-	cfg            *config.Config
-	registry       *AgentRegistry
-	state          *state.Manager
+	// Core dependencies
+	bus      *bus.MessageBus
+	cfg      *config.Config
+	registry *AgentRegistry
+	state    *state.Manager
+
+	// Event system (from Incoming)
+	eventBus *EventBus
+	hooks    *HookManager
+
+	// Runtime state
 	running        atomic.Bool
 	summarizing    sync.Map
 	fallback       *providers.FallbackChain
@@ -50,28 +56,41 @@ type AgentLoop struct {
 	cmdRegistry    *commands.Registry
 	taskManager    *session.TaskManager
 	mcp            mcpRuntime
+	hookRuntime    hookRuntime
+	steering       *steeringQueue
 	mu             sync.RWMutex
 	dispatcher     *sessionDispatcher
-	// Track active requests for safe provider cleanup
+
+	// Concurrent turn management (from HEAD)
+	activeTurnStates sync.Map     // key: sessionKey (string), value: *turnState
+	subTurnCounter   atomic.Int64 // Counter for generating unique SubTurn IDs
+
+	// Turn tracking (from Incoming)
+	turnSeq        atomic.Uint64
 	activeRequests sync.WaitGroup
+
+	reloadFunc func() error
 }
 
 // processOptions configures how a message is processed
 type processOptions struct {
-	SessionKey        string   // Session identifier for history/context
-	Channel           string   // Target channel for tool execution
-	ChatID            string   // Target chat ID for tool execution
-	SenderID          string   // Current sender ID for dynamic context
-	SenderDisplayName string   // Current sender display name for dynamic context
-	UserMessage       string   // User message content (may include prefix)
-	Media             []string // media:// refs from inbound message
-	DefaultResponse   string   // Response when LLM returns empty
-	EnableSummary     bool     // Whether to trigger summarization
-	SendResponse      bool     // Whether to send response via bus
-	NoHistory         bool     // If true, don't load session history (for heartbeat)
-	ReplyContext      *ReplyContextInfo
-	Sender            *providers.MessageSender // Author identity (nil for system/automated messages)
-	MessageMetadata   map[string]string
+	SessionKey              string              // Session identifier for history/context
+	Channel                 string              // Target channel for tool execution
+	ChatID                  string              // Target chat ID for tool execution
+	SenderID                string              // Current sender ID for dynamic context
+	SenderDisplayName       string              // Current sender display name for dynamic context
+	UserMessage             string              // User message content (may include prefix)
+	SystemPromptOverride    string              // Override the default system prompt (Used by SubTurns)
+	Media                   []string            // media:// refs from inbound message
+	InitialSteeringMessages []providers.Message // Steering messages from refactor/agent
+	DefaultResponse         string              // Response when LLM returns empty
+	EnableSummary           bool                // Whether to trigger summarization
+	SendResponse            bool                // Whether to send response via bus
+	NoHistory               bool                // If true, don't load session history (for heartbeat)
+	SkipInitialSteeringPoll bool                // If true, skip the steering poll at loop start (used by Continue)
+	ReplyContext            *ReplyContextInfo
+	Sender                  *providers.MessageSender
+	MessageMetadata         map[string]string
 }
 
 type agentResponse struct {
@@ -127,8 +146,15 @@ func (r agentResponse) hasTextReply() bool {
 	return !r.SuppressTextReply && strings.TrimSpace(r.Content) != ""
 }
 
+type continuationTarget struct {
+	SessionKey string
+	Channel    string
+	ChatID     string
+}
+
 const (
-	defaultResponse           = "I've completed processing but have no response to give. Increase `max_tool_iterations` in config.json."
+	defaultResponse           = "The model returned an empty response. This may indicate a provider error or token limit."
+	toolLimitResponse         = "I've reached `max_tool_iterations` without a final response. Increase `max_tool_iterations` in config.json if this task needs more tool steps."
 	sessionKeyAgentPrefix     = "agent:"
 	metadataKeyAccountID      = "account_id"
 	metadataKeyGuildID        = "guild_id"
@@ -158,26 +184,32 @@ func NewAgentLoop(
 		stateManager = state.NewManager(defaultAgent.Workspace)
 	}
 
+	eventBus := NewEventBus()
 	al := &AgentLoop{
 		bus:         msgBus,
 		cfg:         cfg,
 		registry:    registry,
 		state:       stateManager,
+		eventBus:    eventBus,
 		summarizing: sync.Map{},
 		fallback:    fallbackChain,
 		cmdRegistry: commands.NewRegistry(commands.BuiltinDefinitions()),
 		taskManager: session.NewTaskManager(filepath.Join(cfg.WorkspacePath(), "tasks")),
+		steering:    newSteeringQueue(parseSteeringMode(cfg.Agents.Defaults.SteeringMode)),
 	}
 	al.dispatcher = newSessionDispatcher(al, cfg.Agents.Defaults.MaxConcurrentSessions)
+	al.hooks = NewHookManager(eventBus)
+	configureHookManagerFromConfig(al.hooks, cfg)
 
-	// Register shared tools to all agents (TaskTool needs task manager from AgentLoop)
-	registerSharedTools(cfg, msgBus, registry, provider, al.taskManager)
+	// Register shared tools to all agents (now that al is created)
+	registerSharedTools(al, cfg, msgBus, registry, provider, al.taskManager)
 
 	return al
 }
 
 // registerSharedTools registers tools that are shared across all agents (web, message, spawn).
 func registerSharedTools(
+	al *AgentLoop,
 	cfg *config.Config,
 	msgBus *bus.MessageBus,
 	registry *AgentRegistry,
@@ -207,17 +239,21 @@ func registerSharedTools(
 					cfg.Tools.Web.Perplexity.APIKey,
 					cfg.Tools.Web.Perplexity.APIKeys,
 				),
-				PerplexityMaxResults: cfg.Tools.Web.Perplexity.MaxResults,
-				PerplexityEnabled:    cfg.Tools.Web.Perplexity.Enabled,
-				SearXNGBaseURL:       cfg.Tools.Web.SearXNG.BaseURL,
-				SearXNGMaxResults:    cfg.Tools.Web.SearXNG.MaxResults,
-				SearXNGEnabled:       cfg.Tools.Web.SearXNG.Enabled,
-				GLMSearchAPIKey:      cfg.Tools.Web.GLMSearch.APIKey,
-				GLMSearchBaseURL:     cfg.Tools.Web.GLMSearch.BaseURL,
-				GLMSearchEngine:      cfg.Tools.Web.GLMSearch.SearchEngine,
-				GLMSearchMaxResults:  cfg.Tools.Web.GLMSearch.MaxResults,
-				GLMSearchEnabled:     cfg.Tools.Web.GLMSearch.Enabled,
-				Proxy:                cfg.Tools.Web.Proxy,
+				PerplexityMaxResults:  cfg.Tools.Web.Perplexity.MaxResults,
+				PerplexityEnabled:     cfg.Tools.Web.Perplexity.Enabled,
+				SearXNGBaseURL:        cfg.Tools.Web.SearXNG.BaseURL,
+				SearXNGMaxResults:     cfg.Tools.Web.SearXNG.MaxResults,
+				SearXNGEnabled:        cfg.Tools.Web.SearXNG.Enabled,
+				GLMSearchAPIKey:       cfg.Tools.Web.GLMSearch.APIKey,
+				GLMSearchBaseURL:      cfg.Tools.Web.GLMSearch.BaseURL,
+				GLMSearchEngine:       cfg.Tools.Web.GLMSearch.SearchEngine,
+				GLMSearchMaxResults:   cfg.Tools.Web.GLMSearch.MaxResults,
+				GLMSearchEnabled:      cfg.Tools.Web.GLMSearch.Enabled,
+				BaiduSearchAPIKey:     cfg.Tools.Web.BaiduSearch.APIKey,
+				BaiduSearchBaseURL:    cfg.Tools.Web.BaiduSearch.BaseURL,
+				BaiduSearchMaxResults: cfg.Tools.Web.BaiduSearch.MaxResults,
+				BaiduSearchEnabled:    cfg.Tools.Web.BaiduSearch.Enabled,
+				Proxy:                 cfg.Tools.Web.Proxy,
 			})
 			if err != nil {
 				logger.ErrorCF("agent", "Failed to create web search tool", map[string]any{"error": err.Error()})
@@ -226,12 +262,12 @@ func registerSharedTools(
 			}
 		}
 		if cfg.Tools.IsToolEnabled("web_fetch") {
-			fetchTool, err := tools.NewWebFetchToolWithConfig(
+			fetchTool, err := tools.NewWebFetchToolWithProxy(
 				50000,
 				cfg.Tools.Web.Proxy,
+				cfg.Tools.Web.Format,
 				cfg.Tools.Web.FetchLimitBytes,
-				cfg.Tools.Web.PrivateHostWhitelist,
-			)
+				cfg.Tools.Web.PrivateHostWhitelist)
 			if err != nil {
 				logger.ErrorCF("agent", "Failed to create web fetch tool", map[string]any{"error": err.Error()})
 			} else {
@@ -303,13 +339,86 @@ func registerSharedTools(
 		if (spawnEnabled || spawnStatusEnabled) && cfg.Tools.IsToolEnabled("subagent") {
 			subagentManager := tools.NewSubagentManager(provider, agent.Model, agent.Workspace)
 			subagentManager.SetLLMOptions(agent.MaxTokens, agent.Temperature)
+
+			// Set the spawner that links into AgentLoop's turnState
+			subagentManager.SetSpawner(func(
+				ctx context.Context,
+				task, label, targetAgentID string,
+				tls *tools.ToolRegistry,
+				maxTokens int,
+				temperature float64,
+				hasMaxTokens, hasTemperature bool,
+			) (*tools.ToolResult, error) {
+				// 1. Recover parent Turn State from Context
+				parentTS := turnStateFromContext(ctx)
+				if parentTS == nil {
+					// Fallback: If no turnState exists in context, create an isolated ad-hoc root turn state
+					// so that the tool can still function outside of an agent loop (e.g. tests, raw invocations).
+					parentTS = &turnState{
+						ctx:            ctx,
+						turnID:         "adhoc-root",
+						depth:          0,
+						session:        nil, // Ephemeral session not needed for adhoc spawn
+						pendingResults: make(chan *tools.ToolResult, 16),
+						concurrencySem: make(chan struct{}, 5),
+					}
+				}
+
+				// 2. Build Tools slice from registry
+				var tlSlice []tools.Tool
+				for _, name := range tls.List() {
+					if t, ok := tls.Get(name); ok {
+						tlSlice = append(tlSlice, t)
+					}
+				}
+
+				// 3. System Prompt
+				systemPrompt := "You are a subagent. Complete the given task independently and report the result.\n" +
+					"You have access to tools - use them as needed to complete your task.\n" +
+					"After completing the task, provide a clear summary of what was done.\n\n" +
+					"Task: " + task
+
+				// 4. Resolve Model
+				modelToUse := agent.Model
+				if targetAgentID != "" {
+					if targetAgent, ok := al.GetRegistry().GetAgent(targetAgentID); ok {
+						modelToUse = targetAgent.Model
+					}
+				}
+
+				// 5. Build SubTurnConfig
+				cfg := SubTurnConfig{
+					Model:        modelToUse,
+					Tools:        tlSlice,
+					SystemPrompt: systemPrompt,
+				}
+				if hasMaxTokens {
+					cfg.MaxTokens = maxTokens
+				}
+
+				// 6. Spawn SubTurn
+				return spawnSubTurn(ctx, al, parentTS, cfg)
+			})
+
+			// Clone the parent's tool registry so subagents can use all
+			// tools registered so far (file, web, etc.) but NOT spawn/
+			// spawn_status which are added below — preventing recursive
+			// subagent spawning.
+			subagentManager.SetTools(agent.Tools.Clone())
 			if spawnEnabled {
 				spawnTool := tools.NewSpawnTool(subagentManager)
+				spawnTool.SetSpawner(NewSubTurnSpawner(al))
 				currentAgentID := agentID
 				spawnTool.SetAllowlistChecker(func(targetAgentID string) bool {
 					return registry.CanSpawnSubagent(currentAgentID, targetAgentID)
 				})
+
 				agent.Tools.Register(spawnTool)
+
+				// Also register the synchronous subagent tool
+				subagentTool := tools.NewSubagentTool(subagentManager)
+				subagentTool.SetSpawner(NewSubTurnSpawner(al))
+				agent.Tools.Register(subagentTool)
 			}
 			if spawnStatusEnabled {
 				agent.Tools.Register(tools.NewSpawnStatusTool(subagentManager))
@@ -318,8 +427,7 @@ func registerSharedTools(
 			logger.WarnCF("agent", "spawn/spawn_status tools require subagent to be enabled", nil)
 		}
 
-		// Task planning tool
-		if cfg.Tools.IsToolEnabled("tasktool") {
+		if cfg.Tools.IsToolEnabled("tasktool") && taskManager != nil {
 			taskTool := tools.NewTaskTool(taskManager, cfg.Tools.TaskTool.Icons)
 			agent.Tools.Register(taskTool)
 		}
@@ -329,6 +437,9 @@ func registerSharedTools(
 func (al *AgentLoop) Run(ctx context.Context) error {
 	al.running.Store(true)
 
+	if err := al.ensureHooksInitialized(ctx); err != nil {
+		return err
+	}
 	if err := al.ensureMCPInitialized(ctx); err != nil {
 		return err
 	}
@@ -342,6 +453,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			if !ok {
 				return nil
 			}
+
 			// Process message
 			// TODO: Re-enable media cleanup after inbound media is properly consumed by the agent.
 			// Currently disabled because files are deleted before the LLM can access their content.
@@ -355,7 +467,6 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			// 		}
 			// 	}
 			// }()
-
 			al.dispatcher.Dispatch(ctx, msg)
 		default:
 			time.Sleep(time.Microsecond * 200)
@@ -366,8 +477,123 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 	return nil
 }
 
+// drainBusToSteering consumes inbound messages and redirects messages from the
+// active scope into the steering queue. Messages from other scopes are requeued
+// so they can be processed normally after the active turn. It drains all
+// immediately available messages, blocking for the first one until ctx is done.
+func (al *AgentLoop) drainBusToSteering(ctx context.Context, activeScope, activeAgentID string) {
+	blocking := true
+	for {
+		var msg bus.InboundMessage
+
+		if blocking {
+			// Block waiting for the first available message or ctx cancellation.
+			select {
+			case <-ctx.Done():
+				return
+			case m, ok := <-al.bus.InboundChan():
+				if !ok {
+					return
+				}
+				msg = m
+			}
+		} else {
+			// Non-blocking: drain any remaining queued messages, return when empty.
+			select {
+			case m, ok := <-al.bus.InboundChan():
+				if !ok {
+					return
+				}
+				msg = m
+			default:
+				return
+			}
+		}
+		blocking = false
+
+		msgScope, _, scopeOK := al.resolveSteeringTarget(msg)
+		if !scopeOK || msgScope != activeScope {
+			if err := al.requeueInboundMessage(msg); err != nil {
+				logger.WarnCF("agent", "Failed to requeue non-steering inbound message", map[string]any{
+					"error":     err.Error(),
+					"channel":   msg.Channel,
+					"sender_id": msg.SenderID,
+				})
+			}
+			continue
+		}
+
+		// Transcribe audio if needed before steering, so the agent sees text.
+		msg, _ = al.transcribeAudioInMessage(ctx, msg)
+
+		logger.InfoCF("agent", "Redirecting inbound message to steering queue",
+			map[string]any{
+				"channel":     msg.Channel,
+				"sender_id":   msg.SenderID,
+				"content_len": len(msg.Content),
+				"scope":       activeScope,
+			})
+
+		if err := al.enqueueSteeringMessage(activeScope, activeAgentID, providers.Message{
+			Role:    "user",
+			Content: msg.Content,
+			Media:   append([]string(nil), msg.Media...),
+		}); err != nil {
+			logger.WarnCF("agent", "Failed to steer message, will be lost",
+				map[string]any{
+					"error":   err.Error(),
+					"channel": msg.Channel,
+				})
+		}
+	}
+}
+
 func (al *AgentLoop) Stop() {
 	al.running.Store(false)
+}
+
+func (al *AgentLoop) publishResponseIfNeeded(ctx context.Context, channel, chatID, response string) {
+	if response == "" {
+		return
+	}
+
+	if tools.RoundHasSent(ctx) {
+		logger.DebugCF(
+			"agent",
+			"Skipped outbound (message tool already sent)",
+			map[string]any{"channel": channel},
+		)
+		return
+	}
+
+	al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+		Channel: channel,
+		ChatID:  chatID,
+		Content: response,
+	})
+	logger.InfoCF("agent", "Published outbound response",
+		map[string]any{
+			"channel":     channel,
+			"chat_id":     chatID,
+			"content_len": len(response),
+		})
+}
+
+func (al *AgentLoop) buildContinuationTarget(msg bus.InboundMessage) (*continuationTarget, error) {
+	if msg.Channel == "system" {
+		return nil, nil
+	}
+
+	route, _, err := al.resolveMessageRoute(msg)
+	if err != nil {
+		return nil, err
+	}
+
+	return &continuationTarget{
+		SessionKey: resolveScopeKey(route, msg.SessionKey),
+		Channel:    msg.Channel,
+		ChatID:     msg.ChatID,
+	}, nil
 }
 
 // Close releases resources held by agent session stores. Call after Stop.
@@ -384,6 +610,232 @@ func (al *AgentLoop) Close() {
 	}
 
 	al.GetRegistry().Close()
+	if al.hooks != nil {
+		al.hooks.Close()
+	}
+	if al.eventBus != nil {
+		al.eventBus.Close()
+	}
+}
+
+// MountHook registers an in-process hook on the agent loop.
+func (al *AgentLoop) MountHook(reg HookRegistration) error {
+	if al == nil || al.hooks == nil {
+		return fmt.Errorf("hook manager is not initialized")
+	}
+	return al.hooks.Mount(reg)
+}
+
+// UnmountHook removes a previously registered in-process hook.
+func (al *AgentLoop) UnmountHook(name string) {
+	if al == nil || al.hooks == nil {
+		return
+	}
+	al.hooks.Unmount(name)
+}
+
+// SubscribeEvents registers a subscriber for agent-loop events.
+func (al *AgentLoop) SubscribeEvents(buffer int) EventSubscription {
+	if al == nil || al.eventBus == nil {
+		ch := make(chan Event)
+		close(ch)
+		return EventSubscription{C: ch}
+	}
+	return al.eventBus.Subscribe(buffer)
+}
+
+// UnsubscribeEvents removes a previously registered event subscriber.
+func (al *AgentLoop) UnsubscribeEvents(id uint64) {
+	if al == nil || al.eventBus == nil {
+		return
+	}
+	al.eventBus.Unsubscribe(id)
+}
+
+// EventDrops returns the number of dropped events for the given kind.
+func (al *AgentLoop) EventDrops(kind EventKind) int64 {
+	if al == nil || al.eventBus == nil {
+		return 0
+	}
+	return al.eventBus.Dropped(kind)
+}
+
+type turnEventScope struct {
+	agentID    string
+	sessionKey string
+	turnID     string
+}
+
+func (al *AgentLoop) newTurnEventScope(agentID, sessionKey string) turnEventScope {
+	seq := al.turnSeq.Add(1)
+	return turnEventScope{
+		agentID:    agentID,
+		sessionKey: sessionKey,
+		turnID:     fmt.Sprintf("%s-turn-%d", agentID, seq),
+	}
+}
+
+func (ts turnEventScope) meta(iteration int, source, tracePath string) EventMeta {
+	return EventMeta{
+		AgentID:    ts.agentID,
+		TurnID:     ts.turnID,
+		SessionKey: ts.sessionKey,
+		Iteration:  iteration,
+		Source:     source,
+		TracePath:  tracePath,
+	}
+}
+
+func (al *AgentLoop) emitEvent(kind EventKind, meta EventMeta, payload any) {
+	evt := Event{
+		Kind:    kind,
+		Meta:    meta,
+		Payload: payload,
+	}
+
+	if al == nil || al.eventBus == nil {
+		return
+	}
+
+	al.logEvent(evt)
+
+	al.eventBus.Emit(evt)
+}
+
+func cloneEventArguments(args map[string]any) map[string]any {
+	if len(args) == 0 {
+		return nil
+	}
+
+	cloned := make(map[string]any, len(args))
+	for k, v := range args {
+		cloned[k] = v
+	}
+	return cloned
+}
+
+func (al *AgentLoop) hookAbortError(ts *turnState, stage string, decision HookDecision) error {
+	reason := decision.Reason
+	if reason == "" {
+		reason = "hook requested turn abort"
+	}
+
+	err := fmt.Errorf("hook aborted turn during %s: %s", stage, reason)
+	al.emitEvent(
+		EventKindError,
+		ts.eventMeta("hooks", "turn.error"),
+		ErrorPayload{
+			Stage:   "hook." + stage,
+			Message: err.Error(),
+		},
+	)
+	return err
+}
+
+func hookDeniedToolContent(prefix, reason string) string {
+	if reason == "" {
+		return prefix
+	}
+	return prefix + ": " + reason
+}
+
+func (al *AgentLoop) logEvent(evt Event) {
+	fields := map[string]any{
+		"event_kind":  evt.Kind.String(),
+		"agent_id":    evt.Meta.AgentID,
+		"turn_id":     evt.Meta.TurnID,
+		"session_key": evt.Meta.SessionKey,
+		"iteration":   evt.Meta.Iteration,
+	}
+
+	if evt.Meta.TracePath != "" {
+		fields["trace"] = evt.Meta.TracePath
+	}
+	if evt.Meta.Source != "" {
+		fields["source"] = evt.Meta.Source
+	}
+
+	switch payload := evt.Payload.(type) {
+	case TurnStartPayload:
+		fields["channel"] = payload.Channel
+		fields["chat_id"] = payload.ChatID
+		fields["user_len"] = len(payload.UserMessage)
+		fields["media_count"] = payload.MediaCount
+	case TurnEndPayload:
+		fields["status"] = payload.Status
+		fields["iterations_total"] = payload.Iterations
+		fields["duration_ms"] = payload.Duration.Milliseconds()
+		fields["final_len"] = payload.FinalContentLen
+	case LLMRequestPayload:
+		fields["model"] = payload.Model
+		fields["messages"] = payload.MessagesCount
+		fields["tools"] = payload.ToolsCount
+		fields["max_tokens"] = payload.MaxTokens
+	case LLMDeltaPayload:
+		fields["content_delta_len"] = payload.ContentDeltaLen
+		fields["reasoning_delta_len"] = payload.ReasoningDeltaLen
+	case LLMResponsePayload:
+		fields["content_len"] = payload.ContentLen
+		fields["tool_calls"] = payload.ToolCalls
+		fields["has_reasoning"] = payload.HasReasoning
+	case LLMRetryPayload:
+		fields["attempt"] = payload.Attempt
+		fields["max_retries"] = payload.MaxRetries
+		fields["reason"] = payload.Reason
+		fields["error"] = payload.Error
+		fields["backoff_ms"] = payload.Backoff.Milliseconds()
+	case ContextCompressPayload:
+		fields["reason"] = payload.Reason
+		fields["dropped_messages"] = payload.DroppedMessages
+		fields["remaining_messages"] = payload.RemainingMessages
+	case SessionSummarizePayload:
+		fields["summarized_messages"] = payload.SummarizedMessages
+		fields["kept_messages"] = payload.KeptMessages
+		fields["summary_len"] = payload.SummaryLen
+		fields["omitted_oversized"] = payload.OmittedOversized
+	case ToolExecStartPayload:
+		fields["tool"] = payload.Tool
+		fields["args_count"] = len(payload.Arguments)
+	case ToolExecEndPayload:
+		fields["tool"] = payload.Tool
+		fields["duration_ms"] = payload.Duration.Milliseconds()
+		fields["for_llm_len"] = payload.ForLLMLen
+		fields["for_user_len"] = payload.ForUserLen
+		fields["is_error"] = payload.IsError
+		fields["async"] = payload.Async
+	case ToolExecSkippedPayload:
+		fields["tool"] = payload.Tool
+		fields["reason"] = payload.Reason
+	case SteeringInjectedPayload:
+		fields["count"] = payload.Count
+		fields["total_content_len"] = payload.TotalContentLen
+	case FollowUpQueuedPayload:
+		fields["source_tool"] = payload.SourceTool
+		fields["channel"] = payload.Channel
+		fields["chat_id"] = payload.ChatID
+		fields["content_len"] = payload.ContentLen
+	case InterruptReceivedPayload:
+		fields["interrupt_kind"] = payload.Kind
+		fields["role"] = payload.Role
+		fields["content_len"] = payload.ContentLen
+		fields["queue_depth"] = payload.QueueDepth
+		fields["hint_len"] = payload.HintLen
+	case SubTurnSpawnPayload:
+		fields["child_agent_id"] = payload.AgentID
+		fields["label"] = payload.Label
+	case SubTurnEndPayload:
+		fields["child_agent_id"] = payload.AgentID
+		fields["status"] = payload.Status
+	case SubTurnResultDeliveredPayload:
+		fields["target_channel"] = payload.TargetChannel
+		fields["target_chat_id"] = payload.TargetChatID
+		fields["content_len"] = payload.ContentLen
+	case ErrorPayload:
+		fields["stage"] = payload.Stage
+		fields["error"] = payload.Message
+	}
+
+	logger.InfoCF("eventbus", fmt.Sprintf("Agent event: %s", evt.Kind.String()), fields)
 }
 
 func (al *AgentLoop) RegisterTool(tool tools.Tool) {
@@ -401,35 +853,38 @@ func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	al.bindReactionTools(cm)
 }
 
-// bindAdvancedMessageManagers wires up channel callbacks to any tools that
-// require asynchronous, advanced message management (e.g., TaskTool)
 func (al *AgentLoop) bindAdvancedMessageManagers(cm *channels.Manager) {
+	if cm == nil {
+		return
+	}
+
 	al.registry.ForEachToolInstance(func(t tools.Tool) {
-		if advancedManager, ok := t.(tools.AdvancedMessageManager); ok {
-			advancedManager.SetCallbacks(
-				// sendPlaceholder
-				func(ctx context.Context, channelName, chatID, content string) (string, error) {
-					msgID, err := cm.SendMessageWithID(ctx, bus.OutboundMessage{
-						Channel: channelName,
-						ChatID:  chatID,
-						Content: content,
-					})
-					if err != nil {
-						return "", err
-					}
-					al.upsertAdvancedToolMessage(ctx, msgID, content)
-					return msgID, nil
-				},
-				// editMessage
-				func(ctx context.Context, channelName, chatID, messageID, content string) error {
-					if err := cm.EditMessage(ctx, channelName, chatID, messageID, content); err != nil {
-						return err
-					}
-					al.upsertAdvancedToolMessage(ctx, messageID, content)
-					return nil
-				},
-			)
+		advancedManager, ok := t.(tools.AdvancedMessageManager)
+		if !ok {
+			return
 		}
+
+		advancedManager.SetCallbacks(
+			func(ctx context.Context, channelName, chatID, content string) (string, error) {
+				msgID, err := cm.SendMessageWithID(ctx, bus.OutboundMessage{
+					Channel: channelName,
+					ChatID:  chatID,
+					Content: content,
+				})
+				if err != nil {
+					return "", err
+				}
+				al.upsertAdvancedToolMessage(ctx, msgID, content)
+				return msgID, nil
+			},
+			func(ctx context.Context, channelName, chatID, messageID, content string) error {
+				if err := cm.EditMessage(ctx, channelName, chatID, messageID, content); err != nil {
+					return err
+				}
+				al.upsertAdvancedToolMessage(ctx, messageID, content)
+				return nil
+			},
+		)
 	})
 }
 
@@ -442,10 +897,7 @@ func (al *AgentLoop) agentForSessionKey(sessionKey string) *AgentInstance {
 	return al.registry.GetDefaultAgent()
 }
 
-func (al *AgentLoop) upsertAdvancedToolMessage(
-	ctx context.Context,
-	messageID, content string,
-) {
+func (al *AgentLoop) upsertAdvancedToolMessage(ctx context.Context, messageID, content string) {
 	sessionKey := strings.TrimSpace(tools.ToolSessionKey(ctx))
 	content = strings.TrimSpace(content)
 	if sessionKey == "" || content == "" {
@@ -483,6 +935,10 @@ func (al *AgentLoop) upsertAdvancedToolMessage(
 }
 
 func (al *AgentLoop) bindReactionTools(cm *channels.Manager) {
+	if cm == nil {
+		return
+	}
+
 	al.registry.ForEachTool("reaction", func(t tools.Tool) {
 		if rt, ok := t.(*tools.ReactionTool); ok {
 			rt.SetReactionCallback(func(ctx context.Context, channel, chatID, messageID, emoji string) error {
@@ -546,7 +1002,7 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	}
 
 	// Ensure shared tools are re-registered on the new registry
-	registerSharedTools(cfg, al.bus, registry, provider, al.taskManager)
+	registerSharedTools(al, cfg, al.bus, registry, provider, al.taskManager)
 
 	// Atomically swap the config and registry under write lock
 	// This ensures readers see a consistent pair
@@ -561,6 +1017,9 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 	al.fallback = providers.NewFallbackChain(providers.NewCooldownTracker())
 
 	al.mu.Unlock()
+
+	al.hookRuntime.reset(al)
+	configureHookManagerFromConfig(al.hooks, cfg)
 
 	// Close old provider after releasing the lock
 	// This prevents blocking readers while closing
@@ -806,6 +1265,11 @@ func (al *AgentLoop) applyFinalReactions(
 	return delivered
 }
 
+// SetReloadFunc sets the callback function for triggering config reload.
+func (al *AgentLoop) SetReloadFunc(fn func() error) {
+	al.reloadFunc = fn
+}
+
 var audioAnnotationRe = regexp.MustCompile(`\[(voice|audio)(?::[^\]]*)?\]`)
 
 // transcribeAudioInMessage resolves audio media refs, transcribes them, and
@@ -962,6 +1426,9 @@ func (al *AgentLoop) ProcessDirectWithMessage(
 	ctx context.Context,
 	msg bus.InboundMessage,
 ) (string, error) {
+	if err := al.ensureHooksInitialized(ctx); err != nil {
+		return "", err
+	}
 	if err := al.ensureMCPInitialized(ctx); err != nil {
 		return "", err
 	}
@@ -977,6 +1444,9 @@ func (al *AgentLoop) ProcessDirectWithChannel(
 	ctx context.Context,
 	content, sessionKey, channel, chatID string,
 ) (string, error) {
+	if err := al.ensureHooksInitialized(ctx); err != nil {
+		return "", err
+	}
 	if err := al.ensureMCPInitialized(ctx); err != nil {
 		return "", err
 	}
@@ -1005,6 +1475,13 @@ func (al *AgentLoop) ProcessHeartbeat(
 	ctx context.Context,
 	content, channel, chatID string,
 ) (string, error) {
+	if err := al.ensureHooksInitialized(ctx); err != nil {
+		return "", err
+	}
+	if err := al.ensureMCPInitialized(ctx); err != nil {
+		return "", err
+	}
+
 	agent := al.GetRegistry().GetDefaultAgent()
 	if agent == nil {
 		return "", fmt.Errorf("no default agent for heartbeat")
@@ -1169,6 +1646,32 @@ func (al *AgentLoop) resolveDispatchSessionKey(msg bus.InboundMessage) string {
 	return msg.Channel + ":" + msg.ChatID
 }
 
+func (al *AgentLoop) resolveSteeringTarget(msg bus.InboundMessage) (string, string, bool) {
+	if msg.Channel == "system" {
+		return "", "", false
+	}
+
+	route, agent, err := al.resolveMessageRoute(msg)
+	if err != nil || agent == nil {
+		return "", "", false
+	}
+
+	return resolveScopeKey(route, msg.SessionKey), agent.ID, true
+}
+
+func (al *AgentLoop) requeueInboundMessage(msg bus.InboundMessage) error {
+	if al.bus == nil {
+		return nil
+	}
+	pubCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return al.bus.PublishOutbound(pubCtx, bus.OutboundMessage{
+		Channel: msg.Channel,
+		ChatID:  msg.ChatID,
+		Content: msg.Content,
+	})
+}
+
 func (al *AgentLoop) processSystemMessage(
 	ctx context.Context,
 	msg bus.InboundMessage,
@@ -1240,73 +1743,14 @@ func (al *AgentLoop) processSystemMessage(
 	})
 }
 
-// runAgentLoop is the core message processing logic.
+// runAgentLoop remains the top-level shell that starts a turn and publishes
+// any post-turn work. runTurn owns the full turn lifecycle.
 func (al *AgentLoop) runAgentLoop(
 	ctx context.Context,
 	agent *AgentInstance,
 	opts processOptions,
 ) (agentResponse, error) {
-	// Hidden tool discovery must stay request-scoped so concurrent sessions do
-	// not age out each other's unlocked tools.
 	ctx = tools.WithHiddenToolState(ctx)
-	// 0. Record last channel for heartbeat notifications (skip internal channels and cli)
-	if opts.Channel != "" && opts.ChatID != "" {
-		if !constants.IsInternalChannel(opts.Channel) {
-			channelKey := fmt.Sprintf("%s:%s", opts.Channel, opts.ChatID)
-			if err := al.RecordLastChannel(channelKey); err != nil {
-				logger.WarnCF(
-					"agent",
-					"Failed to record last channel",
-					map[string]any{"error": err.Error()},
-				)
-			}
-		}
-	}
-
-	// 1. Build messages (skip history for heartbeat)
-	var history []providers.Message
-	var summary string
-	if !opts.NoHistory {
-		snapshot := agent.Sessions.GetContextSnapshot(opts.SessionKey)
-		history = snapshot.History
-		summary = snapshot.Summary
-	}
-	messages := agent.ContextBuilder.BuildMessages(
-		history,
-		summary,
-		opts.UserMessage,
-		opts.Media,
-		opts.Channel,
-		opts.ChatID,
-		opts.ReplyContext,
-		opts.SenderID,
-		opts.SenderDisplayName,
-		opts.MessageMetadata,
-	)
-
-	// Resolve media:// refs: images→base64 data URLs, non-images→media refs in content
-	cfg := al.GetConfig()
-	maxMediaSize := cfg.Agents.Defaults.GetMaxMediaSize()
-	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
-
-	// 2. Save user message to session
-	userMsg := providers.Message{
-		Role:     "user",
-		Content:  opts.UserMessage,
-		Sender:   opts.Sender,
-		Metadata: providers.CloneMessageMetadata(opts.MessageMetadata),
-	}
-	if len(opts.Media) > 0 {
-		userMsg.Media = append([]string(nil), opts.Media...)
-	}
-	if opts.ReplyContext != nil {
-		userMsg.MessageIDs = singleMessageIDs(opts.ReplyContext.CurrentMessageID)
-		userMsg.ReplyToMessageID = opts.ReplyContext.ParentMessageID
-	}
-	agent.Sessions.AddFullMessage(opts.SessionKey, userMsg)
-
-	// 3. Run LLM iteration loop
-	// Inject session key so tools (e.g. tasktool) can look it up from context.
 	ctx = tools.WithToolSessionKey(ctx, opts.SessionKey)
 	if opts.ReplyContext != nil {
 		ctx = tools.WithToolReplyContext(
@@ -1315,17 +1759,40 @@ func (al *AgentLoop) runAgentLoop(
 			opts.ReplyContext.ParentMessageID,
 		)
 	}
-	finalContent, iteration, err := al.runLLMIteration(ctx, agent, messages, opts)
+
+	// Record last channel for heartbeat notifications (skip internal channels and cli)
+	if opts.Channel != "" && opts.ChatID != "" && !constants.IsInternalChannel(opts.Channel) {
+		channelKey := fmt.Sprintf("%s:%s", opts.Channel, opts.ChatID)
+		if err := al.RecordLastChannel(channelKey); err != nil {
+			logger.WarnCF(
+				"agent",
+				"Failed to record last channel",
+				map[string]any{"error": err.Error()},
+			)
+		}
+	}
+
+	ts := newTurnState(agent, opts, al.newTurnEventScope(agent.ID, opts.SessionKey))
+	result, err := al.runTurn(ctx, ts)
 	if err != nil {
 		return agentResponse{}, err
 	}
+	if result.status == TurnEndStatusAborted {
+		return agentResponse{}, nil
+	}
 
-	// If last tool had ForUser content and we already sent it, we might not need to send final response
-	// This is controlled by the tool's Silent flag and ForUser content
+	for _, followUp := range result.followUps {
+		if pubErr := al.bus.PublishInbound(ctx, followUp); pubErr != nil {
+			logger.WarnCF("agent", "Failed to publish follow-up after turn",
+				map[string]any{
+					"turn_id": ts.turnID,
+					"error":   pubErr.Error(),
+				})
+		}
+	}
 
-	// 4. Handle empty response
 	directActionHandled := al.agentTurnHandledByDirectToolAction(ctx, agent)
-	response := resolveFinalResponse(opts.Channel, opts.ReplyContext, finalContent)
+	response := resolveFinalResponse(opts.Channel, opts.ReplyContext, result.finalContent)
 	response.Reactions = al.normalizeFinalReactions(opts.Channel, response.Reactions)
 	if response.SuppressTextReply && len(response.Reactions) > 0 && al.channelManager == nil {
 		logger.WarnCF(
@@ -1340,19 +1807,13 @@ func (al *AgentLoop) runAgentLoop(
 		)
 		response.SuppressTextReply = false
 	}
-	// Honor an explicit text_reply=false even when no reactions are present.
-	// In that case the model is asking for a silent completion, so we should
-	// not replace it with the generic fallback response.
-	if response.hasTextReply() == false {
+	if !response.hasTextReply() {
 		response.Content = ""
 	}
 	if !response.SuppressTextReply && response.Content == "" && !directActionHandled {
 		response.Content = opts.DefaultResponse
 	}
 
-	// 5. Register OnDelivered callback: write assistant message to session only
-	// after confirmed delivery so the journal stays consistent with what the
-	// user actually received. The callback also captures the platform message ID.
 	if response.hasTextReply() {
 		sessionKey := opts.SessionKey
 		agentSessions := agent.Sessions
@@ -1409,18 +1870,16 @@ func (al *AgentLoop) runAgentLoop(
 		}
 	}
 
-	// 6. Optional: send response via bus (OnDelivered fires after send)
 	if opts.SendResponse && response.hasTextReply() {
 		al.bus.PublishOutbound(ctx, response.outboundMessage(opts.Channel, opts.ChatID))
 	}
 
-	// 8. Log response
 	responsePreview := utils.Truncate(response.Content, 120)
 	logger.InfoCF("agent", fmt.Sprintf("Response: %s", responsePreview),
 		map[string]any{
 			"agent_id":       agent.ID,
 			"session_key":    opts.SessionKey,
-			"iterations":     iteration,
+			"iterations":     ts.currentIteration(),
 			"final_length":   len(response.Content),
 			"reaction_count": len(response.Reactions),
 			"text_reply":     !response.SuppressTextReply,
@@ -1533,91 +1992,326 @@ func (al *AgentLoop) handleReasoning(
 	}
 }
 
-// runLLMIteration executes the LLM call loop with tool handling.
-func (al *AgentLoop) runLLMIteration(
-	ctx context.Context,
-	agent *AgentInstance,
-	messages []providers.Message,
-	opts processOptions,
-) (string, int, error) {
-	iteration := 0
+func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, error) {
+	turnCtx, turnCancel := context.WithCancel(ctx)
+	defer turnCancel()
+	ts.setTurnCancel(turnCancel)
+
+	// Inject turnState and AgentLoop into context so tools (e.g. spawn) can retrieve them.
+	turnCtx = withTurnState(turnCtx, ts)
+	turnCtx = WithAgentLoop(turnCtx, al)
+
+	al.registerActiveTurn(ts)
+	defer al.clearActiveTurn(ts)
+
+	turnStatus := TurnEndStatusCompleted
+	defer func() {
+		al.emitEvent(
+			EventKindTurnEnd,
+			ts.eventMeta("runTurn", "turn.end"),
+			TurnEndPayload{
+				Status:          turnStatus,
+				Iterations:      ts.currentIteration(),
+				Duration:        time.Since(ts.startedAt),
+				FinalContentLen: ts.finalContentLen(),
+			},
+		)
+	}()
+
+	al.emitEvent(
+		EventKindTurnStart,
+		ts.eventMeta("runTurn", "turn.start"),
+		TurnStartPayload{
+			Channel:     ts.channel,
+			ChatID:      ts.chatID,
+			UserMessage: ts.userMessage,
+			MediaCount:  len(ts.media),
+		},
+	)
+
+	var history []providers.Message
+	var summary string
+	if !ts.opts.NoHistory {
+		history = ts.agent.Sessions.GetHistory(ts.sessionKey)
+		summary = ts.agent.Sessions.GetSummary(ts.sessionKey)
+	}
+	ts.captureRestorePoint(history, summary)
+
+	messages := ts.agent.ContextBuilder.BuildMessages(
+		history,
+		summary,
+		ts.userMessage,
+		ts.media,
+		ts.channel,
+		ts.chatID,
+		ts.opts.ReplyContext,
+		ts.opts.SenderID,
+		ts.opts.SenderDisplayName,
+		ts.opts.MessageMetadata,
+	)
+
+	cfg := al.GetConfig()
+	maxMediaSize := cfg.Agents.Defaults.GetMaxMediaSize()
+	messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
+
+	if !ts.opts.NoHistory {
+		toolDefs := ts.agent.Tools.ToProviderDefs()
+		if isOverContextBudget(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens) {
+			logger.WarnCF("agent", "Proactive compression: context budget exceeded before LLM call",
+				map[string]any{"session_key": ts.sessionKey})
+			if compression, ok := al.forceCompression(ts.agent, ts.sessionKey); ok {
+				al.emitEvent(
+					EventKindContextCompress,
+					ts.eventMeta("runTurn", "turn.context.compress"),
+					ContextCompressPayload{
+						Reason:            ContextCompressReasonProactive,
+						DroppedMessages:   compression.DroppedMessages,
+						RemainingMessages: compression.RemainingMessages,
+					},
+				)
+				ts.refreshRestorePointFromSession(ts.agent)
+			}
+			newHistory := ts.agent.Sessions.GetHistory(ts.sessionKey)
+			newSummary := ts.agent.Sessions.GetSummary(ts.sessionKey)
+			messages = ts.agent.ContextBuilder.BuildMessages(
+				newHistory, newSummary, ts.userMessage,
+				ts.media, ts.channel, ts.chatID,
+				ts.opts.ReplyContext,
+				ts.opts.SenderID, ts.opts.SenderDisplayName,
+				ts.opts.MessageMetadata,
+			)
+			messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
+		}
+	}
+
+	// Save user message to session (from Incoming)
+	if !ts.opts.NoHistory && (strings.TrimSpace(ts.userMessage) != "" || len(ts.media) > 0) {
+		rootMsg := providers.Message{
+			Role:     "user",
+			Content:  ts.userMessage,
+			Media:    append([]string(nil), ts.media...),
+			Sender:   ts.opts.Sender,
+			Metadata: providers.CloneMessageMetadata(ts.opts.MessageMetadata),
+		}
+		if ts.opts.ReplyContext != nil {
+			rootMsg.MessageIDs = singleMessageIDs(ts.opts.ReplyContext.CurrentMessageID)
+			rootMsg.ReplyToMessageID = ts.opts.ReplyContext.ParentMessageID
+		}
+		ts.agent.Sessions.AddFullMessage(ts.sessionKey, rootMsg)
+		ts.recordPersistedMessage(rootMsg)
+	}
+
+	activeCandidates, activeModel := al.selectCandidates(ts.agent, ts.userMessage, messages)
+	pendingMessages := append([]providers.Message(nil), ts.opts.InitialSteeringMessages...)
 	var finalContent string
 	var directToolOutputs []string
+	thinkingLevel := resolveThinkingLevel(al.cfg, ts.agent, ts.sessionKey)
 
-	thinkingLevel := resolveThinkingLevel(al.cfg, agent, opts.SessionKey)
+turnLoop:
+	for ts.currentIteration() < ts.agent.MaxIterations || len(pendingMessages) > 0 || func() bool {
+		graceful, _ := ts.gracefulInterruptRequested()
+		return graceful
+	}() {
+		if ts.hardAbortRequested() {
+			turnStatus = TurnEndStatusAborted
+			return al.abortTurn(ts)
+		}
 
-	// Determine effective model tier for this conversation turn.
-	// selectCandidates evaluates routing once and the decision is sticky for
-	// all tool-follow-up iterations within the same turn so that a multi-step
-	// tool chain doesn't switch models mid-way through.
-	activeCandidates, activeModel := al.selectCandidates(agent, opts.UserMessage, messages)
+		iteration := ts.currentIteration() + 1
+		ts.setIteration(iteration)
+		ts.setPhase(TurnPhaseRunning)
 
-	for iteration < agent.MaxIterations {
-		iteration++
+		if iteration > 1 {
+			if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
+				pendingMessages = append(pendingMessages, steerMsgs...)
+			}
+		} else if !ts.opts.SkipInitialSteeringPoll {
+			if steerMsgs := al.dequeueSteeringMessagesForScopeWithFallback(ts.sessionKey); len(steerMsgs) > 0 {
+				pendingMessages = append(pendingMessages, steerMsgs...)
+			}
+		}
+
+		// Check if parent turn has ended (SubTurn support from HEAD)
+		if ts.parentTurnState != nil && ts.IsParentEnded() {
+			if !ts.critical {
+				logger.InfoCF("agent", "Parent turn ended, non-critical SubTurn exiting gracefully", map[string]any{
+					"agent_id":  ts.agentID,
+					"iteration": iteration,
+					"turn_id":   ts.turnID,
+				})
+				break
+			}
+			logger.InfoCF("agent", "Parent turn ended, critical SubTurn continues running", map[string]any{
+				"agent_id":  ts.agentID,
+				"iteration": iteration,
+				"turn_id":   ts.turnID,
+			})
+		}
+
+		// Poll for pending SubTurn results (from HEAD)
+		if ts.pendingResults != nil {
+			select {
+			case result, ok := <-ts.pendingResults:
+				if ok && result != nil && result.ForLLM != "" {
+					msg := providers.Message{Role: "user", Content: fmt.Sprintf("[SubTurn Result] %s", result.ForLLM)}
+					pendingMessages = append(pendingMessages, msg)
+				}
+			default:
+				// No results available
+			}
+		}
+
+		// Inject pending steering messages
+		if len(pendingMessages) > 0 {
+			resolvedPending := resolveMediaRefs(pendingMessages, al.mediaStore, maxMediaSize)
+			totalContentLen := 0
+			for i, pm := range pendingMessages {
+				messages = append(messages, resolvedPending[i])
+				totalContentLen += len(pm.Content)
+				if !ts.opts.NoHistory {
+					ts.agent.Sessions.AddFullMessage(ts.sessionKey, pm)
+					ts.recordPersistedMessage(pm)
+				}
+				logger.InfoCF("agent", "Injected steering message into context",
+					map[string]any{
+						"agent_id":    ts.agent.ID,
+						"iteration":   iteration,
+						"content_len": len(pm.Content),
+						"media_count": len(pm.Media),
+					})
+			}
+			al.emitEvent(
+				EventKindSteeringInjected,
+				ts.eventMeta("runTurn", "turn.steering.injected"),
+				SteeringInjectedPayload{
+					Count:           len(pendingMessages),
+					TotalContentLen: totalContentLen,
+				},
+			)
+			pendingMessages = nil
+		}
 
 		logger.DebugCF("agent", "LLM iteration",
 			map[string]any{
-				"agent_id":  agent.ID,
+				"agent_id":  ts.agent.ID,
 				"iteration": iteration,
-				"max":       agent.MaxIterations,
+				"max":       ts.agent.MaxIterations,
 			})
 
-		// Build tool definitions
-		providerToolDefs := agent.Tools.ToProviderDefsWithContext(ctx, opts.Channel, opts.ChatID)
+		gracefulTerminal, _ := ts.gracefulInterruptRequested()
+		providerToolDefs := ts.agent.Tools.ToProviderDefsWithContext(turnCtx, ts.channel, ts.chatID)
 
-		// Log LLM request details
-		logger.DebugCF("agent", "LLM request",
-			map[string]any{
-				"agent_id":          agent.ID,
-				"iteration":         iteration,
-				"model":             activeModel,
-				"messages_count":    len(messages),
-				"tools_count":       len(providerToolDefs),
-				"max_tokens":        agent.MaxTokens,
-				"temperature":       agent.Temperature,
-				"thinking_level":    thinkingLevel,
-				"system_prompt_len": len(messages[0].Content),
-			})
+		_, hasWebSearch := ts.agent.Tools.Get("web_search")
+		useNativeSearch := al.cfg.Tools.Web.PreferNative && hasWebSearch && isNativeSearchProvider(ts.agent.Provider)
 
-		// Log full messages (detailed)
-		logger.DebugCF("agent", "Full LLM request",
-			map[string]any{
-				"iteration":     iteration,
-				"messages_json": formatMessagesForLog(messages),
-				"tools_json":    formatToolsForLog(providerToolDefs),
-			})
+		if useNativeSearch {
+			providerToolDefs = filterClientWebSearch(providerToolDefs)
+		}
 
-		// Call LLM with fallback chain if multiple candidates are configured.
-		var response *providers.LLMResponse
-		var err error
+		callMessages := messages
+		if gracefulTerminal {
+			callMessages = append(append([]providers.Message(nil), messages...), ts.interruptHintMessage())
+			providerToolDefs = nil
+			ts.markGracefulTerminalUsed()
+		}
 
 		llmOpts := map[string]any{
-			"max_tokens":       agent.MaxTokens,
-			"temperature":      agent.Temperature,
-			"prompt_cache_key": agent.ID,
+			"max_tokens":       ts.agent.MaxTokens,
+			"temperature":      ts.agent.Temperature,
+			"prompt_cache_key": ts.agent.ID,
+		}
+		if useNativeSearch {
+			llmOpts["native_search"] = true
 		}
 		if effort := reasoningEffortForLevel(thinkingLevel); effort != "" {
 			llmOpts["reasoning_effort"] = effort
 		}
 		if thinkingLevel != "" && thinkingLevel != thinkingOff {
-			if tc, ok := agent.Provider.(providers.ThinkingCapable); ok && tc.SupportsThinking() {
+			if tc, ok := ts.agent.Provider.(providers.ThinkingCapable); ok && tc.SupportsThinking() {
 				llmOpts["thinking_level"] = thinkingLevel
 			} else {
 				logger.WarnCF("agent", "thinking_level is set but current provider does not support it, ignoring",
-					map[string]any{"agent_id": agent.ID, "thinking_level": thinkingLevel})
+					map[string]any{"agent_id": ts.agent.ID, "thinking_level": thinkingLevel})
 			}
 		}
 
-		callLLM := func() (*providers.LLMResponse, error) {
+		llmModel := activeModel
+		if al.hooks != nil {
+			llmReq, decision := al.hooks.BeforeLLM(turnCtx, &LLMHookRequest{
+				Meta:             ts.eventMeta("runTurn", "turn.llm.request"),
+				Model:            llmModel,
+				Messages:         callMessages,
+				Tools:            providerToolDefs,
+				Options:          llmOpts,
+				Channel:          ts.channel,
+				ChatID:           ts.chatID,
+				GracefulTerminal: gracefulTerminal,
+			})
+			switch decision.normalizedAction() {
+			case HookActionContinue, HookActionModify:
+				if llmReq != nil {
+					llmModel = llmReq.Model
+					callMessages = llmReq.Messages
+					providerToolDefs = llmReq.Tools
+					llmOpts = llmReq.Options
+				}
+			case HookActionAbortTurn:
+				turnStatus = TurnEndStatusError
+				return turnResult{}, al.hookAbortError(ts, "before_llm", decision)
+			case HookActionHardAbort:
+				_ = ts.requestHardAbort()
+				turnStatus = TurnEndStatusAborted
+				return al.abortTurn(ts)
+			}
+		}
+
+		al.emitEvent(
+			EventKindLLMRequest,
+			ts.eventMeta("runTurn", "turn.llm.request"),
+			LLMRequestPayload{
+				Model:         llmModel,
+				MessagesCount: len(callMessages),
+				ToolsCount:    len(providerToolDefs),
+				MaxTokens:     ts.agent.MaxTokens,
+				Temperature:   ts.agent.Temperature,
+			},
+		)
+
+		logger.DebugCF("agent", "LLM request",
+			map[string]any{
+				"agent_id":          ts.agent.ID,
+				"iteration":         iteration,
+				"model":             llmModel,
+				"messages_count":    len(callMessages),
+				"tools_count":       len(providerToolDefs),
+				"max_tokens":        ts.agent.MaxTokens,
+				"temperature":       ts.agent.Temperature,
+				"system_prompt_len": len(callMessages[0].Content),
+			})
+		logger.DebugCF("agent", "Full LLM request",
+			map[string]any{
+				"iteration":     iteration,
+				"messages_json": formatMessagesForLog(callMessages),
+				"tools_json":    formatToolsForLog(providerToolDefs),
+			})
+
+		callLLM := func(messagesForCall []providers.Message, toolDefsForCall []providers.ToolDefinition) (*providers.LLMResponse, error) {
+			providerCtx, providerCancel := context.WithCancel(turnCtx)
+			ts.setProviderCancel(providerCancel)
+			defer func() {
+				providerCancel()
+				ts.clearProviderCancel(providerCancel)
+			}()
+
 			al.activeRequests.Add(1)
 			defer al.activeRequests.Done()
 
 			if len(activeCandidates) > 1 && al.fallback != nil {
 				fbResult, fbErr := al.fallback.Execute(
-					ctx,
+					providerCtx,
 					activeCandidates,
 					func(ctx context.Context, provider, model string) (*providers.LLMResponse, error) {
-						return agent.Provider.Chat(ctx, messages, providerToolDefs, model, llmOpts)
+						return ts.agent.Provider.Chat(ctx, messagesForCall, toolDefsForCall, model, llmOpts)
 					},
 				)
 				if fbErr != nil {
@@ -1628,34 +2322,33 @@ func (al *AgentLoop) runLLMIteration(
 						"agent",
 						fmt.Sprintf("Fallback: succeeded with %s/%s after %d attempts",
 							fbResult.Provider, fbResult.Model, len(fbResult.Attempts)+1),
-						map[string]any{"agent_id": agent.ID, "iteration": iteration},
+						map[string]any{"agent_id": ts.agent.ID, "iteration": iteration},
 					)
 				}
 				return fbResult.Response, nil
 			}
-			return agent.Provider.Chat(ctx, messages, providerToolDefs, activeModel, llmOpts)
+			return ts.agent.Provider.Chat(providerCtx, messagesForCall, toolDefsForCall, llmModel, llmOpts)
 		}
 
-		// Retry loop for context/token errors and thinking downgrade
+		var response *providers.LLMResponse
+		var err error
 		maxRetries := 2
 		maxThinkingDowngrades := len(thinkingDowngradeOrder)
 		thinkingDowngrades := 0
 		for retry := 0; retry <= maxRetries; retry++ {
-			response, err = callLLM()
+			response, err = callLLM(callMessages, providerToolDefs)
 			if err == nil {
 				break
 			}
+			if ts.hardAbortRequested() && errors.Is(err, context.Canceled) {
+				turnStatus = TurnEndStatusAborted
+				return al.abortTurn(ts)
+			}
 
 			errMsg := strings.ToLower(err.Error())
-
-			// Thinking downgrade on provider error
 			if isThinkingUnsupportedError(errMsg) && thinkingLevel != "" && thinkingDowngrades < maxThinkingDowngrades {
 				supported := parseSupportedThinkingLevels(errMsg)
-				if nextLevel, ok := nextDowngradedThinkingLevel(
-					thinkingLevel,
-					supported,
-				); ok &&
-					nextLevel != thinkingLevel {
+				if nextLevel, ok := nextDowngradedThinkingLevel(thinkingLevel, supported); ok && nextLevel != thinkingLevel {
 					prevLevel := thinkingLevel
 					thinkingLevel = nextLevel
 					if effort := reasoningEffortForLevel(thinkingLevel); effort != "" {
@@ -1670,7 +2363,7 @@ func (al *AgentLoop) runLLMIteration(
 					}
 					thinkingDowngrades++
 					logger.WarnCF("agent", "Thinking level downgraded after provider error", map[string]any{
-						"agent_id": agent.ID, "session_key": opts.SessionKey,
+						"agent_id": ts.agent.ID, "session_key": ts.sessionKey,
 						"from": prevLevel, "to": thinkingLevel, "provider_error": err.Error(),
 					})
 					continue
@@ -1681,20 +2374,18 @@ func (al *AgentLoop) runLLMIteration(
 					delete(llmOpts, "thinking_level")
 					thinkingDowngrades++
 					logger.WarnCF("agent", "Thinking level forced to off after provider rejection", map[string]any{
-						"agent_id": agent.ID, "session_key": opts.SessionKey, "provider_error": err.Error(),
+						"agent_id": ts.agent.ID, "session_key": ts.sessionKey, "provider_error": err.Error(),
 					})
 					continue
 				}
 			}
 
-			// Check if this is a network/HTTP timeout — not a context window error.
 			isTimeoutError := errors.Is(err, context.DeadlineExceeded) ||
 				strings.Contains(errMsg, "deadline exceeded") ||
 				strings.Contains(errMsg, "client.timeout") ||
 				strings.Contains(errMsg, "timed out") ||
 				strings.Contains(errMsg, "timeout exceeded")
 
-			// Detect real context window / token limit errors, excluding network timeouts.
 			isContextError := !isTimeoutError && (strings.Contains(errMsg, "context_length_exceeded") ||
 				strings.Contains(errMsg, "context window") ||
 				strings.Contains(errMsg, "maximum context length") ||
@@ -1707,16 +2398,44 @@ func (al *AgentLoop) runLLMIteration(
 
 			if isTimeoutError && retry < maxRetries {
 				backoff := time.Duration(retry+1) * 5 * time.Second
+				al.emitEvent(
+					EventKindLLMRetry,
+					ts.eventMeta("runTurn", "turn.llm.retry"),
+					LLMRetryPayload{
+						Attempt:    retry + 1,
+						MaxRetries: maxRetries,
+						Reason:     "timeout",
+						Error:      err.Error(),
+						Backoff:    backoff,
+					},
+				)
 				logger.WarnCF("agent", "Timeout error, retrying after backoff", map[string]any{
 					"error":   err.Error(),
 					"retry":   retry,
 					"backoff": backoff.String(),
 				})
-				time.Sleep(backoff)
+				if sleepErr := sleepWithContext(turnCtx, backoff); sleepErr != nil {
+					if ts.hardAbortRequested() {
+						turnStatus = TurnEndStatusAborted
+						return al.abortTurn(ts)
+					}
+					err = sleepErr
+					break
+				}
 				continue
 			}
 
-			if isContextError && retry < maxRetries {
+			if isContextError && retry < maxRetries && !ts.opts.NoHistory {
+				al.emitEvent(
+					EventKindLLMRetry,
+					ts.eventMeta("runTurn", "turn.llm.retry"),
+					LLMRetryPayload{
+						Attempt:    retry + 1,
+						MaxRetries: maxRetries,
+						Reason:     "context_limit",
+						Error:      err.Error(),
+					},
+				)
 				logger.WarnCF(
 					"agent",
 					"Context window error detected, attempting compression",
@@ -1726,72 +2445,143 @@ func (al *AgentLoop) runLLMIteration(
 					},
 				)
 
-				if retry == 0 && !constants.IsInternalChannel(opts.Channel) {
+				if retry == 0 && !constants.IsInternalChannel(ts.channel) {
 					al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-						Channel: opts.Channel,
-						ChatID:  opts.ChatID,
+						Channel: ts.channel,
+						ChatID:  ts.chatID,
 						Content: "Context window exceeded. Compressing history and retrying...",
 					})
 				}
 
-				al.forceCompression(agent, opts.SessionKey)
-				snapshot := agent.Sessions.GetContextSnapshot(opts.SessionKey)
-				newHistory := snapshot.History
-				newSummary := snapshot.Summary
-				messages = agent.ContextBuilder.BuildMessages(
-					newHistory,
-					newSummary,
-					"",
-					nil,
-					opts.Channel,
-					opts.ChatID,
-					opts.ReplyContext,
-					opts.SenderID,
-					opts.SenderDisplayName,
-					opts.MessageMetadata,
+				if compression, ok := al.forceCompression(ts.agent, ts.sessionKey); ok {
+					al.emitEvent(
+						EventKindContextCompress,
+						ts.eventMeta("runTurn", "turn.context.compress"),
+						ContextCompressPayload{
+							Reason:            ContextCompressReasonRetry,
+							DroppedMessages:   compression.DroppedMessages,
+							RemainingMessages: compression.RemainingMessages,
+						},
+					)
+					ts.refreshRestorePointFromSession(ts.agent)
+				}
+
+				newHistory := ts.agent.Sessions.GetHistory(ts.sessionKey)
+				newSummary := ts.agent.Sessions.GetSummary(ts.sessionKey)
+				messages = ts.agent.ContextBuilder.BuildMessages(
+					newHistory, newSummary, "",
+					nil, ts.channel, ts.chatID,
+					ts.opts.ReplyContext,
+					ts.opts.SenderID, ts.opts.SenderDisplayName,
+					ts.opts.MessageMetadata,
 				)
+				callMessages = messages
+				if gracefulTerminal {
+					callMessages = append(append([]providers.Message(nil), messages...), ts.interruptHintMessage())
+				}
 				continue
 			}
 			break
 		}
 
 		if err != nil {
+			turnStatus = TurnEndStatusError
+			al.emitEvent(
+				EventKindError,
+				ts.eventMeta("runTurn", "turn.error"),
+				ErrorPayload{
+					Stage:   "llm",
+					Message: err.Error(),
+				},
+			)
 			logger.ErrorCF("agent", "LLM call failed",
 				map[string]any{
-					"agent_id":  agent.ID,
+					"agent_id":  ts.agent.ID,
 					"iteration": iteration,
-					"model":     activeModel,
+					"model":     llmModel,
 					"error":     err.Error(),
 				})
-			return "", iteration, fmt.Errorf("LLM call failed after retries: %w", err)
+			return turnResult{}, fmt.Errorf("LLM call failed after retries: %w", err)
+		}
+
+		if al.hooks != nil {
+			llmResp, decision := al.hooks.AfterLLM(turnCtx, &LLMHookResponse{
+				Meta:     ts.eventMeta("runTurn", "turn.llm.response"),
+				Model:    llmModel,
+				Response: response,
+				Channel:  ts.channel,
+				ChatID:   ts.chatID,
+			})
+			switch decision.normalizedAction() {
+			case HookActionContinue, HookActionModify:
+				if llmResp != nil && llmResp.Response != nil {
+					response = llmResp.Response
+				}
+			case HookActionAbortTurn:
+				turnStatus = TurnEndStatusError
+				return turnResult{}, al.hookAbortError(ts, "after_llm", decision)
+			case HookActionHardAbort:
+				_ = ts.requestHardAbort()
+				turnStatus = TurnEndStatusAborted
+				return al.abortTurn(ts)
+			}
+		}
+
+		// Save finishReason to turnState for SubTurn truncation detection
+		if innerTS := turnStateFromContext(ctx); innerTS != nil {
+			innerTS.SetLastFinishReason(response.FinishReason)
+			// Save usage for token budget tracking
+			if response.Usage != nil {
+				innerTS.SetLastUsage(response.Usage)
+			}
 		}
 
 		go al.handleReasoning(
-			ctx,
+			turnCtx,
 			response.Reasoning,
-			opts.Channel,
-			al.targetReasoningChannelID(opts.Channel),
+			ts.channel,
+			al.targetReasoningChannelID(ts.channel),
+		)
+		al.emitEvent(
+			EventKindLLMResponse,
+			ts.eventMeta("runTurn", "turn.llm.response"),
+			LLMResponsePayload{
+				ContentLen:   len(response.Content),
+				ToolCalls:    len(response.ToolCalls),
+				HasReasoning: response.Reasoning != "" || response.ReasoningContent != "",
+			},
 		)
 
 		logger.DebugCF("agent", "LLM response",
 			map[string]any{
-				"agent_id":       agent.ID,
+				"agent_id":       ts.agent.ID,
 				"iteration":      iteration,
 				"content_chars":  len(response.Content),
 				"tool_calls":     len(response.ToolCalls),
 				"reasoning":      response.Reasoning,
-				"target_channel": al.targetReasoningChannelID(opts.Channel),
-				"channel":        opts.Channel,
+				"target_channel": al.targetReasoningChannelID(ts.channel),
+				"channel":        ts.channel,
 			})
-		// Check if no tool calls - then check reasoning content if any
-		if len(response.ToolCalls) == 0 {
-			finalContent = response.Content
-			if finalContent == "" && response.ReasoningContent != "" {
-				finalContent = response.ReasoningContent
+
+		if len(response.ToolCalls) == 0 || gracefulTerminal {
+			responseContent := response.Content
+			if responseContent == "" && response.ReasoningContent != "" {
+				responseContent = response.ReasoningContent
 			}
+			if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
+				logger.InfoCF("agent", "Steering arrived after direct LLM response; continuing turn",
+					map[string]any{
+						"agent_id":       ts.agent.ID,
+						"iteration":      iteration,
+						"steering_count": len(steerMsgs),
+					})
+				pendingMessages = append(pendingMessages, steerMsgs...)
+				continue
+			}
+			finalContent = responseContent
 			logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
 				map[string]any{
-					"agent_id":      agent.ID,
+					"agent_id":      ts.agent.ID,
 					"iteration":     iteration,
 					"content_chars": len(finalContent),
 				})
@@ -1803,20 +2593,18 @@ func (al *AgentLoop) runLLMIteration(
 			normalizedToolCalls = append(normalizedToolCalls, providers.NormalizeToolCall(tc))
 		}
 
-		// Log tool calls
 		toolNames := make([]string, 0, len(normalizedToolCalls))
 		for _, tc := range normalizedToolCalls {
 			toolNames = append(toolNames, tc.Name)
 		}
 		logger.InfoCF("agent", "LLM requested tool calls",
 			map[string]any{
-				"agent_id":  agent.ID,
+				"agent_id":  ts.agent.ID,
 				"tools":     toolNames,
 				"count":     len(normalizedToolCalls),
 				"iteration": iteration,
 			})
 
-		// Build assistant message with tool calls
 		assistantMsg := providers.Message{
 			Role:             "assistant",
 			Content:          response.Content,
@@ -1824,13 +2612,11 @@ func (al *AgentLoop) runLLMIteration(
 		}
 		for _, tc := range normalizedToolCalls {
 			argumentsJSON, _ := json.Marshal(tc.Arguments)
-			// Copy ExtraContent to ensure thought_signature is persisted for Gemini 3
 			extraContent := tc.ExtraContent
 			thoughtSignature := ""
 			if tc.Function != nil {
 				thoughtSignature = tc.Function.ThoughtSignature
 			}
-
 			assistantMsg.ToolCalls = append(assistantMsg.ToolCalls, providers.ToolCall{
 				ID:   tc.ID,
 				Type: "function",
@@ -1845,31 +2631,134 @@ func (al *AgentLoop) runLLMIteration(
 			})
 		}
 		messages = append(messages, assistantMsg)
-
-		// Save assistant message with tool calls to session
-		agent.Sessions.AddFullMessage(opts.SessionKey, assistantMsg)
-
-		// Execute tool calls, preserving model order for tools that require it.
-		type indexedAgentResult struct {
-			result *tools.ToolResult
-			tc     providers.ToolCall
+		if !ts.opts.NoHistory {
+			ts.agent.Sessions.AddFullMessage(ts.sessionKey, assistantMsg)
+			ts.recordPersistedMessage(assistantMsg)
 		}
 
-		agentResults := make([]indexedAgentResult, len(normalizedToolCalls))
-		executeToolCall := func(idx int, tc providers.ToolCall) {
-			argsJSON, _ := json.Marshal(tc.Arguments)
+		ts.setPhase(TurnPhaseTools)
+		for i, tc := range normalizedToolCalls {
+			if ts.hardAbortRequested() {
+				turnStatus = TurnEndStatusAborted
+				return al.abortTurn(ts)
+			}
+
+			toolName := tc.Name
+			toolArgs := cloneStringAnyMap(tc.Arguments)
+
+			if al.hooks != nil {
+				toolReq, decision := al.hooks.BeforeTool(turnCtx, &ToolCallHookRequest{
+					Meta:      ts.eventMeta("runTurn", "turn.tool.before"),
+					Tool:      toolName,
+					Arguments: toolArgs,
+					Channel:   ts.channel,
+					ChatID:    ts.chatID,
+				})
+				switch decision.normalizedAction() {
+				case HookActionContinue, HookActionModify:
+					if toolReq != nil {
+						toolName = toolReq.Tool
+						toolArgs = toolReq.Arguments
+					}
+				case HookActionDenyTool:
+					denyContent := hookDeniedToolContent("Tool execution denied by hook", decision.Reason)
+					al.emitEvent(
+						EventKindToolExecSkipped,
+						ts.eventMeta("runTurn", "turn.tool.skipped"),
+						ToolExecSkippedPayload{
+							Tool:   toolName,
+							Reason: denyContent,
+						},
+					)
+					deniedMsg := providers.Message{
+						Role:       "tool",
+						Content:    denyContent,
+						ToolCallID: tc.ID,
+					}
+					messages = append(messages, deniedMsg)
+					if !ts.opts.NoHistory {
+						ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
+						ts.recordPersistedMessage(deniedMsg)
+					}
+					continue
+				case HookActionAbortTurn:
+					turnStatus = TurnEndStatusError
+					return turnResult{}, al.hookAbortError(ts, "before_tool", decision)
+				case HookActionHardAbort:
+					_ = ts.requestHardAbort()
+					turnStatus = TurnEndStatusAborted
+					return al.abortTurn(ts)
+				}
+			}
+
+			if al.hooks != nil {
+				approval := al.hooks.ApproveTool(turnCtx, &ToolApprovalRequest{
+					Meta:      ts.eventMeta("runTurn", "turn.tool.approve"),
+					Tool:      toolName,
+					Arguments: toolArgs,
+					Channel:   ts.channel,
+					ChatID:    ts.chatID,
+				})
+				if !approval.Approved {
+					denyContent := hookDeniedToolContent("Tool execution denied by approval hook", approval.Reason)
+					al.emitEvent(
+						EventKindToolExecSkipped,
+						ts.eventMeta("runTurn", "turn.tool.skipped"),
+						ToolExecSkippedPayload{
+							Tool:   toolName,
+							Reason: denyContent,
+						},
+					)
+					deniedMsg := providers.Message{
+						Role:       "tool",
+						Content:    denyContent,
+						ToolCallID: tc.ID,
+					}
+					messages = append(messages, deniedMsg)
+					if !ts.opts.NoHistory {
+						ts.agent.Sessions.AddFullMessage(ts.sessionKey, deniedMsg)
+						ts.recordPersistedMessage(deniedMsg)
+					}
+					continue
+				}
+			}
+
+			argsJSON, _ := json.Marshal(toolArgs)
 			argsPreview := utils.Truncate(string(argsJSON), 200)
-			logger.InfoCF("agent", fmt.Sprintf("Tool call: %s(%s)", tc.Name, argsPreview),
+			logger.InfoCF("agent", fmt.Sprintf("Tool call: %s(%s)", toolName, argsPreview),
 				map[string]any{
-					"agent_id":  agent.ID,
-					"tool":      tc.Name,
+					"agent_id":  ts.agent.ID,
+					"tool":      toolName,
 					"iteration": iteration,
 				})
+			al.emitEvent(
+				EventKindToolExecStart,
+				ts.eventMeta("runTurn", "turn.tool.start"),
+				ToolExecStartPayload{
+					Tool:      toolName,
+					Arguments: cloneEventArguments(toolArgs),
+				},
+			)
 
-			// Create async callback for tools that implement AsyncExecutor.
-			// When the background work completes, this publishes the result
-			// as an inbound system message so processSystemMessage routes it
-			// back to the user via the normal agent loop.
+			// Send tool feedback to chat channel if enabled (from HEAD)
+			if al.cfg.Agents.Defaults.IsToolFeedbackEnabled() && ts.channel != "" {
+				feedbackPreview := utils.Truncate(
+					string(argsJSON),
+					al.cfg.Agents.Defaults.GetToolFeedbackMaxArgsLength(),
+				)
+				feedbackMsg := fmt.Sprintf("\U0001f527 `%s`\n```\n%s\n```", toolName, feedbackPreview)
+				fbCtx, fbCancel := context.WithTimeout(turnCtx, 3*time.Second)
+				_ = al.bus.PublishOutbound(fbCtx, bus.OutboundMessage{
+					Channel: ts.channel,
+					ChatID:  ts.chatID,
+					Content: feedbackMsg,
+				})
+				fbCancel()
+			}
+
+			toolCallID := tc.ID
+			toolIteration := iteration
+			asyncToolName := toolName
 			asyncCallback := func(_ context.Context, result *tools.ToolResult) {
 				// Send ForUser content directly to the user (immediate feedback),
 				// mirroring the synchronous tool execution path.
@@ -1877,8 +2766,8 @@ func (al *AgentLoop) runLLMIteration(
 					outCtx, outCancel := context.WithTimeout(context.Background(), 5*time.Second)
 					defer outCancel()
 					_ = al.bus.PublishOutbound(outCtx, bus.OutboundMessage{
-						Channel: opts.Channel,
-						ChatID:  opts.ChatID,
+						Channel: ts.channel,
+						ChatID:  ts.chatID,
 						Content: result.ForUser,
 					})
 				}
@@ -1894,90 +2783,101 @@ func (al *AgentLoop) runLLMIteration(
 
 				logger.InfoCF("agent", "Async tool completed, publishing result",
 					map[string]any{
-						"tool":        tc.Name,
+						"tool":        asyncToolName,
 						"content_len": len(content),
-						"channel":     opts.Channel,
+						"channel":     ts.channel,
 					})
+				al.emitEvent(
+					EventKindFollowUpQueued,
+					ts.scope.meta(toolIteration, "runTurn", "turn.follow_up.queued"),
+					FollowUpQueuedPayload{
+						SourceTool: asyncToolName,
+						Channel:    ts.channel,
+						ChatID:     ts.chatID,
+						ContentLen: len(content),
+					},
+				)
 
 				pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 				defer pubCancel()
 				_ = al.bus.PublishInbound(pubCtx, bus.InboundMessage{
 					Channel:  "system",
-					SenderID: fmt.Sprintf("async:%s", tc.Name),
-					ChatID:   fmt.Sprintf("%s:%s", opts.Channel, opts.ChatID),
+					SenderID: fmt.Sprintf("async:%s", asyncToolName),
+					ChatID:   fmt.Sprintf("%s:%s", ts.channel, ts.chatID),
 					Content:  content,
 				})
 			}
 
-			toolResult := agent.Tools.ExecuteWithContext(
-				ctx,
-				tc.Name,
-				tc.Arguments,
-				opts.Channel,
-				opts.ChatID,
+			toolStart := time.Now()
+			toolResult := ts.agent.Tools.ExecuteWithContext(
+				turnCtx,
+				toolName,
+				toolArgs,
+				ts.channel,
+				ts.chatID,
 				asyncCallback,
 			)
-			agentResults[idx].result = toolResult
-		}
+			toolDuration := time.Since(toolStart)
 
-		executeParallelBatch := func(start, end int) {
-			var wg sync.WaitGroup
-			for i := start; i < end; i++ {
-				tc := normalizedToolCalls[i]
-				wg.Add(1)
-				go func(idx int, tc providers.ToolCall) {
-					defer wg.Done()
-					executeToolCall(idx, tc)
-				}(i, tc)
+			if ts.hardAbortRequested() {
+				turnStatus = TurnEndStatusAborted
+				return al.abortTurn(ts)
 			}
-			wg.Wait()
-		}
 
-		batchStart := -1
-		for i, tc := range normalizedToolCalls {
-			agentResults[i].tc = tc
-
-			if agent.Tools.ExecutesSequentiallyWithContext(ctx, tc.Name) {
-				if batchStart != -1 {
-					executeParallelBatch(batchStart, i)
-					batchStart = -1
+			if al.hooks != nil {
+				toolResp, decision := al.hooks.AfterTool(turnCtx, &ToolResultHookResponse{
+					Meta:      ts.eventMeta("runTurn", "turn.tool.after"),
+					Tool:      toolName,
+					Arguments: toolArgs,
+					Result:    toolResult,
+					Duration:  toolDuration,
+					Channel:   ts.channel,
+					ChatID:    ts.chatID,
+				})
+				switch decision.normalizedAction() {
+				case HookActionContinue, HookActionModify:
+					if toolResp != nil {
+						if toolResp.Tool != "" {
+							toolName = toolResp.Tool
+						}
+						if toolResp.Result != nil {
+							toolResult = toolResp.Result
+						}
+					}
+				case HookActionAbortTurn:
+					turnStatus = TurnEndStatusError
+					return turnResult{}, al.hookAbortError(ts, "after_tool", decision)
+				case HookActionHardAbort:
+					_ = ts.requestHardAbort()
+					turnStatus = TurnEndStatusAborted
+					return al.abortTurn(ts)
 				}
-				executeToolCall(i, tc)
-				continue
 			}
 
-			if batchStart == -1 {
-				batchStart = i
+			if toolResult == nil {
+				toolResult = tools.ErrorResult("hook returned nil tool result")
 			}
-		}
-		if batchStart != -1 {
-			executeParallelBatch(batchStart, len(normalizedToolCalls))
-		}
 
-		// Process results in original order (send to user, save to session)
-		for _, r := range agentResults {
-			// Send ForUser content to user immediately if not Silent
-			if !r.result.Silent && r.result.ForUser != "" {
-				if opts.SendResponse {
+			if !toolResult.Silent && toolResult.ForUser != "" {
+				if ts.opts.SendResponse {
 					al.bus.PublishOutbound(ctx, bus.OutboundMessage{
-						Channel: opts.Channel,
-						ChatID:  opts.ChatID,
-						Content: r.result.ForUser,
+						Channel: ts.channel,
+						ChatID:  ts.chatID,
+						Content: toolResult.ForUser,
 					})
 					logger.DebugCF("agent", "Sent tool result to user",
 						map[string]any{
-							"tool":        r.tc.Name,
-							"content_len": len(r.result.ForUser),
+							"tool":        toolName,
+							"content_len": len(toolResult.ForUser),
 						})
 				} else {
-					directToolOutputs = append(directToolOutputs, r.result.ForUser)
+					directToolOutputs = append(directToolOutputs, toolResult.ForUser)
 				}
 			}
 
-			// If tool returned media refs, publish them as outbound media
-			if len(r.result.Media) > 0 {
-				parts := make([]bus.MediaPart, 0, len(r.result.Media))
-				for _, ref := range r.result.Media {
+			if len(toolResult.Media) > 0 {
+				parts := make([]bus.MediaPart, 0, len(toolResult.Media))
+				for _, ref := range toolResult.Media {
 					part := bus.MediaPart{Ref: ref}
 					if al.mediaStore != nil {
 						if _, meta, err := al.mediaStore.ResolveWithMeta(ref); err == nil {
@@ -1989,46 +2889,179 @@ func (al *AgentLoop) runLLMIteration(
 					parts = append(parts, part)
 				}
 				al.bus.PublishOutboundMedia(ctx, bus.OutboundMediaMessage{
-					Channel: opts.Channel,
-					ChatID:  opts.ChatID,
+					Channel: ts.channel,
+					ChatID:  ts.chatID,
 					Parts:   parts,
 				})
 			}
 
-			// Determine content for LLM based on tool result
-			contentForLLM := r.result.ForLLM
-			if contentForLLM == "" && r.result.Err != nil {
-				contentForLLM = r.result.Err.Error()
+			contentForLLM := toolResult.ForLLM
+			if contentForLLM == "" && toolResult.Err != nil {
+				contentForLLM = toolResult.Err.Error()
 			}
 
 			toolResultMsg := providers.Message{
 				Role:       "tool",
 				Content:    contentForLLM,
-				ToolCallID: r.tc.ID,
+				ToolCallID: toolCallID,
 			}
+			al.emitEvent(
+				EventKindToolExecEnd,
+				ts.eventMeta("runTurn", "turn.tool.end"),
+				ToolExecEndPayload{
+					Tool:       toolName,
+					Duration:   toolDuration,
+					ForLLMLen:  len(contentForLLM),
+					ForUserLen: len(toolResult.ForUser),
+					IsError:    toolResult.IsError,
+					Async:      toolResult.Async,
+				},
+			)
 			messages = append(messages, toolResultMsg)
+			if !ts.opts.NoHistory {
+				ts.agent.Sessions.AddFullMessage(ts.sessionKey, toolResultMsg)
+				ts.recordPersistedMessage(toolResultMsg)
+			}
 
-			// Save tool result message to session
-			agent.Sessions.AddFullMessage(opts.SessionKey, toolResultMsg)
+			if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
+				pendingMessages = append(pendingMessages, steerMsgs...)
+			}
+
+			skipReason := ""
+			skipMessage := ""
+			if len(pendingMessages) > 0 {
+				skipReason = "queued user steering message"
+				skipMessage = "Skipped due to queued user message."
+			} else if gracefulPending, _ := ts.gracefulInterruptRequested(); gracefulPending {
+				skipReason = "graceful interrupt requested"
+				skipMessage = "Skipped due to graceful interrupt."
+			}
+
+			if skipReason != "" {
+				remaining := len(normalizedToolCalls) - i - 1
+				if remaining > 0 {
+					logger.InfoCF("agent", "Turn checkpoint: skipping remaining tools",
+						map[string]any{
+							"agent_id":  ts.agent.ID,
+							"completed": i + 1,
+							"skipped":   remaining,
+							"reason":    skipReason,
+						})
+					for j := i + 1; j < len(normalizedToolCalls); j++ {
+						skippedTC := normalizedToolCalls[j]
+						al.emitEvent(
+							EventKindToolExecSkipped,
+							ts.eventMeta("runTurn", "turn.tool.skipped"),
+							ToolExecSkippedPayload{
+								Tool:   skippedTC.Name,
+								Reason: skipReason,
+							},
+						)
+						skippedMsg := providers.Message{
+							Role:       "tool",
+							Content:    skipMessage,
+							ToolCallID: skippedTC.ID,
+						}
+						messages = append(messages, skippedMsg)
+						if !ts.opts.NoHistory {
+							ts.agent.Sessions.AddFullMessage(ts.sessionKey, skippedMsg)
+							ts.recordPersistedMessage(skippedMsg)
+						}
+					}
+				}
+				break
+			}
+
+			// Also poll for any SubTurn results that arrived during tool execution.
+			if ts.pendingResults != nil {
+				select {
+				case result, ok := <-ts.pendingResults:
+					if ok && result != nil && result.ForLLM != "" {
+						msg := providers.Message{Role: "user", Content: fmt.Sprintf("[SubTurn Result] %s", result.ForLLM)}
+						messages = append(messages, msg)
+						ts.agent.Sessions.AddFullMessage(ts.sessionKey, msg)
+					}
+				default:
+					// No results available
+				}
+			}
 		}
 
-		// Tick down unlocked hidden tools after processing tool results.
-		// In the agent loop this state is request-scoped to keep discovery
-		// isolated across concurrent sessions; tests and direct registry callers
-		// still fall back to the legacy registry-wide TTL path.
-		if !tools.TickHiddenTools(ctx) {
-			agent.Tools.TickTTL()
+		if !tools.TickHiddenTools(turnCtx) {
+			ts.agent.Tools.TickTTL()
 		}
 		logger.DebugCF("agent", "TTL tick after tool execution", map[string]any{
-			"agent_id": agent.ID, "iteration": iteration,
+			"agent_id": ts.agent.ID, "iteration": iteration,
 		})
+	}
+
+	if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
+		logger.InfoCF("agent", "Steering arrived after turn completion; continuing turn before finalizing",
+			map[string]any{
+				"agent_id":       ts.agent.ID,
+				"steering_count": len(steerMsgs),
+				"session_key":    ts.sessionKey,
+			})
+		pendingMessages = append(pendingMessages, steerMsgs...)
+		finalContent = ""
+		goto turnLoop
+	}
+
+	if ts.hardAbortRequested() {
+		turnStatus = TurnEndStatusAborted
+		return al.abortTurn(ts)
 	}
 
 	if strings.TrimSpace(finalContent) == "" && len(directToolOutputs) > 0 {
 		finalContent = strings.Join(directToolOutputs, "\n\n")
 	}
 
-	return finalContent, iteration, nil
+	if finalContent == "" {
+		if ts.currentIteration() >= ts.agent.MaxIterations && ts.agent.MaxIterations > 0 {
+			finalContent = toolLimitResponse
+		} else {
+			finalContent = ts.opts.DefaultResponse
+		}
+	}
+
+	ts.setPhase(TurnPhaseFinalizing)
+	ts.setFinalContent(finalContent)
+	ts.setPhase(TurnPhaseCompleted)
+	return turnResult{
+		finalContent: finalContent,
+		status:       turnStatus,
+		followUps:    append([]bus.InboundMessage(nil), ts.followUps...),
+	}, nil
+}
+
+func (al *AgentLoop) abortTurn(ts *turnState) (turnResult, error) {
+	ts.setPhase(TurnPhaseAborted)
+	if !ts.opts.NoHistory {
+		if err := ts.restoreSession(ts.agent); err != nil {
+			al.emitEvent(
+				EventKindError,
+				ts.eventMeta("abortTurn", "turn.error"),
+				ErrorPayload{
+					Stage:   "session_restore",
+					Message: err.Error(),
+				},
+			)
+			return turnResult{}, err
+		}
+	}
+	return turnResult{status: TurnEndStatusAborted}, nil
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // selectCandidates returns the model candidates and resolved model name to use
@@ -2045,7 +3078,7 @@ func (al *AgentLoop) selectCandidates(
 	history []providers.Message,
 ) (candidates []providers.FallbackCandidate, model string) {
 	if agent.Router == nil || len(agent.LightCandidates) == 0 {
-		return agent.Candidates, agent.Model
+		return agent.Candidates, resolvedCandidateModel(agent.Candidates, agent.Model)
 	}
 
 	_, usedLight, score := agent.Router.SelectModel(userMsg, history, agent.Model)
@@ -2056,7 +3089,7 @@ func (al *AgentLoop) selectCandidates(
 				"score":     score,
 				"threshold": agent.Router.Threshold(),
 			})
-		return agent.Candidates, agent.Model
+		return agent.Candidates, resolvedCandidateModel(agent.Candidates, agent.Model)
 	}
 
 	logger.InfoCF("agent", "Model routing: light model selected",
@@ -2066,7 +3099,7 @@ func (al *AgentLoop) selectCandidates(
 			"score":       score,
 			"threshold":   agent.Router.Threshold(),
 		})
-	return agent.LightCandidates, agent.Router.LightModel()
+	return agent.LightCandidates, resolvedCandidateModel(agent.LightCandidates, agent.Router.LightModel())
 }
 
 // maybeSummarize triggers summarization if the session history exceeds thresholds.
@@ -2114,57 +3147,85 @@ func (al *AgentLoop) maybeSummarize(agent *AgentInstance, sessionKey, channel, c
 	}
 }
 
+type compressionResult struct {
+	DroppedMessages   int
+	RemainingMessages int
+}
+
 // forceCompression aggressively reduces context when the limit is hit.
-// It drops the oldest 50% of messages (keeping system prompt and last user message).
-func (al *AgentLoop) forceCompression(agent *AgentInstance, sessionKey string) {
+// It drops the oldest ~50% of Turns (a Turn is a complete user→LLM→response
+// cycle, as defined in #1316), so tool-call sequences are never split.
+//
+// If the history is a single Turn with no safe split point, the function
+// falls back to keeping only the most recent user message. This breaks
+// Turn atomicity as a last resort to avoid a context-exceeded loop.
+//
+// Session history contains only user/assistant/tool messages — the system
+// prompt is built dynamically by BuildMessages and is NOT stored here.
+// The compression note is recorded in the session summary so that
+// BuildMessages can include it in the next system prompt.
+func (al *AgentLoop) forceCompression(agent *AgentInstance, sessionKey string) (compressionResult, bool) {
 	history := agent.Sessions.GetHistory(sessionKey)
-	if len(history) <= 4 {
-		return
+	if len(history) <= 2 {
+		return compressionResult{}, false
 	}
 
-	// Keep system prompt (usually [0]) and the very last message (user's trigger)
-	// We want to drop the oldest half of the *conversation*
-	// Assuming [0] is system, [1:] is conversation
-	conversation := history[1 : len(history)-1]
-	if len(conversation) == 0 {
-		return
+	// Split at a Turn boundary so no tool-call sequence is torn apart.
+	// parseTurnBoundaries gives us the start of each Turn; we drop the
+	// oldest half of Turns and keep the most recent ones.
+	turns := parseTurnBoundaries(history)
+	var mid int
+	if len(turns) >= 2 {
+		mid = turns[len(turns)/2]
+	} else {
+		// Fewer than 2 Turns — fall back to message-level midpoint
+		// aligned to the nearest Turn boundary.
+		mid = findSafeBoundary(history, len(history)/2)
+	}
+	var keptHistory []providers.Message
+	if mid <= 0 {
+		// No safe Turn boundary — the entire history is a single Turn
+		// (e.g. one user message followed by a massive tool response).
+		// Keeping everything would leave the agent stuck in a context-
+		// exceeded loop, so fall back to keeping only the most recent
+		// user message. This breaks Turn atomicity as a last resort.
+		for i := len(history) - 1; i >= 0; i-- {
+			if history[i].Role == "user" {
+				keptHistory = []providers.Message{history[i]}
+				break
+			}
+		}
+	} else {
+		keptHistory = history[mid:]
 	}
 
-	// Helper to find the mid-point of the conversation
-	mid := len(conversation) / 2
+	droppedCount := len(history) - len(keptHistory)
 
-	// New history structure:
-	// 1. System Prompt (with compression note appended)
-	// 2. Second half of conversation
-	// 3. Last message
-
-	droppedCount := mid
-	keptConversation := conversation[mid:]
-
-	newHistory := make([]providers.Message, 0, 1+len(keptConversation)+1)
-
-	// Append compression note to the original system prompt instead of adding a new system message
-	// This avoids having two consecutive system messages which some APIs (like Zhipu) reject
+	// Record compression in the session summary so BuildMessages includes it
+	// in the system prompt. We do not modify history messages themselves.
+	existingSummary := agent.Sessions.GetSummary(sessionKey)
 	compressionNote := fmt.Sprintf(
-		"\n\n[System Note: Emergency compression dropped %d oldest messages due to context limit]",
+		"[Emergency compression dropped %d oldest messages due to context limit]",
 		droppedCount,
 	)
-	enhancedSystemPrompt := history[0]
-	enhancedSystemPrompt.Content = enhancedSystemPrompt.Content + compressionNote
-	newHistory = append(newHistory, enhancedSystemPrompt)
+	if existingSummary != "" {
+		compressionNote = existingSummary + "\n\n" + compressionNote
+	}
+	agent.Sessions.SetSummary(sessionKey, compressionNote)
 
-	newHistory = append(newHistory, keptConversation...)
-	newHistory = append(newHistory, history[len(history)-1]) // Last message
-
-	// Update session
-	agent.Sessions.SetHistory(sessionKey, newHistory)
+	agent.Sessions.SetHistory(sessionKey, keptHistory)
 	agent.Sessions.Save(sessionKey)
 
 	logger.WarnCF("agent", "Forced compression executed", map[string]any{
 		"session_key":  sessionKey,
 		"dropped_msgs": droppedCount,
-		"new_count":    len(newHistory),
+		"new_count":    len(keptHistory),
 	})
+
+	return compressionResult{
+		DroppedMessages:   droppedCount,
+		RemainingMessages: len(keptHistory),
+	}, true
 }
 
 // GetStartupInfo returns information about loaded tools and skills for logging.
@@ -2311,15 +3372,6 @@ func (al *AgentLoop) summarizeSession(
 		validMessages = append(validMessages, m)
 	}
 
-	logger.DebugCF("agent", "Summarization filtered history", map[string]any{
-		"session_key":           sessionKey,
-		"messages_to_summarize": len(toSummarize),
-		"valid_messages":        len(validMessages),
-		"non_dialog_skipped":    nonDialogueCount,
-		"oversized_skipped":     oversizedCount,
-		"max_message_tokens":    maxMessageTokens,
-	})
-
 	if len(validMessages) == 0 {
 		logger.WarnCF("agent", "Summarization skipped: no valid user/assistant messages", map[string]any{
 			"session_key":           sessionKey,
@@ -2330,14 +3382,8 @@ func (al *AgentLoop) summarizeSession(
 		return
 	}
 
-	const (
-		maxSummarizationMessages = 10
-		llmMaxRetries            = 3
-		llmTemperature           = 0.3
-		fallbackMaxContentLength = 200
-	)
+	const maxSummarizationMessages = 10
 
-	// Multi-Part Summarization
 	var finalSummary string
 	if len(validMessages) > maxSummarizationMessages {
 		mid := len(validMessages) / 2
@@ -2346,14 +3392,6 @@ func (al *AgentLoop) summarizeSession(
 
 		part1 := validMessages[:mid]
 		part2 := validMessages[mid:]
-
-		logger.DebugCF("agent", "Summarization using multi-part compaction", map[string]any{
-			"session_key":    sessionKey,
-			"valid_messages": len(validMessages),
-			"split_index":    mid,
-			"part1_messages": len(part1),
-			"part2_messages": len(part2),
-		})
 
 		s1, err1 := al.summarizeBatch(ctx, agent, part1, "")
 		if err1 != nil {
@@ -2463,6 +3501,16 @@ func (al *AgentLoop) summarizeSession(
 		"oversized_skipped":          oversizedCount,
 		"non_dialog_skipped":         nonDialogueCount,
 	})
+	al.emitEvent(
+		EventKindSessionSummarize,
+		al.newTurnEventScope(agent.ID, sessionKey).meta(0, "summarizeSession", "turn.session.summarize"),
+		SessionSummarizePayload{
+			SummarizedMessages: len(validMessages),
+			KeptMessages:       keepCount,
+			SummaryLen:         len(finalSummary),
+			OmittedOversized:   omitted,
+		},
+	)
 
 	meta := compactionNoteMetadata{
 		SessionKey:      sessionKey,
@@ -2557,12 +3605,8 @@ func threadAwareKeepCount(history []providers.Message, minKeep int) int {
 		maxKeep = minKeep
 	}
 
-	// Collect IDs of all messages that will be kept initially.
-	// Walk the tail and check whether any message is a reply whose parent
-	// lives in the to-be-summarized portion.
 	for {
 		cutoff := len(history) - keep
-		// Build a set of message IDs in the keep window.
 		keptIDs := make(map[string]bool, keep)
 		for _, m := range history[cutoff:] {
 			for _, messageID := range m.MessageIDs {
@@ -2573,18 +3617,14 @@ func threadAwareKeepCount(history []providers.Message, minKeep int) int {
 			}
 		}
 
-		// Check if any kept message replies to something outside the window.
 		extended := false
 		for _, m := range history[cutoff:] {
 			if m.ReplyToMessageID == "" {
 				continue
 			}
 			if keptIDs[m.ReplyToMessageID] {
-				continue // parent is already kept
+				continue
 			}
-			// Parent is in the summarized portion — find it and pull everything
-			// from that point forward into the keep window, capped so long
-			// threads still allow compaction.
 			for i := cutoff - 1; i >= 0; i-- {
 				if messageHasID(history[i], m.ReplyToMessageID) {
 					candidate := len(history) - i
@@ -2602,10 +3642,7 @@ func threadAwareKeepCount(history []providers.Message, minKeep int) int {
 				break
 			}
 		}
-		if !extended {
-			break
-		}
-		if keep >= maxKeep {
+		if !extended || keep >= maxKeep {
 			break
 		}
 	}
@@ -2783,11 +3820,7 @@ func (al *AgentLoop) mergeDetailedCompactionNotes(
 	partialNotes []string,
 	meta compactionNoteMetadata,
 ) (string, error) {
-	prompt := buildDetailedCompactionMergePrompt(
-		runningSummary,
-		partialNotes,
-		meta,
-	)
+	prompt := buildDetailedCompactionMergePrompt(runningSummary, partialNotes, meta)
 
 	response, err := agent.Provider.Chat(
 		ctx,
@@ -2875,15 +3908,14 @@ func (al *AgentLoop) generateDetailedCompactionNote(
 }
 
 // estimateTokens estimates the number of tokens in a message list.
-// Uses a safe heuristic of 2.5 characters per token to account for CJK and other
-// overheads better than the previous 3 chars/token.
+// Counts Content, ToolCalls arguments, and ToolCallID metadata so that
+// tool-heavy conversations are not systematically undercounted.
 func (al *AgentLoop) estimateTokens(messages []providers.Message) int {
-	totalChars := 0
+	total := 0
 	for _, m := range messages {
-		totalChars += utf8.RuneCountInString(m.Content)
+		total += estimateMessageTokens(m)
 	}
-	// 2.5 chars per token = totalChars * 2 / 5
-	return totalChars * 2 / 5
+	return total
 }
 
 func (al *AgentLoop) handleCommand(
@@ -2996,6 +4028,13 @@ func (al *AgentLoop) buildCommandsRuntime(agent *AgentInstance, opts *processOpt
 			}
 			return al.channelManager.GetEnabledChannels()
 		},
+		GetActiveTurn: func() any {
+			info := al.GetActiveTurn()
+			if info == nil {
+				return nil
+			}
+			return info
+		},
 		SwitchChannel: func(value string) error {
 			if al.channelManager == nil {
 				return fmt.Errorf("channel manager not initialized")
@@ -3006,13 +4045,58 @@ func (al *AgentLoop) buildCommandsRuntime(agent *AgentInstance, opts *processOpt
 			return nil
 		},
 	}
+	rt.ReloadConfig = func() error {
+		if al.reloadFunc == nil {
+			return fmt.Errorf("reload not configured")
+		}
+		return al.reloadFunc()
+	}
 	if agent != nil {
 		rt.GetModelInfo = func() (string, string) {
-			return agent.Model, cfg.Agents.Defaults.Provider
+			return agent.Model, resolvedCandidateProvider(agent.Candidates, cfg.Agents.Defaults.Provider)
 		}
 		rt.SwitchModel = func(value string) (string, error) {
+			value = strings.TrimSpace(value)
 			oldModel := agent.Model
+
+			modelCfg, err := resolvedModelConfig(cfg, value, agent.Workspace)
+			if err != nil {
+				nextCandidates := resolveModelCandidates(
+					cfg,
+					resolvedCandidateProvider(agent.Candidates, cfg.Agents.Defaults.Provider),
+					value,
+					agent.Fallbacks,
+				)
+				if len(nextCandidates) == 0 {
+					return "", err
+				}
+
+				agent.Model = value
+				agent.Candidates = nextCandidates
+				return oldModel, nil
+			}
+
+			nextProvider, _, err := providers.CreateProviderFromConfig(modelCfg)
+			if err != nil {
+				return "", fmt.Errorf("failed to initialize model %q: %w", value, err)
+			}
+
+			nextCandidates := resolveModelCandidates(cfg, cfg.Agents.Defaults.Provider, modelCfg.Model, agent.Fallbacks)
+			if len(nextCandidates) == 0 {
+				return "", fmt.Errorf("model %q did not resolve to any provider candidates", value)
+			}
+
+			oldProvider := agent.Provider
 			agent.Model = value
+			agent.Provider = nextProvider
+			agent.Candidates = nextCandidates
+			agent.ThinkingLevel = parseThinkingLevel(modelCfg.ThinkingLevel)
+
+			if oldProvider != nil && oldProvider != nextProvider {
+				if stateful, ok := oldProvider.(providers.StatefulProvider); ok {
+					stateful.Close()
+				}
+			}
 			return oldModel, nil
 		}
 
@@ -3137,10 +4221,9 @@ func outboundMessageMetadata(channel, chatID string, requestMetadata map[string]
 }
 
 // messageSenderFromInbound converts bus.SenderInfo into a MessageSender for storage.
-// Returns nil when neither username nor display name is known (e.g. automated/system messages).
+// Returns nil when neither username nor display name is known.
 func messageSenderFromInbound(s bus.SenderInfo) *providers.MessageSender {
 	firstName, lastName := s.FirstName, s.LastName
-	// Platforms that don't distinguish first/last name use DisplayName — store it as FirstName.
 	if firstName == "" && lastName == "" && s.DisplayName != "" {
 		firstName = s.DisplayName
 	}
@@ -3152,6 +4235,28 @@ func messageSenderFromInbound(s bus.SenderInfo) *providers.MessageSender {
 		FirstName: firstName,
 		LastName:  lastName,
 	}
+}
+
+// isNativeSearchProvider reports whether the given LLM provider implements
+// NativeSearchCapable and returns true for SupportsNativeSearch.
+func isNativeSearchProvider(p providers.LLMProvider) bool {
+	if ns, ok := p.(providers.NativeSearchCapable); ok {
+		return ns.SupportsNativeSearch()
+	}
+	return false
+}
+
+// filterClientWebSearch returns a copy of tools with the client-side
+// web_search tool removed. Used when native provider search is preferred.
+func filterClientWebSearch(tools []providers.ToolDefinition) []providers.ToolDefinition {
+	result := make([]providers.ToolDefinition, 0, len(tools))
+	for _, t := range tools {
+		if strings.EqualFold(t.Function.Name, "web_search") {
+			continue
+		}
+		result = append(result, t)
+	}
+	return result
 }
 
 // Helper to extract provider from registry for cleanup

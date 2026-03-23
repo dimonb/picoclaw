@@ -20,14 +20,14 @@ type MessageEditor interface {
 	EditMessage(ctx context.Context, chatID string, messageID string, content string) error
 }
 
-// MessageDeleter — channels that can delete an existing message.
+// MessageDeleter — channels that can delete a message by ID.
 // messageID is always string; channels convert platform-specific types internally.
 type MessageDeleter interface {
 	DeleteMessage(ctx context.Context, chatID string, messageID string) error
 }
 
-// ReactionCapable — channels that can add a temporary reaction (e.g. 👀) to an
-// inbound message as a processing indicator.
+// ReactionCapable — channels that can add a reaction (e.g. 👀) to an inbound message.
+// This is typically used as a temporary processing indicator.
 // ReactToMessage adds a reaction and returns an undo function to remove it.
 // The undo function MUST be idempotent and safe to call multiple times.
 type ReactionCapable interface {
@@ -48,6 +48,18 @@ type MessageReactor interface {
 type PlaceholderCapable interface {
 	SendPlaceholder(ctx context.Context, chatID string) (messageID string, err error)
 }
+
+// StreamingCapable — channels that can show partial LLM output in real-time.
+// The channel SHOULD gracefully degrade if the platform rejects streaming
+// (e.g. Telegram bot without forum mode). In that case, Update becomes a no-op
+// and Finalize still delivers the final message.
+type StreamingCapable interface {
+	BeginStream(ctx context.Context, chatID string) (Streamer, error)
+}
+
+// Streamer is defined in pkg/bus to avoid circular imports.
+// This alias keeps channel implementations using channels.Streamer unchanged.
+type Streamer = bus.Streamer
 
 // PlaceholderRecorder is injected into channels by Manager.
 // Channels call these methods on inbound to register typing/placeholder state.
