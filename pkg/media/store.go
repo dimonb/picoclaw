@@ -168,7 +168,7 @@ func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (
 		bucket = "unknown"
 	}
 
-	dayDir := now.Format("2006-01-02")
+	dayDir := now.Format("20060102")
 	targetDir := filepath.Join(s.rootDir, dayDir, bucket)
 	if err := os.MkdirAll(targetDir, 0o755); err != nil {
 		return "", fmt.Errorf("media store: failed to create target dir: %w", err)

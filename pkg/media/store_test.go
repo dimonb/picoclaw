@@ -49,13 +49,13 @@ func TestStore_CopiesIntoOrganizedLayout(t *testing.T) {
 		t.Fatalf("Store: %v", err)
 	}
 
-	if !strings.HasPrefix(storedPath, filepath.Join(root, time.Now().Format("2006-01-02"))) {
-		t.Fatalf("storedPath = %q, want prefix %q", storedPath, filepath.Join(root, time.Now().Format("2006-01-02")))
+	if !strings.HasPrefix(storedPath, filepath.Join(root, time.Now().Format("20060102"))) {
+		t.Fatalf("storedPath = %q, want prefix %q", storedPath, filepath.Join(root, time.Now().Format("20060102")))
 	}
 	if filepath.Base(storedPath) != "voice.ogg" {
 		t.Fatalf("basename = %q", filepath.Base(storedPath))
 	}
-	if !strings.Contains(storedPath, filepath.Join(time.Now().Format("2006-01-02"), "agent_main_telegram_group_-1003822706455_3")) {
+	if !strings.Contains(storedPath, filepath.Join(time.Now().Format("20060102"), "agent_main_telegram_group_-1003822706455_3")) {
 		t.Fatalf("storedPath bucket mismatch: %q", storedPath)
 	}
 	meta := readMetaFile(t, storedPath)
