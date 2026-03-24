@@ -10,12 +10,15 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/cron"
+	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 // JobExecutor is the interface for executing cron jobs through the agent
 type JobExecutor interface {
-	ProcessDirectWithChannel(ctx context.Context, content, sessionKey, channel, chatID string) (string, error)
+	ProcessDirectWithMessage(ctx context.Context, msg bus.InboundMessage) (string, error)
+	PublishOutboundWithHistory(ctx context.Context, sessionKey, channel, chatID string, msg providers.Message) error
 }
 
 // CronTool provides scheduling capabilities for the agent
@@ -26,6 +29,7 @@ type CronTool struct {
 	execTool     *ExecTool
 	allowCommand bool
 	execEnabled  bool
+	allowRemote  bool
 }
 
 // NewCronTool creates a new CronTool
@@ -36,7 +40,9 @@ func NewCronTool(
 ) (*CronTool, error) {
 	allowCommand := true
 	execEnabled := true
+	allowRemote := false
 	if config != nil {
+		allowRemote = config.Tools.Exec.AllowRemote
 		allowCommand = config.Tools.Cron.AllowCommand
 		execEnabled = config.Tools.Exec.Enabled
 	}
@@ -60,6 +66,7 @@ func NewCronTool(
 		execTool:     execTool,
 		allowCommand: allowCommand,
 		execEnabled:  execEnabled,
+		allowRemote:  allowRemote,
 	}, nil
 }
 
@@ -70,7 +77,7 @@ func (t *CronTool) Name() string {
 
 // Description returns the tool description
 func (t *CronTool) Description() string {
-	return "Schedule reminders, tasks, or system commands. IMPORTANT: When user asks to be reminded or scheduled, you MUST call this tool. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). Use 'every_seconds' ONLY for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). Use 'cron_expr' for complex recurring schedules. Use 'command' to execute shell commands directly."
+	return "Schedule reminders, agent tasks, or system commands. IMPORTANT: When user asks to be reminded or scheduled, you MUST call this tool. Use mode='agent' (default) when the scheduled text should be processed by the agent with the bound session context. Use mode='direct' only for literal reminders that should be posted unchanged. Use 'at_seconds' for one-time reminders (e.g., 'remind me in 10 minutes' → at_seconds=600). Use 'every_seconds' ONLY for recurring tasks (e.g., 'every 2 hours' → every_seconds=7200). Use 'cron_expr' for complex recurring schedules. Use 'command' to execute shell commands directly."
 }
 
 // Parameters returns the tool parameters schema
@@ -85,11 +92,16 @@ func (t *CronTool) Parameters() map[string]any {
 			},
 			"message": map[string]any{
 				"type":        "string",
-				"description": "The reminder/task message to display when triggered. If 'command' is used, this describes what the command does.",
+				"description": "Instruction for the scheduled job. In mode='agent', this is passed back to the agent as a synthetic user message when triggered. In mode='direct', this exact text is posted to the channel unchanged. If 'command' is used, this describes what the command does.",
+			},
+			"mode": map[string]any{
+				"type":        "string",
+				"enum":        []string{cron.ModeAgent, cron.ModeDirect},
+				"description": "Execution mode. 'agent' (default) re-enters the agent with the bound session context. 'direct' posts the message as-is without running the agent.",
 			},
 			"command": map[string]any{
 				"type":        "string",
-				"description": "Optional: Shell command to execute directly (e.g., 'df -h'). If set, the agent will run this command and report output instead of just showing the message. 'deliver' will be forced to false for commands.",
+				"description": "Optional: Shell command to execute directly (e.g., 'df -h'). If set, the command output is published without running the LLM, and mode='direct' is forced.",
 			},
 			"command_confirm": map[string]any{
 				"type":        "boolean",
@@ -110,10 +122,6 @@ func (t *CronTool) Parameters() map[string]any {
 			"job_id": map[string]any{
 				"type":        "string",
 				"description": "Job ID (for remove/enable/disable)",
-			},
-			"deliver": map[string]any{
-				"type":        "boolean",
-				"description": "If true, send message directly to channel. If false, let agent process message (for complex tasks). Default: false",
 			},
 		},
 		"required": []string{"action"},
@@ -146,6 +154,7 @@ func (t *CronTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult {
 	channel := ToolChannel(ctx)
 	chatID := ToolChatID(ctx)
+	sessionKey := ToolSessionKey(ctx)
 
 	if channel == "" || chatID == "" {
 		return ErrorResult("no session context (channel/chat_id not set). Use this tool in an active conversation.")
@@ -191,10 +200,9 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 		return ErrorResult("one of at_seconds, every_seconds, or cron_expr is required")
 	}
 
-	// Read deliver parameter, default to false so scheduled tasks execute through the agent
-	deliver := false
-	if d, ok := args["deliver"].(bool); ok {
-		deliver = d
+	mode, err := resolveCronMode(args)
+	if err != nil {
+		return ErrorResult(err.Error())
 	}
 
 	// GHSA-pv8c-p6jf-3fpp: command scheduling requires internal channel. When
@@ -206,13 +214,13 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 		if !t.execEnabled {
 			return ErrorResult("command execution is disabled")
 		}
-		if !constants.IsInternalChannel(channel) {
+		if !t.allowRemote && !constants.IsInternalChannel(channel) {
 			return ErrorResult("scheduling command execution is restricted to internal channels")
 		}
 		if !t.allowCommand && !commandConfirm {
 			return ErrorResult("command_confirm=true is required when allow_command is disabled")
 		}
-		deliver = false
+		mode = cron.ModeDirect
 	}
 
 	// Truncate message for job name (max 30 chars)
@@ -222,9 +230,10 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 		messagePreview,
 		schedule,
 		message,
-		deliver,
+		mode,
 		channel,
 		chatID,
+		sessionKey,
 	)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("Error adding job: %v", err))
@@ -297,19 +306,17 @@ func (t *CronTool) enableJob(args map[string]any, enable bool) *ToolResult {
 
 // ExecuteJob executes a cron job through the agent
 func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
-	// Get channel/chatID from job payload
 	channel := job.Payload.Channel
 	chatID := job.Payload.To
-
-	// Default values if not set
 	if channel == "" {
 		channel = "cli"
 	}
 	if chatID == "" {
 		chatID = "direct"
 	}
+	sessionKey := cronSessionKey(job, channel, chatID)
+	mode := job.Payload.EffectiveMode()
 
-	// Execute command if present
 	if job.Payload.Command != "" {
 		if !t.execEnabled || t.execTool == nil {
 			output := "Error executing scheduled command: command execution is disabled"
@@ -337,8 +344,19 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 			output = fmt.Sprintf("Scheduled command '%s' executed:\n%s", job.Payload.Command, result.ForLLM)
 		}
 
+		msg := providers.Message{
+			Role:     "assistant",
+			Content:  output,
+			Metadata: cronMessageMetadata(job, channel, chatID, cron.ModeDirect),
+		}
 		pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer pubCancel()
+		if t.executor != nil {
+			if err := t.executor.PublishOutboundWithHistory(pubCtx, sessionKey, channel, chatID, msg); err != nil {
+				return fmt.Sprintf("Error: %v", err)
+			}
+			return "ok"
+		}
 		t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
 			Channel: channel,
 			ChatID:  chatID,
@@ -347,34 +365,92 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 		return "ok"
 	}
 
-	// If deliver=true, send message directly without agent processing
-	if job.Payload.Deliver {
+	if mode == cron.ModeDirect {
+		if t.executor == nil {
+			pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer pubCancel()
+			t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+				Channel: channel,
+				ChatID:  chatID,
+				Content: job.Payload.Message,
+			})
+			return "ok"
+		}
+
+		msg := providers.Message{
+			Role:     "assistant",
+			Content:  job.Payload.Message,
+			Metadata: cronMessageMetadata(job, channel, chatID, cron.ModeDirect),
+		}
+
 		pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer pubCancel()
-		t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-			Channel: channel,
-			ChatID:  chatID,
-			Content: job.Payload.Message,
-		})
+		if err := t.executor.PublishOutboundWithHistory(pubCtx, sessionKey, channel, chatID, msg); err != nil {
+			return fmt.Sprintf("Error: %v", err)
+		}
 		return "ok"
 	}
 
-	// For deliver=false, process through agent (for complex tasks)
-	sessionKey := fmt.Sprintf("cron-%s", job.ID)
-
-	// Call agent with job's message
-	response, err := t.executor.ProcessDirectWithChannel(
-		ctx,
-		job.Payload.Message,
-		sessionKey,
-		channel,
-		chatID,
-	)
+	if t.executor == nil {
+		return "Error: agent executor is not configured for cron agent mode"
+	}
+	response, err := t.executor.ProcessDirectWithMessage(ctx, bus.InboundMessage{
+		Channel:    channel,
+		SenderID:   "cron",
+		ChatID:     chatID,
+		Content:    job.Payload.Message,
+		SessionKey: sessionKey,
+		Metadata:   cronMessageMetadata(job, channel, chatID, cron.ModeAgent),
+	})
 	if err != nil {
 		return fmt.Sprintf("Error: %v", err)
 	}
 
-	// Response is automatically sent via MessageBus by AgentLoop
-	_ = response // Will be sent by AgentLoop
+	_ = response
 	return "ok"
+}
+
+func resolveCronMode(args map[string]any) (string, error) {
+	if raw, ok := args["mode"].(string); ok && strings.TrimSpace(raw) != "" {
+		mode := cron.NormalizeMode(raw)
+		if mode == "" {
+			return "", fmt.Errorf("mode must be %q or %q", cron.ModeAgent, cron.ModeDirect)
+		}
+		return mode, nil
+	}
+	if deliver, ok := args["deliver"].(bool); ok {
+		if deliver {
+			return cron.ModeDirect, nil
+		}
+		return cron.ModeAgent, nil
+	}
+	return cron.ModeAgent, nil
+}
+
+func cronSessionKey(job *cron.CronJob, channel, chatID string) string {
+	if strings.HasPrefix(strings.TrimSpace(job.Payload.SessionKey), "agent:") {
+		return strings.TrimSpace(job.Payload.SessionKey)
+	}
+	if channel == "cli" || chatID == "direct" {
+		return routing.BuildAgentMainSessionKey(routing.DefaultAgentID)
+	}
+	return routing.BuildAgentPeerSessionKey(routing.SessionKeyParams{
+		AgentID: routing.DefaultAgentID,
+		Channel: channel,
+		Peer: &routing.RoutePeer{
+			Kind: "group",
+			ID:   chatID,
+		},
+	})
+}
+
+func cronMessageMetadata(job *cron.CronJob, channel, chatID, mode string) map[string]string {
+	return providers.CloneMessageMetadata(map[string]string{
+		providers.MessageMetaSourceKind:  providers.MessageSourceCron,
+		providers.MessageMetaChannel:     channel,
+		providers.MessageMetaChatID:      chatID,
+		providers.MessageMetaTriggerKind: providers.MessageTriggerCron,
+		providers.MessageMetaTriggerID:   job.ID,
+		providers.MessageMetaDispatch:    mode,
+	})
 }

@@ -21,7 +21,7 @@ func TestNewAddSubcommand(t *testing.T) {
 
 	assert.NotNil(t, cmd.Flags().Lookup("every"))
 	assert.NotNil(t, cmd.Flags().Lookup("cron"))
-	assert.NotNil(t, cmd.Flags().Lookup("deliver"))
+	assert.NotNil(t, cmd.Flags().Lookup("mode"))
 	assert.NotNil(t, cmd.Flags().Lookup("to"))
 	assert.NotNil(t, cmd.Flags().Lookup("channel"))
 
