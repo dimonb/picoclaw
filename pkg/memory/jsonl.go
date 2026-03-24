@@ -303,6 +303,27 @@ func (s *JSONLStore) GetSummary(
 	return meta.Summary, nil
 }
 
+func (s *JSONLStore) GetContextSnapshot(
+	_ context.Context, sessionKey string,
+) (ContextSnapshot, error) {
+	l := s.sessionLock(sessionKey)
+	l.Lock()
+	defer l.Unlock()
+
+	meta, err := s.readMeta(sessionKey)
+	if err != nil {
+		return ContextSnapshot{}, err
+	}
+	msgs, err := readMessages(s.jsonlPath(sessionKey), meta.Skip)
+	if err != nil {
+		return ContextSnapshot{}, err
+	}
+	return ContextSnapshot{
+		History: msgs,
+		Summary: meta.Summary,
+	}, nil
+}
+
 func (s *JSONLStore) SetSummary(
 	_ context.Context, sessionKey, summary string,
 ) error {
@@ -322,6 +343,62 @@ func (s *JSONLStore) SetSummary(
 	meta.UpdatedAt = now
 
 	return s.writeMeta(sessionKey, meta)
+}
+
+func (s *JSONLStore) ApplySummaryCompaction(
+	_ context.Context,
+	sessionKey, summary string,
+	expectedHistoryCount, keepLast int,
+) (SummaryCompactionResult, error) {
+	l := s.sessionLock(sessionKey)
+	l.Lock()
+	defer l.Unlock()
+
+	meta, err := s.readMeta(sessionKey)
+	if err != nil {
+		return SummaryCompactionResult{}, err
+	}
+
+	n, countErr := countLines(s.jsonlPath(sessionKey))
+	if countErr != nil {
+		return SummaryCompactionResult{}, countErr
+	}
+	meta.Count = n
+
+	activeCount := meta.Count - meta.Skip
+	result := SummaryCompactionResult{
+		HistoryCountBefore: activeCount,
+		HistoryCountAfter:  activeCount,
+	}
+	if expectedHistoryCount <= 0 || activeCount < expectedHistoryCount {
+		return result, nil
+	}
+
+	if keepLast < 0 {
+		keepLast = 0
+	}
+	if keepLast >= expectedHistoryCount {
+		return result, nil
+	}
+
+	summarizedCount := expectedHistoryCount - keepLast
+	now := time.Now()
+	if meta.CreatedAt.IsZero() {
+		meta.CreatedAt = now
+	}
+	meta.Summary = summary
+	meta.Skip += summarizedCount
+	meta.UpdatedAt = now
+
+	result.Applied = true
+	result.SummarizedCount = summarizedCount
+	result.NewMessagesWhileRunning = activeCount - expectedHistoryCount
+	result.HistoryCountAfter = activeCount - summarizedCount
+
+	if err := s.writeMeta(sessionKey, meta); err != nil {
+		return SummaryCompactionResult{}, err
+	}
+	return result, nil
 }
 
 func (s *JSONLStore) TruncateHistory(

@@ -32,7 +32,9 @@ type AgentInstance struct {
 	ThinkingLevel             ThinkingLevel
 	ContextWindow             int
 	SummarizeMessageThreshold int
+	SummarizeKeepMessages     int
 	SummarizeTokenPercent     int
+	JournalEnabled            bool
 	Provider                  providers.LLMProvider
 	Sessions                  session.SessionStore
 	ContextBuilder            *ContextBuilder
@@ -159,6 +161,11 @@ func NewAgentInstance(
 		summarizeMessageThreshold = 20
 	}
 
+	summarizeKeepMessages := defaults.SummarizeKeepMessages
+	if summarizeKeepMessages <= 0 {
+		summarizeKeepMessages = 4
+	}
+
 	summarizeTokenPercent := defaults.SummarizeTokenPercent
 	if summarizeTokenPercent == 0 {
 		summarizeTokenPercent = 75
@@ -197,7 +204,9 @@ func NewAgentInstance(
 		ThinkingLevel:             thinkingLevel,
 		ContextWindow:             contextWindow,
 		SummarizeMessageThreshold: summarizeMessageThreshold,
+		SummarizeKeepMessages:     summarizeKeepMessages,
 		SummarizeTokenPercent:     summarizeTokenPercent,
+		JournalEnabled:            defaults.JournalEnabled,
 		Provider:                  provider,
 		Sessions:                  sessions,
 		ContextBuilder:            contextBuilder,

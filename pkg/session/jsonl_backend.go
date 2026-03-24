@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"log"
+	"sync"
 
 	"github.com/sipeed/picoclaw/pkg/memory"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -12,7 +13,8 @@ import (
 // Write errors are logged rather than returned, matching the fire-and-forget
 // contract of SessionManager that the agent loop relies on.
 type JSONLBackend struct {
-	store memory.Store
+	store          memory.Store
+	thinkingLevels sync.Map
 }
 
 // NewJSONLBackend wraps a memory.Store for use as a SessionStore.
@@ -50,6 +52,15 @@ func (b *JSONLBackend) GetSummary(key string) string {
 	return summary
 }
 
+func (b *JSONLBackend) GetContextSnapshot(key string) ContextSnapshot {
+	snapshot, err := b.store.GetContextSnapshot(context.Background(), key)
+	if err != nil {
+		log.Printf("session: get context snapshot: %v", err)
+		return ContextSnapshot{History: []providers.Message{}}
+	}
+	return snapshot
+}
+
 func (b *JSONLBackend) SetSummary(key, summary string) {
 	if err := b.store.SetSummary(context.Background(), key, summary); err != nil {
 		log.Printf("session: set summary: %v", err)
@@ -68,6 +79,24 @@ func (b *JSONLBackend) TruncateHistory(key string, keepLast int) {
 	}
 }
 
+func (b *JSONLBackend) ApplySummaryCompaction(
+	key, summary string,
+	expectedHistoryCount, keepLast int,
+) SummaryCompactionResult {
+	result, err := b.store.ApplySummaryCompaction(
+		context.Background(),
+		key,
+		summary,
+		expectedHistoryCount,
+		keepLast,
+	)
+	if err != nil {
+		log.Printf("session: apply summary compaction: %v", err)
+		return SummaryCompactionResult{}
+	}
+	return result
+}
+
 // Save persists session state. Since the JSONL store fsyncs every write
 // immediately, the data is already durable. Save runs compaction to reclaim
 // space from logically truncated messages (no-op when there are none).
@@ -76,6 +105,16 @@ func (b *JSONLBackend) Save(key string) error {
 }
 
 // Close releases resources held by the underlying store.
+func (b *JSONLBackend) GetThinkingLevel(key string) string {
+	v, _ := b.thinkingLevels.Load(key)
+	s, _ := v.(string)
+	return s
+}
+
+func (b *JSONLBackend) SetThinkingLevel(key, level string) {
+	b.thinkingLevels.Store(key, level)
+}
+
 func (b *JSONLBackend) Close() error {
 	return b.store.Close()
 }

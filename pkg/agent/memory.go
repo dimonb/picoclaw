@@ -19,6 +19,7 @@ import (
 // MemoryStore manages persistent memory for the agent.
 // - Long-term memory: memory/MEMORY.md
 // - Daily notes: memory/YYYYMM/YYYYMMDD.md
+// - Compaction journal: memory/journal/YYYYMMDD/HHMMSS.md
 type MemoryStore struct {
 	workspace  string
 	memoryDir  string
@@ -103,6 +104,53 @@ func (ms *MemoryStore) AppendToday(content string) error {
 
 	// Use unified atomic write utility with explicit sync for flash storage reliability.
 	return fileutil.WriteFileAtomic(todayFile, []byte(newContent), 0o600)
+}
+
+// WriteCompactionSummary writes a timestamped compaction summary file under
+// memory/journal/YYYYMMDD/HHMMSS.md. If a file with the same second already
+// exists, it appends a numeric suffix to avoid collisions.
+func (ms *MemoryStore) WriteCompactionSummary(
+	timestamp time.Time,
+	content string,
+) (string, error) {
+	dayDir := filepath.Join(ms.memoryDir, "journal", timestamp.Format("20060102"))
+	if err := os.MkdirAll(dayDir, 0o755); err != nil {
+		return "", err
+	}
+
+	baseName := timestamp.Format("150405")
+	trimmed := strings.TrimSpace(content)
+	if trimmed != "" {
+		trimmed += "\n"
+	}
+	data := []byte(trimmed)
+
+	// Use O_EXCL to atomically claim a unique filename without TOCTOU race.
+	for i := 0; i < 100; i++ {
+		var candidate string
+		if i == 0 {
+			candidate = filepath.Join(dayDir, baseName+".md")
+		} else {
+			candidate = filepath.Join(dayDir, fmt.Sprintf("%s-%02d.md", baseName, i+1))
+		}
+		f, err := os.OpenFile(candidate, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		_, writeErr := f.Write(data)
+		closeErr := f.Close()
+		if writeErr != nil {
+			return "", writeErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+		return candidate, nil
+	}
+	return "", fmt.Errorf("memory: failed to allocate unique journal file for %s after 100 attempts", baseName)
 }
 
 // GetRecentDailyNotes returns daily notes from the last N days.

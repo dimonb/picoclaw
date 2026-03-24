@@ -10,6 +10,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -601,6 +602,10 @@ type ephemeralSessionStoreIface interface {
 	SetSummary(key, summary string)
 	SetHistory(key string, history []providers.Message)
 	TruncateHistory(key string, keepLast int)
+	GetContextSnapshot(key string) session.ContextSnapshot
+	ApplySummaryCompaction(key, summary string, expectedHistoryCount, keepLast int) session.SummaryCompactionResult
+	GetThinkingLevel(key string) string
+	SetThinkingLevel(key, level string)
 	Save(key string) error
 	Close() error
 }
@@ -661,8 +666,21 @@ func (e *ephemeralSessionStore) TruncateHistory(_ string, keepLast int) {
 	e.history = e.history[len(e.history)-keepLast:]
 }
 
-func (e *ephemeralSessionStore) Save(_ string) error { return nil }
-func (e *ephemeralSessionStore) Close() error        { return nil }
+func (e *ephemeralSessionStore) GetContextSnapshot(key string) session.ContextSnapshot {
+	return session.ContextSnapshot{
+		History: e.GetHistory(key),
+		Summary: e.GetSummary(key),
+	}
+}
+
+func (e *ephemeralSessionStore) ApplySummaryCompaction(_, _ string, _, _ int) session.SummaryCompactionResult {
+	return session.SummaryCompactionResult{}
+}
+
+func (e *ephemeralSessionStore) GetThinkingLevel(_ string) string { return "" }
+func (e *ephemeralSessionStore) SetThinkingLevel(_, _ string)     {}
+func (e *ephemeralSessionStore) Save(_ string) error              { return nil }
+func (e *ephemeralSessionStore) Close() error                     { return nil }
 
 func (e *ephemeralSessionStore) truncateLocked() {
 	if len(e.history) > maxEphemeralHistorySize {

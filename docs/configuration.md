@@ -54,15 +54,20 @@ PicoClaw stores data in your configured workspace (default: `~/.picoclaw/workspa
 ```
 ~/.picoclaw/workspace/
 ├── sessions/          # Conversation sessions and history
-├── memory/           # Long-term memory (MEMORY.md)
-├── state/            # Persistent state (last channel, etc.)
-├── cron/             # Scheduled jobs database
-├── skills/           # Custom skills
-├── AGENT.md          # Agent behavior guide
-├── HEARTBEAT.md      # Periodic task prompts (checked every 30 min)
-├── IDENTITY.md       # Agent identity
-├── SOUL.md           # Agent soul
-└── USER.md           # User preferences
+├── memory/            # Long-term memory
+│   ├── MEMORY.md      # Persistent agent memory
+│   ├── YYYYMM/        # Daily notes (YYYYMMDD.md per day)
+│   └── journal/       # Compaction journal — YYYYMMDD/HHMMSS.md per compaction event
+│                      #   enabled via agents.defaults.journal_enabled (default: false)
+├── media/             # Inbound media files (YYYYMMDD/<bucket>/<filename>)
+├── state/             # Persistent state (last channel, etc.)
+├── cron/              # Scheduled jobs database
+├── skills/            # Custom skills
+├── AGENT.md           # Agent behavior guide
+├── HEARTBEAT.md       # Periodic task prompts (checked every 30 min)
+├── IDENTITY.md        # Agent identity
+├── SOUL.md            # Agent soul
+└── USER.md            # User preferences
 ```
 
 > **Note:** Changes to `AGENT.md`, `SOUL.md`, `USER.md` and `memory/MEMORY.md` are automatically detected at runtime via file modification time (mtime) tracking. You do **not** need to restart the gateway after editing these files — the agent picks up the new content on the next request.
