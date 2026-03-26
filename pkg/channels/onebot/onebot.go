@@ -767,9 +767,8 @@ func (c *OneBotChannel) parseMessageSegments(
 	storeFile := func(localPath, filename string) string {
 		if store != nil {
 			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename:      filename,
-				Source:        "onebot",
-				CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
+				Filename: filename,
+				Source:   "onebot",
 			}, scope)
 			if err == nil {
 				return ref

@@ -80,7 +80,7 @@ type processOptions struct {
 	UserMessage             string                   // User message content (may include prefix)
 	ForcedSkills            []string                 // Skills explicitly requested for this message
 	SystemPromptOverride    string                   // Override the default system prompt (Used by SubTurns)
-	Media                   []string                 // media:// refs from inbound message
+	Media                   []string                 // stored local media paths from inbound message
 	InitialSteeringMessages []providers.Message      // Steering messages from refactor/agent
 	DefaultResponse         string                   // Response when LLM returns empty
 	EnableSummary           bool                     // Whether to trigger summarization

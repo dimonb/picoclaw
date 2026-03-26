@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -104,8 +103,8 @@ func TestHandleC2CMessage_AttachmentOnlyPublishesMedia(t *testing.T) {
 	if len(inbound.Media) != 1 {
 		t.Fatalf("len(inbound.Media) = %d, want 1", len(inbound.Media))
 	}
-	if !strings.HasPrefix(inbound.Media[0], "media://") {
-		t.Fatalf("inbound.Media[0] = %q, want media:// ref", inbound.Media[0])
+	if _, err := os.Stat(inbound.Media[0]); err != nil {
+		t.Fatalf("inbound.Media[0] = %q, expected stored local file: %v", inbound.Media[0], err)
 	}
 	_, meta, err := store.ResolveWithMeta(inbound.Media[0])
 	if err != nil {
@@ -162,8 +161,8 @@ func TestHandleGroupATMessage_AttachmentOnlyPublishesMedia(t *testing.T) {
 	if len(inbound.Media) != 1 {
 		t.Fatalf("len(inbound.Media) = %d, want 1", len(inbound.Media))
 	}
-	if !strings.HasPrefix(inbound.Media[0], "media://") {
-		t.Fatalf("inbound.Media[0] = %q, want media:// ref", inbound.Media[0])
+	if _, err := os.Stat(inbound.Media[0]); err != nil {
+		t.Fatalf("inbound.Media[0] = %q, expected stored local file: %v", inbound.Media[0], err)
 	}
 	if inbound.Peer.Kind != "group" || inbound.Peer.ID != "group-1" {
 		t.Fatalf("inbound.Peer = %+v, want group/group-1", inbound.Peer)

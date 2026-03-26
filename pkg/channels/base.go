@@ -353,3 +353,26 @@ func BuildMediaScope(channel, chatID, messageID string) string {
 	}
 	return channel + ":" + chatID + ":" + id
 }
+
+const defaultMediaBucketAgentID = "main"
+
+// BuildMediaBucket constructs a human-readable storage bucket name similar to
+// sanitized session keys, e.g. agent_main_telegram_group_-1003822706455_3.
+func BuildMediaBucket(channel string, peer bus.Peer) string {
+	parts := []string{"agent", defaultMediaBucketAgentID, strings.ToLower(strings.TrimSpace(channel))}
+	kind := strings.ToLower(strings.TrimSpace(peer.Kind))
+	if kind == "" {
+		kind = "unknown"
+	}
+	id := strings.TrimSpace(peer.ID)
+	if id == "" {
+		id = "unknown"
+	}
+	parts = append(parts, kind, id)
+	bucket := strings.Join(parts, "_")
+	bucket = strings.ReplaceAll(bucket, ":", "_")
+	bucket = strings.ReplaceAll(bucket, "/", "_")
+	bucket = strings.ReplaceAll(bucket, "\\", "_")
+	bucket = strings.ReplaceAll(bucket, " ", "_")
+	return bucket
+}

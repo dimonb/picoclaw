@@ -2814,7 +2814,7 @@ func TestResolveMediaRefs_UnknownTypeInjectsPath(t *testing.T) {
 	if len(result[0].Media) != 0 {
 		t.Fatalf("expected 0 media entries, got %d", len(result[0].Media))
 	}
-	expected := "hi [file:" + txtPath + "]"
+	expected := "hi [file:" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -2896,7 +2896,7 @@ func TestResolveMediaRefs_PDFInjectsFilePath(t *testing.T) {
 	if len(result[0].Media) != 0 {
 		t.Fatalf("expected 0 media (non-image), got %d", len(result[0].Media))
 	}
-	expected := "report.pdf [file:" + pdfPath + "]"
+	expected := "report.pdf [file:" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -2918,7 +2918,7 @@ func TestResolveMediaRefs_AudioInjectsAudioPath(t *testing.T) {
 	if len(result[0].Media) != 0 {
 		t.Fatalf("expected 0 media, got %d", len(result[0].Media))
 	}
-	expected := "voice.ogg [audio:" + oggPath + "]"
+	expected := "voice.ogg [audio:" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -2940,7 +2940,7 @@ func TestResolveMediaRefs_VideoInjectsVideoPath(t *testing.T) {
 	if len(result[0].Media) != 0 {
 		t.Fatalf("expected 0 media, got %d", len(result[0].Media))
 	}
-	expected := "clip.mp4 [video:" + mp4Path + "]"
+	expected := "clip.mp4 [video:" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -2959,7 +2959,7 @@ func TestResolveMediaRefs_NoGenericTagAppendsPath(t *testing.T) {
 	}
 	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize)
 
-	expected := "here is my data [file:" + csvPath + "]"
+	expected := "here is my data [file:" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -2979,7 +2979,7 @@ func TestResolveMediaRefs_EmptyContentGetsPathTag(t *testing.T) {
 	}
 	result := resolveMediaRefs(messages, store, config.DefaultMaxMediaSize)
 
-	expected := "[file:" + docPath + "]"
+	expected := "[file:" + ref + "]"
 	if result[0].Content != expected {
 		t.Fatalf("expected content %q, got %q", expected, result[0].Content)
 	}
@@ -3014,7 +3014,7 @@ func TestResolveMediaRefs_MixedImageAndFile(t *testing.T) {
 	if !strings.HasPrefix(result[0].Media[0], "data:image/png;base64,") {
 		t.Fatal("expected image to be base64 encoded")
 	}
-	expectedContent := "check these [file:" + pdfPath + "]"
+	expectedContent := "check these [file:" + fileRef + "]"
 	if result[0].Content != expectedContent {
 		t.Fatalf("expected content %q, got %q", expectedContent, result[0].Content)
 	}

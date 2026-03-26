@@ -20,10 +20,11 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
-// resolveMediaRefs resolves media:// refs in messages.
+// resolveMediaRefs resolves local media paths in messages.
 // Images are base64-encoded into the Media array for multimodal LLMs.
 // Non-image files (documents, audio, video) have their local path injected
-// into Content so the agent can access them via file tools like read_file.
+// into Content so the agent can access them via file tools like read_file,
+// bash, ffmpeg, or other generic filesystem tools.
 // Returns a new slice; original messages are not mutated.
 func resolveMediaRefs(messages []providers.Message, store media.MediaStore, maxSize int) []providers.Message {
 	if store == nil {
@@ -42,17 +43,16 @@ func resolveMediaRefs(messages []providers.Message, store media.MediaStore, maxS
 		var pathTags []string
 
 		for _, ref := range m.Media {
-			if !strings.HasPrefix(ref, "media://") {
-				resolved = append(resolved, ref)
-				continue
+			localPath := ref
+			meta := media.MediaMeta{}
+			resolvedPath, resolvedMeta, err := store.ResolveWithMeta(ref)
+			if err == nil {
+				localPath = resolvedPath
+				meta = resolvedMeta
 			}
 
-			localPath, meta, err := store.ResolveWithMeta(ref)
-			if err != nil {
-				logger.WarnCF("agent", "Failed to resolve media ref", map[string]any{
-					"ref":   ref,
-					"error": err.Error(),
-				})
+			if strings.HasPrefix(localPath, "http://") || strings.HasPrefix(localPath, "https://") || strings.HasPrefix(localPath, "data:") {
+				resolved = append(resolved, localPath)
 				continue
 			}
 

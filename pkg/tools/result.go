@@ -41,7 +41,7 @@ type ToolResult struct {
 	// Used for internal error handling and logging.
 	Err error `json:"-"`
 
-	// Media contains media store refs produced by this tool.
+	// Media contains stored local file paths produced by this tool.
 	// When non-empty, the agent will publish these as OutboundMediaMessage.
 	Media []string `json:"media,omitempty"`
 
@@ -186,7 +186,7 @@ func UserResult(content string) *ToolResult {
 //
 // Example:
 //
-//	result := MediaResult("Image generated successfully", []string{"media://abc123"})
+//	result := MediaResult("Image generated successfully", []string{"/path/to/stored/image.png"})
 func MediaResult(forLLM string, mediaRefs []string) *ToolResult {
 	return &ToolResult{
 		ForLLM: forLLM,
