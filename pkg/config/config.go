@@ -27,6 +27,20 @@ var rrCounter atomic.Uint64
 type FlexibleStringSlice []string
 
 func (f *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
+	// Accept a single scalar string/number for backward compatibility with
+	// older config shapes such as placeholder.text: "Thinking...".
+	var single any
+	if err := json.Unmarshal(data, &single); err == nil {
+		switch val := single.(type) {
+		case string:
+			*f = []string{val}
+			return nil
+		case float64:
+			*f = []string{fmt.Sprintf("%.0f", val)}
+			return nil
+		}
+	}
+
 	// Try []string first
 	var ss []string
 	if err := json.Unmarshal(data, &ss); err == nil {

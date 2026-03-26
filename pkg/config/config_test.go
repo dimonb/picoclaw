@@ -198,6 +198,16 @@ func TestAgentConfig_FullParse(t *testing.T) {
 	}
 }
 
+func TestFlexibleStringSlice_UnmarshalJSON_SingleString(t *testing.T) {
+	var f FlexibleStringSlice
+	if err := json.Unmarshal([]byte(`"Thinking... 💭"`), &f); err != nil {
+		t.Fatalf("unmarshal single string: %v", err)
+	}
+	if len(f) != 1 || f[0] != "Thinking... 💭" {
+		t.Fatalf("FlexibleStringSlice = %v, want [\"Thinking... 💭\"]", f)
+	}
+}
+
 func TestConfig_BackwardCompat_NoAgentsList(t *testing.T) {
 	jsonData := `{
 		"agents": {
