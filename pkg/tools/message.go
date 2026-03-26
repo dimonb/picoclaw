@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 )
@@ -52,6 +53,10 @@ func (t *MessageTool) Parameters() map[string]any {
 			"edit_message_id": map[string]any{
 				"type":        "string",
 				"description": "Optional platform message ID to edit instead of sending a new message",
+			},
+			"wait_delivery": map[string]any{
+				"type":        "boolean",
+				"description": "Wait for delivery confirmation and return the platform message_id in the result. Use when you need the message ID for future edits.",
 			},
 		},
 		"required": []string{"content"},
@@ -113,12 +118,39 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		return &ToolResult{ForLLM: "Message sending not configured", IsError: true}
 	}
 
+	waitDelivery, _ := args["wait_delivery"].(bool)
+
 	msg := bus.OutboundMessage{
 		Channel:          channel,
 		ChatID:           chatID,
 		Content:          content,
 		ReplyToMessageID: replyTo,
 	}
+
+	if waitDelivery {
+		delivered := make(chan []string, 1)
+		msg.OnDelivered = func(ids []string) {
+			select {
+			case delivered <- ids:
+			default:
+			}
+		}
+		if err := t.sendCallback(msg); err != nil {
+			return &ToolResult{ForLLM: fmt.Sprintf("sending message: %v", err), IsError: true, Err: err}
+		}
+		select {
+		case ids := <-delivered:
+			if len(ids) > 0 {
+				return SilentResult(fmt.Sprintf("Message sent to %s:%s, message_id: %s", channel, chatID, ids[0]))
+			}
+			return SilentResult(fmt.Sprintf("Message sent to %s:%s (no message_id returned)", channel, chatID))
+		case <-time.After(30 * time.Second):
+			return SilentResult(fmt.Sprintf("Message sent to %s:%s (delivery confirmation timeout)", channel, chatID))
+		case <-ctx.Done():
+			return SilentResult(fmt.Sprintf("Message sent to %s:%s (context cancelled before delivery)", channel, chatID))
+		}
+	}
+
 	if err := t.sendCallback(msg); err != nil {
 		return &ToolResult{ForLLM: fmt.Sprintf("sending message: %v", err), IsError: true, Err: err}
 	}
