@@ -14,7 +14,7 @@ func newAddCommand(storePath func() string) *cobra.Command {
 		message string
 		every   int64
 		cronExp string
-		deliver bool
+		mode    string
 		channel string
 		to      string
 	)
@@ -37,7 +37,7 @@ func newAddCommand(storePath func() string) *cobra.Command {
 			}
 
 			cs := cron.NewCronService(storePath(), nil)
-			job, err := cs.AddJob(name, schedule, message, deliver, channel, to)
+			job, err := cs.AddJob(name, schedule, message, mode, channel, to, "")
 			if err != nil {
 				return fmt.Errorf("error adding job: %w", err)
 			}
@@ -52,7 +52,7 @@ func newAddCommand(storePath func() string) *cobra.Command {
 	cmd.Flags().StringVarP(&message, "message", "m", "", "Message for agent")
 	cmd.Flags().Int64VarP(&every, "every", "e", 0, "Run every N seconds")
 	cmd.Flags().StringVarP(&cronExp, "cron", "c", "", "Cron expression (e.g. '0 9 * * *')")
-	cmd.Flags().BoolVarP(&deliver, "deliver", "d", false, "Deliver response to channel")
+	cmd.Flags().StringVarP(&mode, "mode", "d", cron.ModeAgent, "Execution mode: 'agent' re-enters the agent, 'direct' posts the message as-is")
 	cmd.Flags().StringVar(&to, "to", "", "Recipient for delivery")
 	cmd.Flags().StringVar(&channel, "channel", "", "Channel for delivery")
 

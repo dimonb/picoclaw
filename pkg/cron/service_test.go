@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,7 +21,7 @@ func TestSaveStore_FilePermissions(t *testing.T) {
 
 	cs := NewCronService(storePath, nil)
 
-	_, err := cs.AddJob("test", CronSchedule{Kind: "every", EveryMS: int64Ptr(60000)}, "hello", false, "cli", "direct")
+	_, err := cs.AddJob("test", CronSchedule{Kind: "every", EveryMS: int64Ptr(60000)}, "hello", ModeAgent, "cli", "direct", "agent:main:main")
 	if err != nil {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -33,6 +34,139 @@ func TestSaveStore_FilePermissions(t *testing.T) {
 	perm := info.Mode().Perm()
 	if perm != 0o600 {
 		t.Errorf("cron store has permission %04o, want 0600", perm)
+	}
+}
+
+func TestStart_OverdueOneShotJobRunsImmediatelyAfterRestart(t *testing.T) {
+	tmpDir := t.TempDir()
+	storePath := filepath.Join(tmpDir, "cron", "jobs.json")
+
+	overdueAt := time.Now().Add(-2 * time.Minute).UnixMilli()
+	store := CronStore{
+		Version: 1,
+		Jobs: []CronJob{{
+			ID:      "job-overdue-at",
+			Name:    "overdue one-shot",
+			Enabled: true,
+			Schedule: CronSchedule{
+				Kind: "at",
+				AtMS: &overdueAt,
+			},
+			Payload: CronPayload{
+				Kind:    "agent_turn",
+				Message: "run me",
+			},
+			State: CronJobState{},
+		}},
+	}
+
+	if err := os.MkdirAll(filepath.Dir(storePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	data, err := json.Marshal(store)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if err := os.WriteFile(storePath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	executed := make(chan *CronJob, 1)
+	cs := NewCronService(storePath, func(job *CronJob) (string, error) {
+		executed <- job
+		return "ok", nil
+	})
+
+	if err := cs.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer cs.Stop()
+
+	select {
+	case job := <-executed:
+		if job.ID != "job-overdue-at" {
+			t.Fatalf("executed unexpected job id %q", job.ID)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("expected overdue one-shot job to execute after startup")
+	}
+
+	if err := cs.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	jobs := cs.ListJobs(false)
+	if len(jobs) != 0 {
+		t.Fatalf("expected no enabled jobs after one-shot execution, got %d", len(jobs))
+	}
+	allJobs := cs.ListJobs(true)
+	if len(allJobs) != 1 || allJobs[0].Enabled {
+		t.Fatalf("expected executed overdue one-shot job to remain only as disabled history entry, got %+v", allJobs)
+	}
+}
+
+func TestStart_ExecutedOneShotJobIsNotReplayed(t *testing.T) {
+	tmpDir := t.TempDir()
+	storePath := filepath.Join(tmpDir, "cron", "jobs.json")
+
+	overdueAt := time.Now().Add(-2 * time.Minute).UnixMilli()
+	lastRun := time.Now().Add(-90 * time.Second).UnixMilli()
+	store := CronStore{
+		Version: 1,
+		Jobs: []CronJob{{
+			ID:      "job-already-ran",
+			Name:    "already ran one-shot",
+			Enabled: true,
+			Schedule: CronSchedule{
+				Kind: "at",
+				AtMS: &overdueAt,
+			},
+			Payload: CronPayload{
+				Kind:    "agent_turn",
+				Message: "do not replay",
+			},
+			State: CronJobState{
+				LastRunAtMS: &lastRun,
+			},
+		}},
+	}
+
+	if err := os.MkdirAll(filepath.Dir(storePath), 0o755); err != nil {
+		t.Fatalf("MkdirAll failed: %v", err)
+	}
+	data, err := json.Marshal(store)
+	if err != nil {
+		t.Fatalf("Marshal failed: %v", err)
+	}
+	if err := os.WriteFile(storePath, data, 0o600); err != nil {
+		t.Fatalf("WriteFile failed: %v", err)
+	}
+
+	executed := make(chan *CronJob, 1)
+	cs := NewCronService(storePath, func(job *CronJob) (string, error) {
+		executed <- job
+		return "ok", nil
+	})
+
+	if err := cs.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer cs.Stop()
+
+	select {
+	case job := <-executed:
+		t.Fatalf("did not expect already executed one-shot job to replay, got %q", job.ID)
+	case <-time.After(1500 * time.Millisecond):
+	}
+
+	if err := cs.Load(); err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	jobs := cs.ListJobs(true)
+	if len(jobs) != 1 {
+		t.Fatalf("expected job to remain present, got %d jobs", len(jobs))
+	}
+	if jobs[0].State.NextRunAtMS != nil {
+		t.Fatal("expected already executed overdue one-shot job to have no next run")
 	}
 }
 
@@ -52,7 +186,7 @@ func TestCronService_CRUD(t *testing.T) {
 
 	// Test AddJob
 	at := time.Now().Add(time.Hour).UnixMilli()
-	job, err := cs.AddJob("Task1", CronSchedule{Kind: "at", AtMS: &at}, "msg", true, "ch", "to")
+	job, err := cs.AddJob("Task1", CronSchedule{Kind: "at", AtMS: &at}, "msg", ModeDirect, "ch", "to", "")
 	if err != nil || job.ID == "" {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -134,7 +268,7 @@ func TestCronService_ExecutionFlow(t *testing.T) {
 
 	// Add a job then runs 100ms from now
 	target := time.Now().Add(100 * time.Millisecond).UnixMilli()
-	job, _ := cs.AddJob("FastJob", CronSchedule{Kind: "at", AtMS: &target}, "", false, "", "")
+	job, _ := cs.AddJob("FastJob", CronSchedule{Kind: "at", AtMS: &target}, "", ModeAgent, "", "", "")
 
 	// Check for job execution with a timeout
 	success := false
@@ -167,7 +301,7 @@ func TestCronService_PersistenceIntegrity(t *testing.T) {
 	// write a job and persist
 	cs1 := NewCronService(tmpFile, nil)
 	at := int64(2000000000000)
-	cs1.AddJob("PersistMe", CronSchedule{Kind: "at", AtMS: &at}, "payload", true, "ch1", "")
+	cs1.AddJob("PersistMe", CronSchedule{Kind: "at", AtMS: &at}, "payload", ModeDirect, "ch1", "", "")
 
 	// check file exists
 	if _, err := os.Stat(tmpFile); os.IsNotExist(err) {
@@ -213,7 +347,7 @@ func TestCronService_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for j := range iterations {
 				at := time.Now().Add(time.Hour).UnixMilli()
-				cs.AddJob(fmt.Sprintf("Job-%d-%d", id, j), CronSchedule{Kind: "at", AtMS: &at}, "", false, "", "")
+				cs.AddJob(fmt.Sprintf("Job-%d-%d", id, j), CronSchedule{Kind: "at", AtMS: &at}, "", ModeAgent, "", "", "")
 				time.Sleep(100 * time.Microsecond)
 			}
 		}(i)
