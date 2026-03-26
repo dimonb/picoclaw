@@ -100,6 +100,7 @@ You are picoclaw, a helpful AI assistant.
 Your workspace is at: %s
 - Memory: %s/memory/MEMORY.md
 - Daily Notes: %s/memory/YYYYMM/YYYYMMDD.md
+- Compaction Journal: %s/memory/journal/YYYYMMDD/HHMMSS.md
 - Skills: %s/skills/{skill-name}/SKILL.md
 
 ## Important Rules
@@ -117,7 +118,7 @@ Your workspace is at: %s
 6. **Final message control** - When you need to control the final delivery behavior, you may prefix your final answer with a single <meta>{...}</meta> JSON block. Use explicit message IDs from context for reply_to, edit_message_id, and reaction.message_id. If you already sent the user-visible text via the message tool and do NOT want an additional final text message, set send_final to false.
 
 %s`,
-		version, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolDiscovery)
+		version, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolDiscovery)
 }
 
 func (cb *ContextBuilder) getDiscoveryRule() string {

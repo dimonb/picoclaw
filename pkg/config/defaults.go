@@ -40,7 +40,9 @@ func DefaultConfig() *Config {
 				Temperature:               nil, // nil means use provider default
 				MaxToolIterations:         50,
 				SummarizeMessageThreshold: 20,
+				SummarizeKeepMessages:     4,
 				SummarizeTokenPercent:     75,
+				JournalEnabled:            false,
 				SteeringMode:              "one-at-a-time",
 				ToolFeedback: ToolFeedbackConfig{
 					Enabled:       false,

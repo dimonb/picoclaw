@@ -20,9 +20,10 @@ type Session struct {
 }
 
 type SessionManager struct {
-	sessions map[string]*Session
-	mu       sync.RWMutex
-	storage  string
+	sessions       map[string]*Session
+	mu             sync.RWMutex
+	storage        string
+	thinkingLevels sync.Map
 }
 
 func NewSessionManager(storage string) *SessionManager {
@@ -111,6 +112,23 @@ func (sm *SessionManager) GetSummary(key string) string {
 	return session.Summary
 }
 
+func (sm *SessionManager) GetContextSnapshot(key string) ContextSnapshot {
+	sm.mu.RLock()
+	defer sm.mu.RUnlock()
+
+	session, ok := sm.sessions[key]
+	if !ok {
+		return ContextSnapshot{History: []providers.Message{}}
+	}
+
+	history := make([]providers.Message, len(session.Messages))
+	copy(history, session.Messages)
+	return ContextSnapshot{
+		History: history,
+		Summary: session.Summary,
+	}
+}
+
 func (sm *SessionManager) SetSummary(key string, summary string) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
@@ -155,6 +173,46 @@ func sanitizeFilename(key string) string {
 	s = strings.ReplaceAll(s, "/", "_")
 	s = strings.ReplaceAll(s, "\\", "_")
 	return s
+}
+
+func (sm *SessionManager) ApplySummaryCompaction(
+	key, summary string,
+	expectedHistoryCount, keepLast int,
+) SummaryCompactionResult {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+
+	session, ok := sm.sessions[key]
+	if !ok {
+		return SummaryCompactionResult{}
+	}
+
+	currentCount := len(session.Messages)
+	result := SummaryCompactionResult{
+		HistoryCountBefore: currentCount,
+		HistoryCountAfter:  currentCount,
+	}
+	if expectedHistoryCount <= 0 || currentCount < expectedHistoryCount {
+		return result
+	}
+
+	if keepLast < 0 {
+		keepLast = 0
+	}
+	if keepLast >= expectedHistoryCount {
+		return result
+	}
+
+	summarizedCount := expectedHistoryCount - keepLast
+	session.Summary = summary
+	session.Messages = append([]providers.Message(nil), session.Messages[summarizedCount:]...)
+	session.Updated = time.Now()
+
+	result.Applied = true
+	result.SummarizedCount = summarizedCount
+	result.NewMessagesWhileRunning = currentCount - expectedHistoryCount
+	result.HistoryCountAfter = len(session.Messages)
+	return result
 }
 
 func (sm *SessionManager) Save(key string) error {
@@ -271,6 +329,18 @@ func (sm *SessionManager) loadSessions() error {
 // SessionStore interface so callers can release resources uniformly.
 func (sm *SessionManager) Close() error {
 	return nil
+}
+
+// GetThinkingLevel returns the thinking level for the session (in-memory store).
+func (sm *SessionManager) GetThinkingLevel(key string) string {
+	v, _ := sm.thinkingLevels.Load(key)
+	s, _ := v.(string)
+	return s
+}
+
+// SetThinkingLevel sets the thinking level for the session.
+func (sm *SessionManager) SetThinkingLevel(key, level string) {
+	sm.thinkingLevels.Store(key, level)
 }
 
 // SetHistory updates the messages of a session.
