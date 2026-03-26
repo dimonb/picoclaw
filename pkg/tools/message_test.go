@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -124,5 +125,47 @@ func TestMessageTool_Execute_RejectsMixedReplyAndEdit(t *testing.T) {
 	result := tool.Execute(ctx, map[string]any{"content": "Test message", "reply_to": "1", "edit_message_id": "2"})
 	if !result.IsError {
 		t.Fatal("expected error")
+	}
+}
+
+func TestMessageTool_Execute_WaitDelivery(t *testing.T) {
+	tool := NewMessageTool()
+
+	tool.SetSendCallback(func(msg bus.OutboundMessage) error {
+		if msg.OnDelivered != nil {
+			go msg.OnDelivered([]string{"platform-msg-42"})
+		}
+		return nil
+	})
+
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	result := tool.Execute(ctx, map[string]any{"content": "hello", "wait_delivery": true})
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "platform-msg-42") {
+		t.Fatalf("expected message_id in result, got: %s", result.ForLLM)
+	}
+}
+
+func TestMessageTool_Execute_WaitDelivery_NoID(t *testing.T) {
+	tool := NewMessageTool()
+
+	tool.SetSendCallback(func(msg bus.OutboundMessage) error {
+		if msg.OnDelivered != nil {
+			go msg.OnDelivered([]string{})
+		}
+		return nil
+	})
+
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	result := tool.Execute(ctx, map[string]any{"content": "hello", "wait_delivery": true})
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "no message_id") {
+		t.Fatalf("expected 'no message_id' in result, got: %s", result.ForLLM)
 	}
 }
