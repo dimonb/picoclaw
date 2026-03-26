@@ -5,6 +5,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 func (al *AgentLoop) publishAgentResponseIfNeeded(
@@ -21,6 +22,14 @@ func (al *AgentLoop) publishAgentResponseIfNeeded(
 		return
 	}
 	if al.handleEmptyFinalResponse(ctx, response, channel, chatID) {
+		return
+	}
+	if tools.RoundHasSent(ctx) {
+		logger.DebugCF("agent", "Skipped outbound final response (message tool already sent in round)",
+			map[string]any{
+				"channel": channel,
+				"chat_id": chatID,
+			})
 		return
 	}
 

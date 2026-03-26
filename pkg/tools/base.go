@@ -1,6 +1,10 @@
 package tools
 
-import "context"
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+)
 
 // Tool is the interface that all tools must implement.
 type Tool interface {
@@ -21,15 +25,46 @@ type Tool interface {
 type toolCtxKey struct{ name string }
 
 var (
-	ctxKeyChannel    = &toolCtxKey{"channel"}
-	ctxKeyChatID     = &toolCtxKey{"chatID"}
-	ctxKeySessionKey = &toolCtxKey{"sessionKey"}
+	ctxKeyChannel          = &toolCtxKey{"channel"}
+	ctxKeyChatID           = &toolCtxKey{"chatID"}
+	ctxKeySessionKey       = &toolCtxKey{"sessionKey"}
+	ctxKeyCurrentMessageID = &toolCtxKey{"currentMessageID"}
+	ctxKeyParentMessageID  = &toolCtxKey{"parentMessageID"}
+	ctxKeyRoundSent        = &toolCtxKey{"roundSent"}
+	ctxKeyHiddenToolState  = &toolCtxKey{"hiddenToolState"}
 )
+
+type hiddenToolState struct {
+	mu   sync.RWMutex
+	ttls map[string]int
+}
+
+func newHiddenToolState() *hiddenToolState {
+	return &hiddenToolState{
+		ttls: make(map[string]int),
+	}
+}
 
 // WithToolContext returns a child context carrying channel and chatID.
 func WithToolContext(ctx context.Context, channel, chatID string) context.Context {
 	ctx = context.WithValue(ctx, ctxKeyChannel, channel)
 	ctx = context.WithValue(ctx, ctxKeyChatID, chatID)
+	return ctx
+}
+
+// WithToolSessionKey returns a child context carrying the session key.
+func WithToolSessionKey(ctx context.Context, sessionKey string) context.Context {
+	return context.WithValue(ctx, ctxKeySessionKey, sessionKey)
+}
+
+// WithToolReplyContext returns a child context carrying the current and parent
+// inbound platform message IDs for reply routing decisions.
+func WithToolReplyContext(
+	ctx context.Context,
+	currentMessageID, parentMessageID string,
+) context.Context {
+	ctx = context.WithValue(ctx, ctxKeyCurrentMessageID, currentMessageID)
+	ctx = context.WithValue(ctx, ctxKeyParentMessageID, parentMessageID)
 	return ctx
 }
 
@@ -45,15 +80,108 @@ func ToolChatID(ctx context.Context) string {
 	return v
 }
 
-// WithToolSessionKey returns a child context carrying the session key.
-func WithToolSessionKey(ctx context.Context, sessionKey string) context.Context {
-	return context.WithValue(ctx, ctxKeySessionKey, sessionKey)
-}
-
 // ToolSessionKey extracts the session key from ctx, or "" if unset.
 func ToolSessionKey(ctx context.Context) string {
 	v, _ := ctx.Value(ctxKeySessionKey).(string)
 	return v
+}
+
+// ToolCurrentMessageID extracts the current inbound platform message ID.
+func ToolCurrentMessageID(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyCurrentMessageID).(string)
+	return v
+}
+
+// ToolParentMessageID extracts the parent/replied-to inbound platform message ID.
+func ToolParentMessageID(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyParentMessageID).(string)
+	return v
+}
+
+// WithRoundSent injects a per-round sent tracker into ctx.
+// Call once at the start of each message processing round; pass the same
+// context (or a child of it) to all tool Execute calls in that round.
+func WithRoundSent(ctx context.Context, sent *atomic.Bool) context.Context {
+	return context.WithValue(ctx, ctxKeyRoundSent, sent)
+}
+
+// MarkRoundSent marks that a message was sent during the current round.
+// No-op if the tracker is not present in ctx.
+func MarkRoundSent(ctx context.Context) {
+	if v, ok := ctx.Value(ctxKeyRoundSent).(*atomic.Bool); ok && v != nil {
+		v.Store(true)
+	}
+}
+
+// RoundHasSent reports whether any message was sent during the current round.
+func RoundHasSent(ctx context.Context) bool {
+	if v, ok := ctx.Value(ctxKeyRoundSent).(*atomic.Bool); ok && v != nil {
+		return v.Load()
+	}
+	return false
+}
+
+// WithHiddenToolState injects request-scoped hidden tool visibility into ctx.
+// This keeps discovery unlocks isolated to one agent turn, avoiding cross-session
+// interference when multiple sessions run concurrently.
+func WithHiddenToolState(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ctxKeyHiddenToolState, newHiddenToolState())
+}
+
+func hiddenToolStateFromContext(ctx context.Context) *hiddenToolState {
+	v, _ := ctx.Value(ctxKeyHiddenToolState).(*hiddenToolState)
+	return v
+}
+
+// PromoteHiddenTools records hidden tool visibility for the current request.
+// Returns false when ctx does not carry request-scoped hidden tool state.
+func PromoteHiddenTools(ctx context.Context, names []string, ttl int) bool {
+	state := hiddenToolStateFromContext(ctx)
+	if state == nil || ttl <= 0 {
+		return false
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		state.ttls[name] = ttl
+	}
+	return true
+}
+
+// TickHiddenTools decrements request-scoped hidden tool TTLs.
+// Returns false when ctx does not carry request-scoped hidden tool state.
+func TickHiddenTools(ctx context.Context) bool {
+	state := hiddenToolStateFromContext(ctx)
+	if state == nil {
+		return false
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	for name, ttl := range state.ttls {
+		if ttl <= 1 {
+			delete(state.ttls, name)
+			continue
+		}
+		state.ttls[name] = ttl - 1
+	}
+	return true
+}
+
+// HiddenToolVisible reports whether name is unlocked for the current request.
+func HiddenToolVisible(ctx context.Context, name string) bool {
+	state := hiddenToolStateFromContext(ctx)
+	if state == nil || name == "" {
+		return false
+	}
+
+	state.mu.RLock()
+	defer state.mu.RUnlock()
+	return state.ttls[name] > 0
 }
 
 // AsyncCallback is a function type that async tools use to notify completion.

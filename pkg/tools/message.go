@@ -105,6 +105,7 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		if err := t.editCallback(ctx, channel, chatID, editMessageID, content); err != nil {
 			return &ToolResult{ForLLM: fmt.Sprintf("editing message: %v", err), IsError: true, Err: err}
 		}
+		MarkRoundSent(ctx)
 		return SilentResult(fmt.Sprintf("Message edited in %s:%s (%s)", channel, chatID, editMessageID))
 	}
 
@@ -125,6 +126,7 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 	status := fmt.Sprintf("Message sent to %s:%s", channel, chatID)
 	if replyTo != "" {
 		status = fmt.Sprintf("%s in reply to %s", status, replyTo)
+		MarkRoundSent(ctx)
 	}
 	return SilentResult(status)
 }
