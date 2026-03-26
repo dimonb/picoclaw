@@ -42,6 +42,11 @@ type AgentInstance struct {
 	Subagents                 *config.SubagentsConfig
 	SkillsFilter              []string
 	Candidates                []providers.FallbackCandidate
+	// ProviderMap maps ModelKey(provider, model) -> LLMProvider for each
+	// fallback candidate. Populated at agent creation so that the fallback
+	// chain can route each attempt to the correct provider instance rather
+	// than always using the primary Provider.
+	ProviderMap map[string]providers.LLMProvider
 
 	// Router is non-nil when model routing is configured and the light model
 	// was successfully resolved. It scores each incoming message and decides
@@ -174,6 +179,36 @@ func NewAgentInstance(
 	// Resolve fallback candidates
 	candidates := resolveModelCandidates(cfg, defaults.Provider, model, fallbacks)
 
+	// Build a per-candidate provider map so the fallback chain can route each
+	// attempt to the correct provider instance (e.g. anthropic vs openai/codex).
+	// The primary provider is always included; additional candidates get their
+	// own provider created from the model_list config.
+	providerMap := make(map[string]providers.LLMProvider, len(candidates))
+	for _, c := range candidates {
+		key := providers.ModelKey(c.Provider, c.Model)
+		// Look up the full model string for this candidate in the model list so
+		// we can find its ModelConfig and create the right provider.
+		fullModel := c.Provider + "/" + c.Model
+		mc, err := cfg.GetModelConfigByModel(fullModel)
+		if err != nil || mc == nil {
+			// Fallback: use the primary provider for unknown candidates rather
+			// than leaving them absent from the map.
+			providerMap[key] = provider
+			continue
+		}
+		p, _, err := providers.CreateProviderFromConfig(mc)
+		if err != nil {
+			logger.WarnCF("agent", "Failed to create provider for fallback candidate; using primary provider", map[string]any{
+				"provider": c.Provider,
+				"model":    c.Model,
+				"error":    err.Error(),
+			})
+			providerMap[key] = provider
+			continue
+		}
+		providerMap[key] = p
+	}
+
 	// Model routing setup: pre-resolve light model candidates at creation time
 	// to avoid repeated model_list lookups on every incoming message.
 	var router *routing.Router
@@ -208,6 +243,7 @@ func NewAgentInstance(
 		SummarizeTokenPercent:     summarizeTokenPercent,
 		JournalEnabled:            defaults.JournalEnabled,
 		Provider:                  provider,
+		ProviderMap:               providerMap,
 		Sessions:                  sessions,
 		ContextBuilder:            contextBuilder,
 		Tools:                     toolsRegistry,
