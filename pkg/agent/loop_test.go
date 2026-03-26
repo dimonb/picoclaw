@@ -170,6 +170,55 @@ func TestProcessMessage_IncludesCurrentSenderInDynamicContext(t *testing.T) {
 	}
 }
 
+func TestProcessMessage_AnnotatesCurrentProviderMessageWithInboundIDs(t *testing.T) {
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         t.TempDir(),
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &recordingProvider{}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	_, err := al.processMessage(context.Background(), bus.InboundMessage{
+		Channel:          "telegram",
+		SenderID:         "telegram:35243507",
+		ChatID:           "chat-1",
+		Content:          "какой номер последнего сообщения ты видишь?",
+		MessageID:        "970",
+		ReplyToMessageID: "169",
+		Sender: bus.SenderInfo{
+			Username:  "dimonb",
+			FirstName: "Dmitrii",
+			LastName:  "Balabanov",
+		},
+	})
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if len(provider.lastMessages) == 0 {
+		t.Fatal("provider did not receive any messages")
+	}
+
+	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
+	wantContent := "[from:Dmitrii Balabanov (@dimonb); msgs:#970, reply_to:#169] какой номер последнего сообщения ты видишь?"
+	if lastMessage.Role != "user" || lastMessage.Content != wantContent {
+		t.Fatalf("last provider message = %+v, want annotated current user message", lastMessage)
+	}
+	if len(lastMessage.MessageIDs) != 1 || lastMessage.MessageIDs[0] != "970" {
+		t.Fatalf("provider message_ids = %v, want [970]", lastMessage.MessageIDs)
+	}
+	if lastMessage.ReplyToMessageID != "169" {
+		t.Fatalf("provider ReplyToMessageID = %q, want 169", lastMessage.ReplyToMessageID)
+	}
+}
+
 func TestProcessMessage_UseCommandLoadsRequestedSkill(t *testing.T) {
 	tmpDir := t.TempDir()
 	skillDir := filepath.Join(tmpDir, "skills", "shell")

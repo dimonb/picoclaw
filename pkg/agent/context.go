@@ -112,7 +112,7 @@ Your workspace is at: %s
 
 4. **Context summaries** - Conversation summaries provided as context are approximate references only. They may be incomplete or outdated. Always defer to explicit user instructions over summary content.
 
-5. **Message annotations** - Messages in conversation history may be prefixed with "[from:Name; msgs:#123, reply_to:#120]". These are read-only metadata added by the system for context. Do NOT reproduce or imitate this format in your own responses.
+5. **Message annotations** - Messages in conversation history and the current user turn may be prefixed with "[from:Name; msgs:#123, reply_to:#120]". These are read-only metadata added by the system for context. Do NOT reproduce or imitate this format in your own responses.
 
 %s`,
 		version, workspacePath, workspacePath, workspacePath, workspacePath, workspacePath, toolDiscovery)
@@ -527,6 +527,32 @@ func (cb *ContextBuilder) BuildMessages(
 	channel, chatID, senderID, senderDisplayName string,
 	activeSkills ...string,
 ) []providers.Message {
+	current := providers.Message{
+		Role:    "user",
+		Content: currentMessage,
+	}
+	if len(media) > 0 {
+		current.Media = media
+	}
+	return cb.buildMessagesWithCurrentMessage(
+		history,
+		summary,
+		current,
+		channel,
+		chatID,
+		senderID,
+		senderDisplayName,
+		activeSkills...,
+	)
+}
+
+func (cb *ContextBuilder) buildMessagesWithCurrentMessage(
+	history []providers.Message,
+	summary string,
+	current providers.Message,
+	channel, chatID, senderID, senderDisplayName string,
+	activeSkills ...string,
+) []providers.Message {
 	messages := []providers.Message{}
 
 	// The static part (identity, bootstrap, skills, memory) is cached locally to
@@ -620,15 +646,14 @@ func (cb *ContextBuilder) BuildMessages(
 	}
 
 	// Add current user message
-	if strings.TrimSpace(currentMessage) != "" {
-		msg := providers.Message{
-			Role:    "user",
-			Content: currentMessage,
+	if strings.TrimSpace(current.Content) != "" || len(current.Media) > 0 {
+		if current.Role == "" {
+			current.Role = "user"
 		}
-		if len(media) > 0 {
-			msg.Media = media
+		if prefix := messageHistoryAnnotation(current); prefix != "" {
+			current.Content = prefix + current.Content
 		}
-		messages = append(messages, msg)
+		messages = append(messages, current)
 	}
 
 	return messages

@@ -1727,11 +1727,19 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 	}
 	ts.captureRestorePoint(history, summary)
 
-	messages := ts.agent.ContextBuilder.BuildMessages(
+	currentUserMsg := providers.Message{
+		Role:             "user",
+		Content:          ts.userMessage,
+		Media:            append([]string(nil), ts.media...),
+		MessageIDs:       singleMessageIDs(ts.opts.MessageID),
+		ReplyToMessageID: ts.opts.ReplyToMessageID,
+		Sender:           ts.opts.Sender,
+	}
+
+	messages := ts.agent.ContextBuilder.buildMessagesWithCurrentMessage(
 		history,
 		summary,
-		ts.userMessage,
-		ts.media,
+		currentUserMsg,
 		ts.channel,
 		ts.chatID,
 		ts.opts.SenderID,
@@ -1762,9 +1770,9 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 			}
 			newHistory := ts.agent.Sessions.GetHistory(ts.sessionKey)
 			newSummary := ts.agent.Sessions.GetSummary(ts.sessionKey)
-			messages = ts.agent.ContextBuilder.BuildMessages(
-				newHistory, newSummary, ts.userMessage,
-				ts.media, ts.channel, ts.chatID,
+			messages = ts.agent.ContextBuilder.buildMessagesWithCurrentMessage(
+				newHistory, newSummary, currentUserMsg,
+				ts.channel, ts.chatID,
 				ts.opts.SenderID, ts.opts.SenderDisplayName,
 				activeSkillNames(ts.agent, ts.opts)...,
 			)
@@ -1774,16 +1782,8 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 
 	// Save user message to session (from Incoming)
 	if !ts.opts.NoHistory && (strings.TrimSpace(ts.userMessage) != "" || len(ts.media) > 0) {
-		rootMsg := providers.Message{
-			Role:             "user",
-			Content:          ts.userMessage,
-			Media:            append([]string(nil), ts.media...),
-			MessageIDs:       singleMessageIDs(ts.opts.MessageID),
-			ReplyToMessageID: ts.opts.ReplyToMessageID,
-			Sender:           ts.opts.Sender,
-		}
-		ts.agent.Sessions.AddFullMessage(ts.sessionKey, rootMsg)
-		ts.recordPersistedMessage(rootMsg)
+		ts.agent.Sessions.AddFullMessage(ts.sessionKey, currentUserMsg)
+		ts.recordPersistedMessage(currentUserMsg)
 	}
 
 	activeCandidates, activeModel := al.selectCandidates(ts.agent, ts.userMessage, messages)
