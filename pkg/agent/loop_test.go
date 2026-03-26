@@ -729,8 +729,8 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if response != "" {
-		t.Fatalf("expected no final response when media tool already handled delivery, got %q", response)
+	if response.Content != "" {
+		t.Fatalf("expected no final response when media tool already handled delivery, got %q", response.Content)
 	}
 	if provider.calls != 1 {
 		t.Fatalf("expected exactly 1 LLM call, got %d", provider.calls)
@@ -824,8 +824,8 @@ func TestProcessMessage_HandledToolProcessesQueuedSteeringBeforeReturning(t *tes
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if response != "Handled the queued steering message." {
-		t.Fatalf("response = %q, want queued steering response", response)
+	if response.Content != "Handled the queued steering message." {
+		t.Fatalf("response = %q, want queued steering response", response.Content)
 	}
 	if provider.calls != 2 {
 		t.Fatalf("expected 2 LLM calls after queued steering, got %d", provider.calls)
@@ -875,8 +875,8 @@ func TestProcessMessage_MediaArtifactCanBeForwardedBySendFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if response != "" {
-		t.Fatalf("expected no final response after send_file handled delivery, got %q", response)
+	if response.Content != "" {
+		t.Fatalf("expected no final response after send_file handled delivery, got %q", response.Content)
 	}
 	if provider.calls != 2 {
 		t.Fatalf("expected 2 LLM calls (artifact + send_file), got %d", provider.calls)
@@ -2448,8 +2448,8 @@ func TestProcessMessage_PublishesReasoningContentToReasoningChannel(t *testing.T
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if response != "final answer" {
-		t.Fatalf("processMessage() response = %q, want %q", response, "final answer")
+	if response.Content != "final answer" {
+		t.Fatalf("processMessage() response = %q, want %q", response.Content, "final answer")
 	}
 
 	select {
@@ -2554,8 +2554,8 @@ func TestProcessMessage_PublishesToolFeedbackWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if response != "HEARTBEAT_OK" {
-		t.Fatalf("processMessage() response = %q, want %q", response, "HEARTBEAT_OK")
+	if response.Content != "HEARTBEAT_OK" {
+		t.Fatalf("processMessage() response = %q, want %q", response.Content, "HEARTBEAT_OK")
 	}
 
 	select {
@@ -2998,8 +2998,8 @@ func TestProcessMessage_ContextOverflowRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if response != "Recovered from overflow" {
-		t.Fatalf("response = %q, want %q", response, "Recovered from overflow")
+	if response.Content != "Recovered from overflow" {
+		t.Fatalf("response = %q, want %q", response.Content, "Recovered from overflow")
 	}
 
 	if provider.calls != 2 {
@@ -3039,8 +3039,8 @@ func TestProcessMessage_ContextOverflow_AnthropicStyle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
 	}
-	if !strings.Contains(response, "Anthropic recovery success") {
-		t.Fatalf("response = %q, want success message", response)
+	if !strings.Contains(response.Content, "Anthropic recovery success") {
+		t.Fatalf("response = %q, want success message", response.Content)
 	}
 	if provider.calls != 2 {
 		t.Fatalf("expected 2 calls for retry, got %d", provider.calls)

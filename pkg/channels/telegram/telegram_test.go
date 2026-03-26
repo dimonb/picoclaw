@@ -686,21 +686,6 @@ func TestHandleMessage_EmptyContent_Ignored(t *testing.T) {
 		From: &telego.User{
 			ID:        789,
 			FirstName: "User",
-=======
-	msg := &telego.Message{
-		Text:      "reply in group",
-		MessageID: 30,
-		Chat: telego.Chat{
-			ID:   -100999,
-			Type: "supergroup",
-		},
-		From: &telego.User{
-			ID:        10,
-			FirstName: "Dana",
-		},
-		ReplyToMessage: &telego.Message{
-			MessageID: 25,
->>>>>>> 7b6328f (Fix Telegram inbound reply threading)
 		},
 	}
 

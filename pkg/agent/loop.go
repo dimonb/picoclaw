@@ -140,16 +140,16 @@ func cloneMessageIDs(msgIDs []string) []string {
 }
 
 const (
-	defaultResponse           = "The model returned an empty response. This may indicate a provider error or token limit."
-	toolLimitResponse         = "I've reached `max_tool_iterations` without a final response. Increase `max_tool_iterations` in config.json if this task needs more tool steps."
+	defaultResponse            = "The model returned an empty response. This may indicate a provider error or token limit."
+	toolLimitResponse          = "I've reached `max_tool_iterations` without a final response. Increase `max_tool_iterations` in config.json if this task needs more tool steps."
 	handledToolResponseSummary = "Requested output delivered via tool attachment."
-	sessionKeyAgentPrefix     = "agent:"
-	metadataKeyAccountID      = "account_id"
-	metadataKeyGuildID        = "guild_id"
-	metadataKeyTeamID         = "team_id"
-	metadataKeyParentPeerKind = "parent_peer_kind"
-	metadataKeyParentPeerID   = "parent_peer_id"
-	metadataKeyReplyToMessage = "reply_to_message_id"
+	sessionKeyAgentPrefix      = "agent:"
+	metadataKeyAccountID       = "account_id"
+	metadataKeyGuildID         = "guild_id"
+	metadataKeyTeamID          = "team_id"
+	metadataKeyParentPeerKind  = "parent_peer_kind"
+	metadataKeyParentPeerID    = "parent_peer_id"
+	metadataKeyReplyToMessage  = "reply_to_message_id"
 )
 
 func NewAgentLoop(
