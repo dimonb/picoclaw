@@ -18,11 +18,12 @@ import (
 // SendFileTool allows the LLM to send a local file (image, document, etc.)
 // to the user on the current chat channel via the MediaStore pipeline.
 type SendFileTool struct {
-	workspace   string
-	restrict    bool
-	maxFileSize int
-	mediaStore  media.MediaStore
-	allowPaths  []*regexp.Regexp
+	workspace      string
+	restrict       bool
+	maxFileSize    int
+	mediaStore     media.MediaStore
+	mediaStoreRoot string
+	allowPaths     []*regexp.Regexp
 
 	defaultChannel string
 	defaultChatID  string
@@ -42,13 +43,14 @@ func NewSendFileTool(
 	if len(allowPaths) > 0 {
 		patterns = allowPaths[0]
 	}
-	return &SendFileTool{
+	tool := &SendFileTool{
 		workspace:   workspace,
 		restrict:    restrict,
 		maxFileSize: maxFileSize,
-		mediaStore:  store,
 		allowPaths:  patterns,
 	}
+	tool.SetMediaStore(store)
+	return tool
 }
 
 func (t *SendFileTool) Name() string { return "send_file" }
@@ -78,8 +80,15 @@ func (t *SendFileTool) SetContext(channel, chatID string) {
 	t.defaultChatID = chatID
 }
 
+type mediaRootProvider interface {
+	RootDir() string
+}
+
 func (t *SendFileTool) SetMediaStore(store media.MediaStore) {
 	t.mediaStore = store
+	if rp, ok := store.(mediaRootProvider); ok {
+		t.mediaStoreRoot = rp.RootDir()
+	}
 }
 
 func (t *SendFileTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
@@ -105,7 +114,18 @@ func (t *SendFileTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		return ErrorResult("media store not configured")
 	}
 
-	resolved, err := validatePathWithAllowPaths(path, t.workspace, t.restrict, t.allowPaths)
+	if t.mediaStoreRoot == "" {
+		if rp, ok := t.mediaStore.(mediaRootProvider); ok {
+			t.mediaStoreRoot = rp.RootDir()
+		}
+	}
+
+	allowPaths := append([]*regexp.Regexp(nil), t.allowPaths...)
+	if t.mediaStoreRoot != "" {
+		allowPaths = append(allowPaths, regexp.MustCompile(`^`+regexp.QuoteMeta(t.mediaStoreRoot)+`(?:/|$)`))
+	}
+
+	resolved, err := validatePathWithAllowPaths(path, t.workspace, t.restrict, allowPaths)
 	if err != nil {
 		return ErrorResult(fmt.Sprintf("invalid path: %v", err))
 	}

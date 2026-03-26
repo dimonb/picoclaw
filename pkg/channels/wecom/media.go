@@ -344,10 +344,9 @@ func (c *WeComChannel) storeRemoteMedia(
 	}
 
 	ref, err := store.Store(tmpPath, media.MediaMeta{
-		Filename:      filename,
-		ContentType:   contentType,
-		Source:        "wecom",
-		CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
+		Filename:    filename,
+		ContentType: contentType,
+		Source:      "wecom",
 	}, scope)
 	if err != nil {
 		_ = os.Remove(tmpPath)

@@ -321,10 +321,9 @@ func TestSendMedia_SendsActiveImage(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	ref, err := store.Store(imagePath, media.MediaMeta{
-		Filename:      "photo.jpg",
-		ContentType:   "image/jpeg",
-		Source:        "test",
-		CleanupPolicy: media.CleanupPolicyForgetOnly,
+		Filename:    "photo.jpg",
+		ContentType: "image/jpeg",
+		Source:      "test",
 	}, "scope-1")
 	if err != nil {
 		t.Fatalf("Store() error = %v", err)
@@ -420,10 +419,9 @@ func TestSendMedia_UsesTurnImageAndFinishesStream(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	ref, err := store.Store(imagePath, media.MediaMeta{
-		Filename:      "reply.jpg",
-		ContentType:   "image/jpeg",
-		Source:        "test",
-		CleanupPolicy: media.CleanupPolicyForgetOnly,
+		Filename:    "reply.jpg",
+		ContentType: "image/jpeg",
+		Source:      "test",
 	}, "scope-2")
 	if err != nil {
 		t.Fatalf("Store() error = %v", err)
@@ -528,10 +526,9 @@ func TestSendMedia_SendsActiveFile(t *testing.T) {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	ref, err := store.Store(filePath, media.MediaMeta{
-		Filename:      "report.pdf",
-		ContentType:   "application/pdf",
-		Source:        "test",
-		CleanupPolicy: media.CleanupPolicyForgetOnly,
+		Filename:    "report.pdf",
+		ContentType: "application/pdf",
+		Source:      "test",
 	}, "scope-3")
 	if err != nil {
 		t.Fatalf("Store() error = %v", err)
