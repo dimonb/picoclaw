@@ -107,6 +107,42 @@ func TestBuildCodexParams_ToolCallFunctionFallback(t *testing.T) {
 	}
 }
 
+func TestBuildCodexParams_UserMessageWithImage(t *testing.T) {
+	messages := []Message{
+		{
+			Role:    "user",
+			Content: "What is in this image?",
+			Media:   []string{"data:image/jpeg;base64,ZmFrZQ=="},
+		},
+	}
+
+	params := buildCodexParams(messages, nil, "gpt-4o", map[string]any{}, false)
+	if params.Input.OfInputItemList == nil {
+		t.Fatal("Input.OfInputItemList should not be nil")
+	}
+	if len(params.Input.OfInputItemList) != 1 {
+		t.Fatalf("len(Input items) = %d, want 1", len(params.Input.OfInputItemList))
+	}
+
+	msg := params.Input.OfInputItemList[0].OfMessage
+	if msg == nil {
+		t.Fatal("first input item should be a message")
+	}
+	parts := msg.Content.OfInputItemContentList
+	if len(parts) != 2 {
+		t.Fatalf("len(message parts) = %d, want 2", len(parts))
+	}
+	if parts[0].OfInputText == nil || parts[0].OfInputText.Text != "What is in this image?" {
+		t.Fatalf("first part = %#v, want input_text with original content", parts[0])
+	}
+	if parts[1].OfInputImage == nil {
+		t.Fatalf("second part = %#v, want input_image", parts[1])
+	}
+	if got := parts[1].OfInputImage.ImageURL.Or(""); got != "data:image/jpeg;base64,ZmFrZQ==" {
+		t.Fatalf("image_url = %q, want original data URL", got)
+	}
+}
+
 func TestBuildCodexParams_WithTools(t *testing.T) {
 	tools := []ToolDefinition{
 		{
@@ -369,6 +405,89 @@ func TestCodexProvider_ChatRoundTrip(t *testing.T) {
 	}
 	if resp.Usage.TotalTokens != 18 {
 		t.Errorf("TotalTokens = %d, want 18", resp.Usage.TotalTokens)
+	}
+}
+
+func TestCodexProvider_ChatRoundTrip_WithImage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/responses" {
+			http.Error(w, "not found: "+r.URL.Path, http.StatusNotFound)
+			return
+		}
+
+		var reqBody map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&reqBody); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+
+		input, ok := reqBody["input"].([]any)
+		if !ok || len(input) != 1 {
+			http.Error(w, "missing input message", http.StatusBadRequest)
+			return
+		}
+		msg, ok := input[0].(map[string]any)
+		if !ok {
+			http.Error(w, "invalid input message", http.StatusBadRequest)
+			return
+		}
+		content, ok := msg["content"].([]any)
+		if !ok || len(content) != 2 {
+			http.Error(w, fmt.Sprintf("content should contain text and image parts, got %#v", msg["content"]), http.StatusBadRequest)
+			return
+		}
+		first, _ := content[0].(map[string]any)
+		second, _ := content[1].(map[string]any)
+		if first["type"] != "input_text" || first["text"] != "Describe this image" {
+			http.Error(w, fmt.Sprintf("unexpected first content part: %#v", first), http.StatusBadRequest)
+			return
+		}
+		if second["type"] != "input_image" || second["image_url"] != "data:image/jpeg;base64,ZmFrZQ==" {
+			http.Error(w, fmt.Sprintf("unexpected second content part: %#v", second), http.StatusBadRequest)
+			return
+		}
+
+		resp := map[string]any{
+			"id":     "resp_test",
+			"object": "response",
+			"status": "completed",
+			"output": []map[string]any{
+				{
+					"id":     "msg_1",
+					"type":   "message",
+					"role":   "assistant",
+					"status": "completed",
+					"content": []map[string]any{
+						{"type": "output_text", "text": "Image received."},
+					},
+				},
+			},
+			"usage": map[string]any{
+				"input_tokens":          14,
+				"output_tokens":         4,
+				"total_tokens":          18,
+				"input_tokens_details":  map[string]any{"cached_tokens": 0},
+				"output_tokens_details": map[string]any{"reasoning_tokens": 0},
+			},
+		}
+		writeCompletedSSE(w, resp)
+	}))
+	defer server.Close()
+
+	provider := NewCodexProvider("test-token", "acc-123")
+	provider.client = createOpenAITestClient(server.URL, "test-token", "acc-123")
+
+	messages := []Message{{
+		Role:    "user",
+		Content: "Describe this image",
+		Media:   []string{"data:image/jpeg;base64,ZmFrZQ=="},
+	}}
+	resp, err := provider.Chat(t.Context(), messages, nil, "gpt-4o", map[string]any{})
+	if err != nil {
+		t.Fatalf("Chat() error: %v", err)
+	}
+	if resp.Content != "Image received." {
+		t.Errorf("Content = %q, want %q", resp.Content, "Image received.")
 	}
 }
 
