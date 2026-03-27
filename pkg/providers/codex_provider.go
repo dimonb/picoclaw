@@ -235,7 +235,7 @@ func buildCodexParams(
 				inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
 					OfMessage: &responses.EasyInputMessageParam{
 						Role:    responses.EasyInputMessageRoleUser,
-						Content: responses.EasyInputMessageContentUnionParam{OfString: openai.Opt(msg.Content)},
+						Content: buildCodexMessageContent(msg),
 					},
 				})
 			}
@@ -245,7 +245,7 @@ func buildCodexParams(
 					inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
 						OfMessage: &responses.EasyInputMessageParam{
 							Role:    responses.EasyInputMessageRoleAssistant,
-							Content: responses.EasyInputMessageContentUnionParam{OfString: openai.Opt(msg.Content)},
+							Content: buildCodexMessageContent(msg),
 						},
 					})
 				}
@@ -269,7 +269,7 @@ func buildCodexParams(
 				inputItems = append(inputItems, responses.ResponseInputItemUnionParam{
 					OfMessage: &responses.EasyInputMessageParam{
 						Role:    responses.EasyInputMessageRoleAssistant,
-						Content: responses.EasyInputMessageContentUnionParam{OfString: openai.Opt(msg.Content)},
+						Content: buildCodexMessageContent(msg),
 					},
 				})
 			}
@@ -313,6 +313,37 @@ func buildCodexParams(
 	}
 
 	return params
+}
+
+func buildCodexMessageContent(msg Message) responses.EasyInputMessageContentUnionParam {
+	if len(msg.Media) == 0 {
+		return responses.EasyInputMessageContentUnionParam{OfString: openai.Opt(msg.Content)}
+	}
+
+	parts := make(responses.ResponseInputMessageContentListParam, 0, 1+len(msg.Media))
+	if msg.Content != "" {
+		parts = append(parts, responses.ResponseInputContentUnionParam{
+			OfInputText: &responses.ResponseInputTextParam{
+				Text: msg.Content,
+			},
+		})
+	}
+	for _, mediaURL := range msg.Media {
+		if !strings.HasPrefix(mediaURL, "data:image/") {
+			continue
+		}
+		parts = append(parts, responses.ResponseInputContentUnionParam{
+			OfInputImage: &responses.ResponseInputImageParam{
+				Detail:   responses.ResponseInputImageDetailAuto,
+				ImageURL: openai.Opt(mediaURL),
+			},
+		})
+	}
+	if len(parts) == 0 {
+		return responses.EasyInputMessageContentUnionParam{OfString: openai.Opt(msg.Content)}
+	}
+
+	return responses.EasyInputMessageContentUnionParam{OfInputItemContentList: parts}
 }
 
 func resolveCodexToolCall(tc ToolCall) (name string, arguments string, ok bool) {
