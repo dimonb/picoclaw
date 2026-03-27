@@ -63,7 +63,8 @@ func resolveFinalResponse(rawContent string) agentResponse {
 	if meta.EditMessageID != "" {
 		response.EditMessageID = strings.TrimSpace(meta.EditMessageID)
 	}
-	if meta.Reaction != nil && strings.TrimSpace(meta.Reaction.MessageID) != "" && strings.TrimSpace(meta.Reaction.Emoji) != "" {
+	if meta.Reaction != nil && strings.TrimSpace(meta.Reaction.MessageID) != "" &&
+		strings.TrimSpace(meta.Reaction.Emoji) != "" {
 		response.Reaction = &finalReactionAction{
 			MessageID: strings.TrimSpace(meta.Reaction.MessageID),
 			Emoji:     strings.TrimSpace(meta.Reaction.Emoji),
@@ -78,7 +79,8 @@ func resolveFinalResponse(rawContent string) agentResponse {
 	if response.SkipFinalSend {
 		response.Content = ""
 	}
-	if response.ReplyToMessageID != "" || response.EditMessageID != "" || response.Reaction != nil || response.SkipFinalSend {
+	if response.ReplyToMessageID != "" || response.EditMessageID != "" || response.Reaction != nil ||
+		response.SkipFinalSend {
 		fields := map[string]any{
 			"reply_to_message_id": response.ReplyToMessageID,
 			"edit_message_id":     response.EditMessageID,

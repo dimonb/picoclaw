@@ -146,7 +146,9 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		case <-time.After(30 * time.Second):
 			return SilentResult(fmt.Sprintf("Message sent to %s:%s (delivery confirmation timeout)", channel, chatID))
 		case <-ctx.Done():
-			return SilentResult(fmt.Sprintf("Message sent to %s:%s (context cancelled before delivery)", channel, chatID))
+			return SilentResult(
+				fmt.Sprintf("Message sent to %s:%s (context canceled before delivery)", channel, chatID),
+			)
 		}
 	}
 

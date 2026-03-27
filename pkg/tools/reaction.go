@@ -105,7 +105,13 @@ func (t *ReactionTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 			}
 		}
 		if !allowed {
-			return ErrorResult(fmt.Sprintf("emoji %q is not supported by channel; allowed: %s", emoji, strings.Join(support.Allowed, " ")))
+			return ErrorResult(
+				fmt.Sprintf(
+					"emoji %q is not supported by channel; allowed: %s",
+					emoji,
+					strings.Join(support.Allowed, " "),
+				),
+			)
 		}
 	}
 

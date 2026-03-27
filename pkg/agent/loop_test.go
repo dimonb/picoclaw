@@ -88,12 +88,18 @@ func (d *deliveryTestChannel) Send(ctx context.Context, msg bus.OutboundMessage)
 }
 
 func (d *deliveryTestChannel) EditMessage(ctx context.Context, chatID, messageID, content string) error {
-	d.edits = append(d.edits, struct{ chatID, messageID, content string }{chatID: chatID, messageID: messageID, content: content})
+	d.edits = append(
+		d.edits,
+		struct{ chatID, messageID, content string }{chatID: chatID, messageID: messageID, content: content},
+	)
 	return d.editErr
 }
 
 func (d *deliveryTestChannel) SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
-	d.reactions = append(d.reactions, struct{ chatID, messageID, emoji string }{chatID: chatID, messageID: messageID, emoji: emoji})
+	d.reactions = append(
+		d.reactions,
+		struct{ chatID, messageID, emoji string }{chatID: chatID, messageID: messageID, emoji: emoji},
+	)
 	return nil
 }
 
@@ -102,7 +108,10 @@ func (d *deliveryTestChannel) GetReactionSupport(ctx context.Context, chatID str
 }
 
 func (d *deliveryTestChannel) DeleteMessage(ctx context.Context, chatID, messageID string) error {
-	d.cleanupDeletes = append(d.cleanupDeletes, struct{ chatID, messageID string }{chatID: chatID, messageID: messageID})
+	d.cleanupDeletes = append(
+		d.cleanupDeletes,
+		struct{ chatID, messageID string }{chatID: chatID, messageID: messageID},
+	)
 	return nil
 }
 
@@ -1776,8 +1785,10 @@ Updated`)
 }
 
 func TestResolveFinalResponse_MetaCanSuppressFinalSend(t *testing.T) {
-	response := resolveFinalResponse(`<meta>{"reply_to":"123","send_final":false,"reaction":{"message_id":"123","emoji":"✅"}}</meta>
-Done`)
+	response := resolveFinalResponse(
+		`<meta>{"reply_to":"123","send_final":false,"reaction":{"message_id":"123","emoji":"✅"}}</meta>
+Done`,
+	)
 	if !response.SkipFinalSend {
 		t.Fatal("expected SkipFinalSend=true")
 	}

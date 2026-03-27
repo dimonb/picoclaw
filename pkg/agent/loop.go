@@ -958,7 +958,10 @@ func (al *AgentLoop) bindReactionTools(cm *channels.Manager) {
 			})
 			rt.SetSupportFunc(func(ctx context.Context, channel, chatID string) channels.ReactionSupport {
 				support := cm.GetReactionSupport(ctx, channel, chatID)
-				return channels.ReactionSupport{AnyUnicode: support.AnyUnicode, Allowed: append([]string(nil), support.Allowed...)}
+				return channels.ReactionSupport{
+					AnyUnicode: support.AnyUnicode,
+					Allowed:    append([]string(nil), support.Allowed...),
+				}
 			})
 		}
 	})
@@ -1726,7 +1729,14 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 		ts.opts.SenderDisplayName,
 		activeSkillNames(ts.agent, ts.opts)...,
 	)
-	messages = al.appendMessageCapabilityNote(turnCtx, messages, ts.channel, ts.chatID, ts.opts.MessageID, ts.opts.ReplyToMessageID)
+	messages = al.appendMessageCapabilityNote(
+		turnCtx,
+		messages,
+		ts.channel,
+		ts.chatID,
+		ts.opts.MessageID,
+		ts.opts.ReplyToMessageID,
+	)
 
 	cfg := al.GetConfig()
 	maxMediaSize := cfg.Agents.Defaults.GetMaxMediaSize()
@@ -1757,7 +1767,14 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 				ts.opts.SenderID, ts.opts.SenderDisplayName,
 				activeSkillNames(ts.agent, ts.opts)...,
 			)
-			messages = al.appendMessageCapabilityNote(turnCtx, messages, ts.channel, ts.chatID, ts.opts.MessageID, ts.opts.ReplyToMessageID)
+			messages = al.appendMessageCapabilityNote(
+				turnCtx,
+				messages,
+				ts.channel,
+				ts.chatID,
+				ts.opts.MessageID,
+				ts.opts.ReplyToMessageID,
+			)
 			messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 		}
 	}
