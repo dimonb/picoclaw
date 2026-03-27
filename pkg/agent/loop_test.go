@@ -765,10 +765,12 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 	})
 
 	response, err := al.processMessage(context.Background(), bus.InboundMessage{
-		Channel:  "telegram",
-		ChatID:   "chat1",
-		SenderID: "user1",
-		Content:  "take a screenshot of the screen and send it to me",
+		Channel:          "telegram",
+		ChatID:           "chat1",
+		SenderID:         "user1",
+		MessageID:        "inbound-1",
+		ReplyToMessageID: "parent-1",
+		Content:          "take a screenshot of the screen and send it to me",
 	})
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
@@ -794,6 +796,9 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 	}
 	if len(telegramChannel.sentMedia[0].Parts) != 1 {
 		t.Fatalf("expected exactly 1 sent media part, got %d", len(telegramChannel.sentMedia[0].Parts))
+	}
+	if telegramChannel.sentMedia[0].ReplyToMessageID != "parent-1" {
+		t.Fatalf("expected ReplyToMessageID parent-1, got %q", telegramChannel.sentMedia[0].ReplyToMessageID)
 	}
 
 	select {

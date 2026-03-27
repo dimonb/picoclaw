@@ -2547,9 +2547,10 @@ turnLoop:
 					parts = append(parts, part)
 				}
 				outboundMedia := bus.OutboundMediaMessage{
-					Channel: ts.channel,
-					ChatID:  ts.chatID,
-					Parts:   parts,
+					Channel:          ts.channel,
+					ChatID:           ts.chatID,
+					ReplyToMessageID: ts.opts.ReplyToMessageID,
+					Parts:            parts,
 				}
 				if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
 					if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {

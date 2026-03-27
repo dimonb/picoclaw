@@ -2,6 +2,7 @@ package matrix
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -428,5 +429,222 @@ func TestHandleMessageEvent_PreservesReplyToMessageID(t *testing.T) {
 	}
 	if inbound.Metadata["reply_to_message_id"] != "$parent" {
 		t.Fatalf("expected metadata reply_to_message_id $parent, got %q", inbound.Metadata["reply_to_message_id"])
+	}
+}
+
+func TestSend_ReplyToIncludesRelationAndReturnsEventID(t *testing.T) {
+	var gotBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if !strings.Contains(r.URL.Path, "/send/m.room.message/") {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"event_id":"$sent"}`))
+	}))
+	defer server.Close()
+
+	client, err := mautrix.NewClient(server.URL, id.UserID("@picoclaw:matrix.test"), "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ch := &MatrixChannel{
+		BaseChannel: channels.NewBaseChannel("matrix", config.MatrixConfig{}, nil, nil),
+		client:      client,
+		config:      config.MatrixConfig{MessageFormat: "plain"},
+	}
+	ch.SetRunning(true)
+
+	msgIDs, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:           "!room:matrix.test",
+		Content:          "reply body",
+		ReplyToMessageID: "$parent",
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if len(msgIDs) != 1 || msgIDs[0] != "$sent" {
+		t.Fatalf("msgIDs = %v, want [$sent]", msgIDs)
+	}
+
+	relatesTo, ok := gotBody["m.relates_to"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing m.relates_to: %#v", gotBody)
+	}
+	inReplyTo, ok := relatesTo["m.in_reply_to"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing m.in_reply_to: %#v", relatesTo)
+	}
+	if got := inReplyTo["event_id"]; got != "$parent" {
+		t.Fatalf("reply event_id = %#v, want $parent", got)
+	}
+}
+
+func TestSetMessageReaction_SendsReactionEvent(t *testing.T) {
+	var gotBody map[string]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut {
+			t.Fatalf("unexpected method: %s", r.Method)
+		}
+		if !strings.Contains(r.URL.Path, "/send/m.reaction/") {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"event_id":"$reaction"}`))
+	}))
+	defer server.Close()
+
+	client, err := mautrix.NewClient(server.URL, id.UserID("@picoclaw:matrix.test"), "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ch := &MatrixChannel{client: client}
+	if err := ch.SetMessageReaction(context.Background(), "!room:matrix.test", "$target", "👍"); err != nil {
+		t.Fatalf("SetMessageReaction: %v", err)
+	}
+
+	relatesTo, ok := gotBody["m.relates_to"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing m.relates_to: %#v", gotBody)
+	}
+	if got := relatesTo["rel_type"]; got != "m.annotation" {
+		t.Fatalf("rel_type = %#v, want m.annotation", got)
+	}
+	if got := relatesTo["event_id"]; got != "$target" {
+		t.Fatalf("event_id = %#v, want $target", got)
+	}
+	if got := relatesTo["key"]; got != "👍" {
+		t.Fatalf("key = %#v, want 👍", got)
+	}
+}
+
+func TestReactToMessage_AddsEyesReactionAndUndoRedacts(t *testing.T) {
+	var paths []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/send/m.reaction/"):
+			_, _ = w.Write([]byte(`{"event_id":"$reaction"}`))
+		case strings.Contains(r.URL.Path, "/redact/$reaction/"):
+			_, _ = w.Write([]byte(`{"event_id":"$redacted"}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := mautrix.NewClient(server.URL, id.UserID("@picoclaw:matrix.test"), "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ch := &MatrixChannel{client: client}
+	undo, err := ch.ReactToMessage(context.Background(), "!room:matrix.test", "$target")
+	if err != nil {
+		t.Fatalf("ReactToMessage: %v", err)
+	}
+	undo()
+	undo()
+
+	if len(paths) != 2 {
+		t.Fatalf("request count = %d, want 2", len(paths))
+	}
+	if !strings.Contains(paths[0], "/send/m.reaction/") {
+		t.Fatalf("first request path = %s, want reaction send", paths[0])
+	}
+	if !strings.Contains(paths[1], "/redact/$reaction/") {
+		t.Fatalf("second request path = %s, want reaction redaction", paths[1])
+	}
+}
+
+func TestSendMedia_ReplyToIncludesRelation(t *testing.T) {
+	var (
+		gotBody map[string]any
+		sentReq bool
+	)
+
+	store := media.NewFileMediaStore()
+	tmpFile := filepath.Join(t.TempDir(), "image.png")
+	if err := os.WriteFile(tmpFile, []byte("fake-image"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	ref, err := store.Store(tmpFile, media.MediaMeta{
+		Filename:      "image.png",
+		ContentType:   "image/png",
+		CleanupPolicy: media.CleanupPolicyForgetOnly,
+	}, "matrix:test")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/upload"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"content_uri":"mxc://matrix.test/uploaded"}`))
+		case strings.Contains(r.URL.Path, "/send/m.room.message/"):
+			sentReq = true
+			if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+				t.Fatalf("decode request body: %v", err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"event_id":"$media"}`))
+		default:
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	client, err := mautrix.NewClient(server.URL, id.UserID("@picoclaw:matrix.test"), "")
+	if err != nil {
+		t.Fatalf("NewClient: %v", err)
+	}
+
+	ch := &MatrixChannel{client: client}
+	ch.BaseChannel = channels.NewBaseChannel("matrix", config.MatrixConfig{}, nil, nil)
+	ch.SetMediaStore(store)
+	ch.SetRunning(true)
+
+	err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+		ChatID:           "!room:matrix.test",
+		ReplyToMessageID: "$parent",
+		Parts: []bus.MediaPart{{
+			Ref:         ref,
+			Type:        "image",
+			Filename:    "image.png",
+			ContentType: "image/png",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("SendMedia: %v", err)
+	}
+	if !sentReq {
+		t.Fatal("expected media send request")
+	}
+
+	relatesTo, ok := gotBody["m.relates_to"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing m.relates_to: %#v", gotBody)
+	}
+	inReplyTo, ok := relatesTo["m.in_reply_to"].(map[string]any)
+	if !ok {
+		t.Fatalf("missing m.in_reply_to: %#v", relatesTo)
+	}
+	if got := inReplyTo["event_id"]; got != "$parent" {
+		t.Fatalf("reply event_id = %#v, want $parent", got)
 	}
 }
