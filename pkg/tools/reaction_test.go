@@ -30,6 +30,9 @@ func TestReactionTool_Execute_Success(t *testing.T) {
 	if !result.Silent {
 		t.Fatal("expected silent result")
 	}
+	if !result.UserVisibleSideEffect {
+		t.Fatal("expected reaction success to mark user-visible side effect")
+	}
 	if gotChannel != "telegram" || gotChatID != "chat-1" || gotMessageID != "123" || gotEmoji != "✅" {
 		t.Fatalf("unexpected callback args: %q %q %q %q", gotChannel, gotChatID, gotMessageID, gotEmoji)
 	}

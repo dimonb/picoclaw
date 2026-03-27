@@ -1796,6 +1796,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 	activeCandidates, activeModel := al.selectCandidates(ts.agent, ts.userMessage, messages)
 	pendingMessages := append([]providers.Message(nil), ts.opts.InitialSteeringMessages...)
 	var finalContent string
+	var hadToolVisibleSideEffect bool
 
 turnLoop:
 	for ts.currentIteration() < ts.agent.MaxIterations || len(pendingMessages) > 0 || func() bool {
@@ -2578,6 +2579,10 @@ turnLoop:
 			if !toolResult.ResponseHandled {
 				allResponsesHandled = false
 			}
+			if toolResult.ResponseHandled || toolResult.UserVisibleSideEffect ||
+				(!toolResult.Silent && toolResult.ForUser != "" && ts.opts.SendResponse) {
+				hadToolVisibleSideEffect = true
+			}
 
 			if !toolResult.Silent && toolResult.ForUser != "" && ts.opts.SendResponse {
 				al.bus.PublishOutbound(ctx, bus.OutboundMessage{
@@ -2777,6 +2782,8 @@ turnLoop:
 	if finalContent == "" {
 		if ts.currentIteration() >= ts.agent.MaxIterations && ts.agent.MaxIterations > 0 {
 			finalContent = toolLimitResponse
+		} else if hadToolVisibleSideEffect {
+			finalContent = ""
 		} else {
 			finalContent = ts.opts.DefaultResponse
 		}

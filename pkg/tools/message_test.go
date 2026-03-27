@@ -27,6 +27,9 @@ func TestMessageTool_Execute_SendSuccess(t *testing.T) {
 	if !result.Silent || result.IsError {
 		t.Fatalf("unexpected result: %#v", result)
 	}
+	if !result.UserVisibleSideEffect {
+		t.Fatal("expected send success to mark user-visible side effect")
+	}
 }
 
 func TestMessageTool_Execute_SendReply(t *testing.T) {
@@ -44,6 +47,9 @@ func TestMessageTool_Execute_SendReply(t *testing.T) {
 	}
 	if sent.ReplyToMessageID != "123" {
 		t.Fatalf("reply_to_message_id = %q", sent.ReplyToMessageID)
+	}
+	if !result.UserVisibleSideEffect {
+		t.Fatal("expected reply send to mark user-visible side effect")
 	}
 }
 
@@ -65,6 +71,9 @@ func TestMessageTool_Execute_EditSuccess(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("expected edit callback")
+	}
+	if !result.UserVisibleSideEffect {
+		t.Fatal("expected edit success to mark user-visible side effect")
 	}
 }
 
@@ -147,6 +156,9 @@ func TestMessageTool_Execute_WaitDelivery(t *testing.T) {
 	if !strings.Contains(result.ForLLM, "platform-msg-42") {
 		t.Fatalf("expected message_id in result, got: %s", result.ForLLM)
 	}
+	if !result.UserVisibleSideEffect {
+		t.Fatal("expected wait_delivery success to mark user-visible side effect")
+	}
 }
 
 func TestMessageTool_Execute_WaitDelivery_NoID(t *testing.T) {
@@ -167,5 +179,8 @@ func TestMessageTool_Execute_WaitDelivery_NoID(t *testing.T) {
 	}
 	if !strings.Contains(result.ForLLM, "no message_id") {
 		t.Fatalf("expected 'no message_id' in result, got: %s", result.ForLLM)
+	}
+	if !result.UserVisibleSideEffect {
+		t.Fatal("expected wait_delivery success without ID to mark user-visible side effect")
 	}
 }

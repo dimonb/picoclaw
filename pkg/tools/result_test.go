@@ -94,6 +94,9 @@ func TestUserResult(t *testing.T) {
 	if result.Async {
 		t.Error("Expected Async to be false")
 	}
+	if result.UserVisibleSideEffect {
+		t.Error("Expected UserVisibleSideEffect to be false")
+	}
 }
 
 func TestToolResultJSONSerialization(t *testing.T) {
@@ -246,6 +249,20 @@ func TestToolResultContentForLLM_UsesHandledDeliveryNoteWhenEmpty(t *testing.T) 
 
 	if got := result.ContentForLLM(); got != handledToolLLMNote {
 		t.Fatalf("ContentForLLM() = %q, want %q", got, handledToolLLMNote)
+	}
+	if !result.UserVisibleSideEffect {
+		t.Fatal("expected WithResponseHandled to imply user-visible side effect")
+	}
+}
+
+func TestToolResultWithUserVisibleSideEffect(t *testing.T) {
+	result := SilentResult("message sent").WithUserVisibleSideEffect()
+
+	if !result.UserVisibleSideEffect {
+		t.Fatal("expected user-visible side effect flag to be set")
+	}
+	if result.ResponseHandled {
+		t.Fatal("did not expect response handled to be set")
 	}
 }
 
