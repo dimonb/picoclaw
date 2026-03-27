@@ -59,6 +59,11 @@ type ToolResult struct {
 	// user's request at the channel/output level, so the agent loop can stop
 	// without a follow-up assistant response.
 	ResponseHandled bool `json:"response_handled,omitempty"`
+
+	// UserVisibleSideEffect indicates that the tool already caused a visible
+	// channel-side effect for the user (for example, sending a message or
+	// adding a reaction) even if the turn still needs to continue.
+	UserVisibleSideEffect bool `json:"user_visible_side_effect,omitempty"`
 }
 
 // ContentForLLM returns the normalized textual content to append to the
@@ -219,5 +224,13 @@ func (tr *ToolResult) WithError(err error) *ToolResult {
 // WithResponseHandled marks the tool result as already delivered to the user.
 func (tr *ToolResult) WithResponseHandled() *ToolResult {
 	tr.ResponseHandled = true
+	tr.UserVisibleSideEffect = true
+	return tr
+}
+
+// WithUserVisibleSideEffect marks the tool result as already causing a
+// user-visible effect at the channel layer without implying the turn is done.
+func (tr *ToolResult) WithUserVisibleSideEffect() *ToolResult {
+	tr.UserVisibleSideEffect = true
 	return tr
 }

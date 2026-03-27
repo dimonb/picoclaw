@@ -105,7 +105,13 @@ func (t *ReactionTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 			}
 		}
 		if !allowed {
-			return ErrorResult(fmt.Sprintf("emoji %q is not supported by channel; allowed: %s", emoji, strings.Join(support.Allowed, " ")))
+			return ErrorResult(
+				fmt.Sprintf(
+					"emoji %q is not supported by channel; allowed: %s",
+					emoji,
+					strings.Join(support.Allowed, " "),
+				),
+			)
 		}
 	}
 
@@ -113,5 +119,7 @@ func (t *ReactionTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		return ErrorResult(fmt.Sprintf("adding reaction: %v", err)).WithError(err)
 	}
 
-	return SilentResult(fmt.Sprintf("Reaction %s added to %s:%s message %s", emoji, channel, chatID, messageID))
+	return SilentResult(
+		fmt.Sprintf("Reaction %s added to %s:%s message %s", emoji, channel, chatID, messageID),
+	).WithUserVisibleSideEffect()
 }

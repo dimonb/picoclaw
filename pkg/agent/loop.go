@@ -938,7 +938,10 @@ func (al *AgentLoop) bindReactionTools(cm *channels.Manager) {
 			})
 			rt.SetSupportFunc(func(ctx context.Context, channel, chatID string) channels.ReactionSupport {
 				support := cm.GetReactionSupport(ctx, channel, chatID)
-				return channels.ReactionSupport{AnyUnicode: support.AnyUnicode, Allowed: append([]string(nil), support.Allowed...)}
+				return channels.ReactionSupport{
+					AnyUnicode: support.AnyUnicode,
+					Allowed:    append([]string(nil), support.Allowed...),
+				}
 			})
 		}
 	})
@@ -1787,7 +1790,14 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 		ts.opts.SenderDisplayName,
 		activeSkillNames(ts.agent, ts.opts)...,
 	)
-	messages = al.appendMessageCapabilityNote(turnCtx, messages, ts.channel, ts.chatID, ts.opts.MessageID, ts.opts.ReplyToMessageID)
+	messages = al.appendMessageCapabilityNote(
+		turnCtx,
+		messages,
+		ts.channel,
+		ts.chatID,
+		ts.opts.MessageID,
+		ts.opts.ReplyToMessageID,
+	)
 
 	cfg := al.GetConfig()
 	maxMediaSize := cfg.Agents.Defaults.GetMaxMediaSize()
@@ -1818,7 +1828,14 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 				ts.opts.SenderID, ts.opts.SenderDisplayName,
 				activeSkillNames(ts.agent, ts.opts)...,
 			)
-			messages = al.appendMessageCapabilityNote(turnCtx, messages, ts.channel, ts.chatID, ts.opts.MessageID, ts.opts.ReplyToMessageID)
+			messages = al.appendMessageCapabilityNote(
+				turnCtx,
+				messages,
+				ts.channel,
+				ts.chatID,
+				ts.opts.MessageID,
+				ts.opts.ReplyToMessageID,
+			)
 			messages = resolveMediaRefs(messages, al.mediaStore, maxMediaSize)
 		}
 	}
@@ -1832,6 +1849,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 	activeCandidates, activeModel := al.selectCandidates(ts.agent, ts.userMessage, messages)
 	pendingMessages := append([]providers.Message(nil), ts.opts.InitialSteeringMessages...)
 	var finalContent string
+	var hadToolVisibleSideEffect bool
 
 turnLoop:
 	for ts.currentIteration() < ts.agent.MaxIterations || len(pendingMessages) > 0 || func() bool {
@@ -2590,9 +2608,10 @@ turnLoop:
 					parts = append(parts, part)
 				}
 				outboundMedia := bus.OutboundMediaMessage{
-					Channel: ts.channel,
-					ChatID:  ts.chatID,
-					Parts:   parts,
+					Channel:          ts.channel,
+					ChatID:           ts.chatID,
+					ReplyToMessageID: ts.opts.ReplyToMessageID,
+					Parts:            parts,
 				}
 				if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
 					if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
@@ -2619,6 +2638,10 @@ turnLoop:
 
 			if !toolResult.ResponseHandled {
 				allResponsesHandled = false
+			}
+			if toolResult.ResponseHandled || toolResult.UserVisibleSideEffect ||
+				(!toolResult.Silent && toolResult.ForUser != "" && ts.opts.SendResponse) {
+				hadToolVisibleSideEffect = true
 			}
 
 			if !toolResult.Silent && toolResult.ForUser != "" && ts.opts.SendResponse {
@@ -2825,6 +2848,8 @@ turnLoop:
 	if finalContent == "" {
 		if ts.currentIteration() >= ts.agent.MaxIterations && ts.agent.MaxIterations > 0 {
 			finalContent = toolLimitResponse
+		} else if hadToolVisibleSideEffect {
+			finalContent = ""
 		} else {
 			finalContent = ts.opts.DefaultResponse
 		}

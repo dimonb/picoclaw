@@ -88,12 +88,18 @@ func (d *deliveryTestChannel) Send(ctx context.Context, msg bus.OutboundMessage)
 }
 
 func (d *deliveryTestChannel) EditMessage(ctx context.Context, chatID, messageID, content string) error {
-	d.edits = append(d.edits, struct{ chatID, messageID, content string }{chatID: chatID, messageID: messageID, content: content})
+	d.edits = append(
+		d.edits,
+		struct{ chatID, messageID, content string }{chatID: chatID, messageID: messageID, content: content},
+	)
 	return d.editErr
 }
 
 func (d *deliveryTestChannel) SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
-	d.reactions = append(d.reactions, struct{ chatID, messageID, emoji string }{chatID: chatID, messageID: messageID, emoji: emoji})
+	d.reactions = append(
+		d.reactions,
+		struct{ chatID, messageID, emoji string }{chatID: chatID, messageID: messageID, emoji: emoji},
+	)
 	return nil
 }
 
@@ -102,7 +108,10 @@ func (d *deliveryTestChannel) GetReactionSupport(ctx context.Context, chatID str
 }
 
 func (d *deliveryTestChannel) DeleteMessage(ctx context.Context, chatID, messageID string) error {
-	d.cleanupDeletes = append(d.cleanupDeletes, struct{ chatID, messageID string }{chatID: chatID, messageID: messageID})
+	d.cleanupDeletes = append(
+		d.cleanupDeletes,
+		struct{ chatID, messageID string }{chatID: chatID, messageID: messageID},
+	)
 	return nil
 }
 
@@ -200,8 +209,8 @@ func TestProcessMessage_IncludesCurrentSenderInDynamicContext(t *testing.T) {
 	}
 
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "hello" {
-		t.Fatalf("last provider message = %+v, want unchanged user message", lastMessage)
+	if lastMessage.Role != "user" || lastMessage.Content != "[from:Alice] hello" {
+		t.Fatalf("last provider message = %+v, want annotated user message", lastMessage)
 	}
 }
 
@@ -805,10 +814,12 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 	})
 
 	response, err := al.processMessage(context.Background(), bus.InboundMessage{
-		Channel:  "telegram",
-		ChatID:   "chat1",
-		SenderID: "user1",
-		Content:  "take a screenshot of the screen and send it to me",
+		Channel:          "telegram",
+		ChatID:           "chat1",
+		SenderID:         "user1",
+		MessageID:        "inbound-1",
+		ReplyToMessageID: "parent-1",
+		Content:          "take a screenshot of the screen and send it to me",
 	})
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
@@ -834,6 +845,9 @@ func TestProcessMessage_MediaToolHandledSkipsFollowUpLLMAndFinalText(t *testing.
 	}
 	if len(telegramChannel.sentMedia[0].Parts) != 1 {
 		t.Fatalf("expected exactly 1 sent media part, got %d", len(telegramChannel.sentMedia[0].Parts))
+	}
+	if telegramChannel.sentMedia[0].ReplyToMessageID != "parent-1" {
+		t.Fatalf("expected ReplyToMessageID parent-1, got %q", telegramChannel.sentMedia[0].ReplyToMessageID)
 	}
 
 	select {
@@ -1275,6 +1289,42 @@ func (m *toolLimitOnlyProvider) Chat(
 
 func (m *toolLimitOnlyProvider) GetDefaultModel() string {
 	return "tool-limit-only-model"
+}
+
+type reactionThenEmptyProvider struct {
+	calls int
+}
+
+func (m *reactionThenEmptyProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	m.calls++
+	if m.calls == 1 {
+		return &providers.LLMResponse{
+			ToolCalls: []providers.ToolCall{{
+				ID:   "call_reaction_then_empty",
+				Type: "function",
+				Name: "reaction",
+				Arguments: map[string]any{
+					"emoji":      "✅",
+					"message_id": "123",
+				},
+			}},
+		}, nil
+	}
+
+	return &providers.LLMResponse{
+		Content:   "",
+		ToolCalls: []providers.ToolCall{},
+	}, nil
+}
+
+func (m *reactionThenEmptyProvider) GetDefaultModel() string {
+	return "reaction-then-empty-model"
 }
 
 // mockCustomTool is a simple mock tool for registration testing
@@ -1825,8 +1875,10 @@ Updated`)
 }
 
 func TestResolveFinalResponse_MetaCanSuppressFinalSend(t *testing.T) {
-	response := resolveFinalResponse(`<meta>{"reply_to":"123","send_final":false,"reaction":{"message_id":"123","emoji":"✅"}}</meta>
-Done`)
+	response := resolveFinalResponse(
+		`<meta>{"reply_to":"123","send_final":false,"reaction":{"message_id":"123","emoji":"✅"}}</meta>
+Done`,
+	)
 	if !response.SkipFinalSend {
 		t.Fatal("expected SkipFinalSend=true")
 	}
@@ -2310,6 +2362,70 @@ func TestAgentLoop_EmptyModelResponseUsesAccurateFallback(t *testing.T) {
 	}
 	if response != defaultResponse {
 		t.Fatalf("response = %q, want %q", response, defaultResponse)
+	}
+}
+
+func TestAgentLoop_EmptyModelResponseAfterReactionToolSuppressesFallback(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &reactionThenEmptyProvider{}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	channel := &deliveryTestChannel{fakeChannel: fakeChannel{id: "rid-telegram"}}
+	al.SetChannelManager(newStartedTestChannelManager(t, msgBus, nil, "telegram", channel))
+	al.RegisterTool(tools.NewReactionTool())
+	al.bindReactionTools(al.channelManager)
+
+	response, err := al.processMessage(context.Background(), bus.InboundMessage{
+		Channel:   "telegram",
+		ChatID:    "chat1",
+		SenderID:  "user1",
+		MessageID: "123",
+		Content:   "react to this",
+	})
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if response.Content != "" {
+		t.Fatalf("response.Content = %q, want empty after tool-side effect", response.Content)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("provider calls = %d, want 2", provider.calls)
+	}
+	if len(channel.reactions) != 1 {
+		t.Fatalf("expected 1 reaction call, got %d", len(channel.reactions))
+	}
+	if channel.reactions[0].chatID != "chat1" || channel.reactions[0].messageID != "123" || channel.reactions[0].emoji != "✅" {
+		t.Fatalf("unexpected reaction call: %+v", channel.reactions[0])
+	}
+
+	defaultAgent := al.registry.GetDefaultAgent()
+	if defaultAgent == nil {
+		t.Fatal("No default agent found")
+	}
+	route := al.registry.ResolveRoute(routing.RouteInput{
+		Channel: "telegram",
+		Peer: &routing.RoutePeer{
+			Kind: "direct",
+			ID:   "user1",
+		},
+	})
+	history := defaultAgent.Sessions.GetHistory(route.SessionKey)
+	for _, msg := range history {
+		if msg.Role == "assistant" && msg.Content == defaultResponse {
+			t.Fatalf("unexpected default fallback in history: %+v", msg)
+		}
 	}
 }
 

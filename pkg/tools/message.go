@@ -111,7 +111,9 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 			return &ToolResult{ForLLM: fmt.Sprintf("editing message: %v", err), IsError: true, Err: err}
 		}
 		MarkRoundSent(ctx)
-		return SilentResult(fmt.Sprintf("Message edited in %s:%s (%s)", channel, chatID, editMessageID))
+		return SilentResult(
+			fmt.Sprintf("Message edited in %s:%s (%s)", channel, chatID, editMessageID),
+		).WithUserVisibleSideEffect()
 	}
 
 	if t.sendCallback == nil {
@@ -141,13 +143,21 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		select {
 		case ids := <-delivered:
 			if len(ids) > 0 {
-				return SilentResult(fmt.Sprintf("Message sent to %s:%s, message_id: %s", channel, chatID, ids[0]))
+				return SilentResult(
+					fmt.Sprintf("Message sent to %s:%s, message_id: %s", channel, chatID, ids[0]),
+				).WithUserVisibleSideEffect()
 			}
-			return SilentResult(fmt.Sprintf("Message sent to %s:%s (no message_id returned)", channel, chatID))
+			return SilentResult(
+				fmt.Sprintf("Message sent to %s:%s (no message_id returned)", channel, chatID),
+			).WithUserVisibleSideEffect()
 		case <-time.After(30 * time.Second):
-			return SilentResult(fmt.Sprintf("Message sent to %s:%s (delivery confirmation timeout)", channel, chatID))
+			return SilentResult(
+				fmt.Sprintf("Message sent to %s:%s (delivery confirmation timeout)", channel, chatID),
+			).WithUserVisibleSideEffect()
 		case <-ctx.Done():
-			return SilentResult(fmt.Sprintf("Message sent to %s:%s (context cancelled before delivery)", channel, chatID))
+			return SilentResult(
+				fmt.Sprintf("Message sent to %s:%s (context canceled before delivery)", channel, chatID),
+			).WithUserVisibleSideEffect()
 		}
 	}
 
@@ -160,5 +170,5 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		status = fmt.Sprintf("%s in reply to %s", status, replyTo)
 		MarkRoundSent(ctx)
 	}
-	return SilentResult(status)
+	return SilentResult(status).WithUserVisibleSideEffect()
 }

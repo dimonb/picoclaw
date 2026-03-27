@@ -9,7 +9,10 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
-func formatMessageCapabilityNote(channel, chatID, messageID, replyToMessageID string, support channels.ReactionSupport) string {
+func formatMessageCapabilityNote(
+	channel, chatID, messageID, replyToMessageID string,
+	support channels.ReactionSupport,
+) string {
 	var parts []string
 	if strings.TrimSpace(messageID) != "" {
 		parts = append(parts, fmt.Sprintf("Current message ID: %s", strings.TrimSpace(messageID)))
@@ -18,7 +21,10 @@ func formatMessageCapabilityNote(channel, chatID, messageID, replyToMessageID st
 		parts = append(parts, fmt.Sprintf("Parent message ID: %s", strings.TrimSpace(replyToMessageID)))
 	}
 	if channel != "" && chatID != "" {
-		parts = append(parts, "Use explicit platform message IDs for message.reply_to, message.edit_message_id, reaction.message_id, and final <meta>{...}</meta> JSON. If you already sent the visible text with the message tool, set meta.send_final=false to suppress an extra final text message.")
+		parts = append(
+			parts,
+			"Use explicit platform message IDs for message.reply_to, message.edit_message_id, reaction.message_id, and final <meta>{...}</meta> JSON. If you already sent the visible text with the message tool, set meta.send_final=false to suppress an extra final text message.",
+		)
 	}
 	if support.AnyUnicode {
 		parts = append(parts, "Current channel reactions: any Unicode emoji supported.")
@@ -31,7 +37,11 @@ func formatMessageCapabilityNote(channel, chatID, messageID, replyToMessageID st
 	return "## Current Message Capabilities\n" + strings.Join(parts, "\n")
 }
 
-func (al *AgentLoop) appendMessageCapabilityNote(ctx context.Context, messages []providers.Message, channel, chatID, messageID, replyToMessageID string) []providers.Message {
+func (al *AgentLoop) appendMessageCapabilityNote(
+	ctx context.Context,
+	messages []providers.Message,
+	channel, chatID, messageID, replyToMessageID string,
+) []providers.Message {
 	if len(messages) == 0 || messages[0].Role != "system" {
 		return messages
 	}

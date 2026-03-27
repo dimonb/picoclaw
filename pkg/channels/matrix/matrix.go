@@ -394,11 +394,19 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 		return nil, nil
 	}
 
-	_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, c.messageContent(content))
+	messageContent := c.messageContent(content)
+	if replyTo := strings.TrimSpace(msg.ReplyToMessageID); replyTo != "" {
+		if messageContent.RelatesTo == nil {
+			messageContent.RelatesTo = &event.RelatesTo{}
+		}
+		messageContent.RelatesTo.SetReplyTo(id.EventID(replyTo))
+	}
+
+	resp, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, messageContent)
 	if err != nil {
 		return nil, fmt.Errorf("matrix send: %w", channels.ErrTemporary)
 	}
-	return nil, nil
+	return []string{resp.EventID.String()}, nil
 }
 
 func (c *MatrixChannel) messageContent(text string) *event.MessageEventContent {
@@ -429,6 +437,8 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 	if store == nil {
 		return fmt.Errorf("no media store available: %w", channels.ErrSendFailed)
 	}
+
+	replyTo := strings.TrimSpace(msg.ReplyToMessageID)
 
 	for _, part := range msg.Parts {
 		if err := sendCtx.Err(); err != nil {
@@ -509,6 +519,12 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 			fileInfo.Size(),
 			uploadResp.ContentURI.CUString(),
 		)
+		if replyTo != "" {
+			if content.RelatesTo == nil {
+				content.RelatesTo = &event.RelatesTo{}
+			}
+			content.RelatesTo.SetReplyTo(id.EventID(replyTo))
+		}
 
 		if _, err := c.client.SendMessageEvent(sendCtx, roomID, event.EventMessage, content); err != nil {
 			logger.ErrorCF("matrix", "Failed to send media message", map[string]any{
@@ -601,6 +617,53 @@ func (c *MatrixChannel) EditMessage(ctx context.Context, chatID string, messageI
 
 	_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, editContent)
 	return err
+}
+
+// ReactToMessage implements channels.ReactionCapable.
+// It adds an "eyes" reaction to the inbound message and returns an undo
+// function that redacts the reaction event.
+func (c *MatrixChannel) ReactToMessage(ctx context.Context, chatID, messageID string) (func(), error) {
+	roomID := id.RoomID(strings.TrimSpace(chatID))
+	if roomID == "" || strings.TrimSpace(messageID) == "" {
+		return func() {}, nil
+	}
+
+	resp, err := c.client.SendReaction(ctx, roomID, id.EventID(strings.TrimSpace(messageID)), "👀")
+	if err != nil {
+		return func() {}, err
+	}
+
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			if resp == nil || resp.EventID == "" {
+				return
+			}
+			_, _ = c.client.RedactEvent(context.Background(), roomID, resp.EventID)
+		})
+	}, nil
+}
+
+// SetMessageReaction implements channels.MessageReactor.
+func (c *MatrixChannel) SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	roomID := id.RoomID(strings.TrimSpace(chatID))
+	if roomID == "" {
+		return fmt.Errorf("matrix room ID is empty")
+	}
+	if strings.TrimSpace(messageID) == "" {
+		return fmt.Errorf("matrix message ID is empty")
+	}
+	reaction := strings.TrimSpace(emoji)
+	if reaction == "" {
+		return fmt.Errorf("matrix reaction is empty")
+	}
+
+	_, err := c.client.SendReaction(ctx, roomID, id.EventID(strings.TrimSpace(messageID)), reaction)
+	return err
+}
+
+func (c *MatrixChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
+	return channels.ReactionSupport{AnyUnicode: true}
 }
 
 func (c *MatrixChannel) handleMemberEvent(ctx context.Context, evt *event.Event) {

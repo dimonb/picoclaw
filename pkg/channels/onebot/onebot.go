@@ -149,7 +149,8 @@ func (c *OneBotChannel) SetMessageReaction(ctx context.Context, chatID, messageI
 	if !strings.HasPrefix(chatID, "group:") {
 		return fmt.Errorf("onebot reactions are only supported in group chats")
 	}
-	if strings.TrimSpace(emoji) != "" && !strings.EqualFold(strings.TrimSpace(emoji), "like") && strings.TrimSpace(emoji) != "👍" {
+	if strings.TrimSpace(emoji) != "" && !strings.EqualFold(strings.TrimSpace(emoji), "like") &&
+		strings.TrimSpace(emoji) != "👍" {
 		return fmt.Errorf("onebot only supports the built-in like reaction")
 	}
 	c.setMsgEmojiLike(messageID, 289, true)
