@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -17,6 +18,8 @@ type finalMetaAction struct {
 		Emoji     string `json:"emoji,omitempty"`
 	} `json:"reaction,omitempty"`
 }
+
+var leadingMessageAnnotationPattern = regexp.MustCompile(`^\s*\[([^\]]+)\]\s*`)
 
 // parseFinalMeta only recognizes a leading <meta>...</meta> control block.
 // Mid-string tags are ignored by design because the contract is "prefix your
@@ -47,9 +50,13 @@ func resolveFinalResponse(rawContent string) agentResponse {
 	meta, body, err := parseFinalMeta(rawContent)
 	if err != nil {
 		logger.WarnCF("agent", "Ignoring invalid <meta> block in final response", map[string]any{"error": err.Error()})
-		return agentResponse{Content: rawContent}
+		content, stripped := stripLeadingMessageAnnotations(rawContent)
+		logStrippedMessageAnnotations(stripped)
+		return agentResponse{Content: content}
 	}
-	response := agentResponse{Content: body}
+	content, stripped := stripLeadingMessageAnnotations(body)
+	logStrippedMessageAnnotations(stripped)
+	response := agentResponse{Content: content}
 	if meta.ReplyTo != "" {
 		response.ReplyToMessageID = strings.TrimSpace(meta.ReplyTo)
 	}
@@ -85,4 +92,36 @@ func resolveFinalResponse(rawContent string) agentResponse {
 		logger.DebugCF("agent", "Parsed final <meta> delivery control", fields)
 	}
 	return response
+}
+
+func stripLeadingMessageAnnotations(text string) (string, string) {
+	var stripped strings.Builder
+
+	for {
+		match := leadingMessageAnnotationPattern.FindStringSubmatchIndex(text)
+		if match == nil || match[0] != 0 {
+			return text, stripped.String()
+		}
+
+		body := strings.ToLower(text[match[2]:match[3]])
+		if !strings.Contains(body, "msgs:#") &&
+			!strings.Contains(body, "reply_to:#") &&
+			!strings.HasPrefix(body, "from:") {
+			return text, stripped.String()
+		}
+
+		stripped.WriteString(text[match[0]:match[1]])
+		text = text[match[1]:]
+	}
+}
+
+func logStrippedMessageAnnotations(stripped string) {
+	if stripped == "" {
+		return
+	}
+
+	logger.DebugCF("agent", "Stripped leading message annotations from final response",
+		map[string]any{
+			"stripped": stripped,
+		})
 }

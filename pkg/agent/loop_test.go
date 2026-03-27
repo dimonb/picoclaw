@@ -1838,6 +1838,44 @@ Done`)
 	}
 }
 
+func TestResolveFinalResponse_StripsLeadingMessageAnnotations(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "msgs only",
+			in:   `[msgs:#1042] Нашёл.`,
+			want: `Нашёл.`,
+		},
+		{
+			name: "reply to only",
+			in:   `[reply_to:#999] Нашёл.`,
+			want: `Нашёл.`,
+		},
+		{
+			name: "from msgs and reply_to",
+			in:   `[from:Dmitrii Balabanov (@dimonb); msgs:#1042, reply_to:#999] Нашёл.`,
+			want: `Нашёл.`,
+		},
+		{
+			name: "regular bracketed text preserved",
+			in:   `[Черновик] Нашёл.`,
+			want: `[Черновик] Нашёл.`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			response := resolveFinalResponse(tt.in)
+			if response.Content != tt.want {
+				t.Fatalf("content = %q, want %q", response.Content, tt.want)
+			}
+		})
+	}
+}
+
 func TestAppendMessageCapabilityNoteUpdatesSystemParts(t *testing.T) {
 	al, cfg, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()
