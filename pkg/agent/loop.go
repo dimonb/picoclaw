@@ -1177,6 +1177,42 @@ func (al *AgentLoop) ProcessDirect(
 	return al.ProcessDirectWithChannel(ctx, content, sessionKey, "cli", "direct")
 }
 
+func (al *AgentLoop) ProcessDirectWithMessage(
+	ctx context.Context,
+	msg bus.InboundMessage,
+) (string, error) {
+	if err := al.ensureHooksInitialized(ctx); err != nil {
+		return "", err
+	}
+	if err := al.ensureMCPInitialized(ctx); err != nil {
+		return "", err
+	}
+	type directResult struct {
+		content string
+		err     error
+	}
+
+	resultCh := make(chan directResult, 1)
+	al.dispatcher.DispatchDirect(ctx, msg, func(taskCtx context.Context) {
+		response, err := al.processMessage(taskCtx, msg)
+		res := directResult{err: err}
+		if err == nil {
+			res.content = response
+		}
+
+		select {
+		case resultCh <- res:
+		case <-taskCtx.Done():
+		}
+	})
+
+	select {
+	case res := <-resultCh:
+		return res.content, res.err
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
 func (al *AgentLoop) ProcessDirectWithChannel(
 	ctx context.Context,
 	content, sessionKey, channel, chatID string,

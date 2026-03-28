@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/routing"
 )
 
@@ -153,6 +155,97 @@ func TestSessionDispatcher_IdleWorkerExpiresAndNextMessageStillProcesses(t *test
 	case <-msgBus.OutboundChan():
 	case <-ctx.Done():
 		t.Fatal("expected second outbound message after worker recreation")
+	}
+
+	al.dispatcher.Wait()
+}
+
+func TestProcessDirectWithMessage_SerializesWithInboundOnSameSession(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "agent-dispatcher-*")
+	if err != nil {
+		t.Fatalf("MkdirTemp() error = %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 10,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &blockingDirectProvider{
+		firstStarted: make(chan struct{}),
+		releaseFirst: make(chan struct{}),
+		firstResp:    "first response",
+		finalResp:    "second response",
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	directDone := make(chan struct{})
+	var directResp string
+	var directErr error
+	go func() {
+		defer close(directDone)
+		directResp, directErr = al.ProcessDirectWithMessage(context.Background(), bus.InboundMessage{
+			Channel:    "telegram",
+			ChatID:     "-1003717341079/17",
+			SenderID:   "cron",
+			Content:    "from cron",
+			SessionKey: "agent:main:telegram:group:-1003717341079/17",
+		})
+	}()
+
+	select {
+	case <-provider.firstStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first direct request to start")
+	}
+
+	inbound := bus.InboundMessage{
+		Channel:  "telegram",
+		ChatID:   "-1003717341079/17",
+		SenderID: "user-1",
+		Content:  "hello",
+		Peer: bus.Peer{
+			Kind: "group",
+			ID:   "-1003717341079/17",
+		},
+	}
+	al.dispatcher.Dispatch(context.Background(), inbound)
+
+	select {
+	case <-msgBus.OutboundChan():
+		t.Fatal("inbound message should not run before the direct request finishes")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(provider.releaseFirst)
+
+	select {
+	case <-directDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for direct request to finish")
+	}
+	if directErr != nil {
+		t.Fatalf("ProcessDirectWithMessage() error = %v", directErr)
+	}
+	if directResp != "first response" {
+		t.Fatalf("direct response = %q, want %q", directResp, "first response")
+	}
+
+	select {
+	case out := <-msgBus.OutboundChan():
+		if out.Content != "second response" {
+			t.Fatalf("outbound content = %q, want %q", out.Content, "second response")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for queued inbound response")
 	}
 
 	al.dispatcher.Wait()
