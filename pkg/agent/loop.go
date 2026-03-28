@@ -1272,17 +1272,36 @@ func (al *AgentLoop) ProcessDirectWithMessage(
 	if err := al.ensureMCPInitialized(ctx); err != nil {
 		return "", err
 	}
+	type directResult struct {
+		content string
+		err     error
+	}
 
-	response, err := al.processMessage(ctx, msg)
-	if err != nil {
-		return "", err
+	resultCh := make(chan directResult, 1)
+	al.dispatcher.DispatchDirect(ctx, msg, func(taskCtx context.Context) {
+		response, err := al.processMessage(taskCtx, msg)
+		if err == nil && response.OnDelivered != nil {
+			response.OnDelivered(nil)
+		}
+
+		res := directResult{err: err}
+		if err == nil {
+			res.content = response.Content
+		}
+
+		select {
+		case resultCh <- res:
+		case <-taskCtx.Done():
+		}
+	})
+
+	select {
+	case res := <-resultCh:
+		return res.content, res.err
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
-	if response.OnDelivered != nil {
-		response.OnDelivered(nil)
-	}
-	return response.Content, nil
 }
-
 func (al *AgentLoop) ProcessDirectWithChannel(
 	ctx context.Context,
 	content, sessionKey, channel, chatID string,

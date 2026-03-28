@@ -13,7 +13,7 @@ var sessionWorkerIdleTimeout = 30 * time.Second
 
 type workerTask struct {
 	ctx context.Context
-	msg bus.InboundMessage
+	run func(context.Context)
 }
 
 type sessionWorker struct {
@@ -48,7 +48,25 @@ func newSessionDispatcher(al *AgentLoop, maxConcurrent int) *sessionDispatcher {
 // Returns immediately; the message is processed asynchronously.
 func (d *sessionDispatcher) Dispatch(ctx context.Context, msg bus.InboundMessage) {
 	key := d.al.resolveDispatchSessionKey(msg)
+	task := workerTask{
+		ctx: ctx,
+		run: func(taskCtx context.Context) {
+			d.al.processDispatchedInbound(taskCtx, msg)
+		},
+	}
+	d.enqueue(key, task)
+}
 
+func (d *sessionDispatcher) DispatchDirect(
+	ctx context.Context,
+	msg bus.InboundMessage,
+	run func(context.Context),
+) {
+	key := d.al.resolveDispatchSessionKey(msg)
+	d.enqueue(key, workerTask{ctx: ctx, run: run})
+}
+
+func (d *sessionDispatcher) enqueue(key string, task workerTask) {
 	for {
 		d.mu.Lock()
 		w, ok := d.workers[key]
@@ -72,10 +90,10 @@ func (d *sessionDispatcher) Dispatch(ctx context.Context, msg bus.InboundMessage
 		}
 
 		select {
-		case w.ch <- workerTask{ctx: ctx, msg: msg}:
+		case w.ch <- task:
 			w.mu.Unlock()
 			return
-		case <-ctx.Done():
+		case <-task.ctx.Done():
 			w.mu.Unlock()
 			logger.WarnCF("agent", "Dispatcher: context done before enqueue",
 				map[string]any{"session_key": key})
@@ -152,5 +170,5 @@ func (d *sessionDispatcher) process(task workerTask) {
 			return
 		}
 	}
-	d.al.processDispatchedInbound(task.ctx, task.msg)
+	task.run(task.ctx)
 }
