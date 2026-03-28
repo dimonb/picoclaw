@@ -18,6 +18,7 @@ func TestSanitizeFilename(t *testing.T) {
 		{"no-colons-here", "no-colons-here"},
 		{"multiple:colons:here", "multiple_colons_here"},
 		{"agent:main:telegram:group:-1003822706455/12", "agent_main_telegram_group_-1003822706455_12"},
+		{"agent:main:matrix:direct:!ddbheXJsMuWSSqJrXk:pchat.me", "agent_main_matrix_direct_!ddbheXJsMuWSSqJrXk_pchat.me"},
 	}
 
 	for _, tt := range tests {

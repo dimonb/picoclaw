@@ -432,6 +432,46 @@ func TestHandleMessageEvent_PreservesReplyToMessageID(t *testing.T) {
 	}
 }
 
+func TestHandleMessageEvent_DirectRoomUsesRoomIDAsPeer(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	roomID := id.RoomID("!dmroom:matrix.test")
+	ch := &MatrixChannel{
+		BaseChannel:   channels.NewBaseChannel("matrix", nil, messageBus, nil),
+		client:        &mautrix.Client{UserID: id.UserID("@bot:matrix.test")},
+		startTime:     time.Unix(0, 0),
+		roomKindCache: newRoomKindCache(4, time.Minute),
+	}
+	ch.roomKindCache.set(roomID.String(), false, time.Now())
+
+	ch.handleMessageEvent(context.Background(), &event.Event{
+		Sender:    id.UserID("@alice:matrix.test"),
+		Type:      event.EventMessage,
+		Timestamp: time.Now().UnixMilli(),
+		ID:        id.EventID("$event"),
+		RoomID:    roomID,
+		Content: event.Content{
+			Parsed: &event.MessageEventContent{
+				MsgType: event.MsgText,
+				Body:    "hello",
+			},
+		},
+	})
+
+	inbound := <-messageBus.InboundChan()
+	if inbound.Peer.Kind != "direct" {
+		t.Fatalf("expected direct peer, got %q", inbound.Peer.Kind)
+	}
+	if inbound.Peer.ID != roomID.String() {
+		t.Fatalf("expected direct peer ID %q, got %q", roomID.String(), inbound.Peer.ID)
+	}
+	if inbound.ChatID != roomID.String() {
+		t.Fatalf("expected chat ID %q, got %q", roomID.String(), inbound.ChatID)
+	}
+	if inbound.SenderID != "matrix:@alice:matrix.test" {
+		t.Fatalf("expected canonical sender ID, got %q", inbound.SenderID)
+	}
+}
+
 func TestSend_ReplyToIncludesRelationAndReturnsEventID(t *testing.T) {
 	var gotBody map[string]any
 
