@@ -733,3 +733,65 @@ func TestHandleMessage_ReplyToMessageID_Preserved(t *testing.T) {
 	assert.Equal(t, "25", inbound.ReplyToMessageID)
 	assert.Equal(t, "25", inbound.Metadata["reply_to_message_id"])
 }
+
+func TestHandleMessage_ChatAllowlist_AllowsMatchingGroup(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		chatIDs:     make(map[string]int64),
+		allowChats:  map[string]struct{}{"-100999": {}},
+		ctx:         context.Background(),
+	}
+
+	msg := &telego.Message{
+		Text:      "allowed group message",
+		MessageID: 31,
+		Chat: telego.Chat{
+			ID:   -100999,
+			Type: "supergroup",
+		},
+		From: &telego.User{
+			ID:        11,
+			FirstName: "Eve",
+		},
+	}
+
+	err := ch.handleMessage(context.Background(), msg)
+	require.NoError(t, err)
+
+	inbound, ok := <-messageBus.InboundChan()
+	require.True(t, ok)
+	assert.Equal(t, "-100999", inbound.ChatID)
+}
+
+func TestHandleMessage_ChatAllowlist_RejectsOtherGroup(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		chatIDs:     make(map[string]int64),
+		allowChats:  map[string]struct{}{"-100999": {}},
+		ctx:         context.Background(),
+	}
+
+	msg := &telego.Message{
+		Text:      "blocked group message",
+		MessageID: 32,
+		Chat: telego.Chat{
+			ID:   -100111,
+			Type: "supergroup",
+		},
+		From: &telego.User{
+			ID:        12,
+			FirstName: "Frank",
+		},
+	}
+
+	err := ch.handleMessage(context.Background(), msg)
+	require.NoError(t, err)
+
+	select {
+	case inbound := <-messageBus.InboundChan():
+		t.Fatalf("unexpected inbound message published for blocked chat: %+v", inbound)
+	default:
+	}
+}

@@ -66,6 +66,7 @@ func DefaultConfig() *Config {
 			Telegram: TelegramConfig{
 				Enabled:              false,
 				AllowFrom:            FlexibleStringSlice{},
+				AllowChats:           FlexibleStringSlice{},
 				AllowedReactionEmoji: DefaultTelegramReactionEmoji(),
 				Typing:               TypingConfig{Enabled: true},
 				Placeholder: PlaceholderConfig{
