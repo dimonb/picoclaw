@@ -85,6 +85,8 @@
       "base_url": "",
       "proxy": "",
       "allow_from": ["YOUR_USER_ID"],
+      "allow_chats": [],
+      "allowed_reaction_emoji": ["👍", "👎", "❤️", "🔥", "✅", "🎉", "🤔"],
       "use_markdown_v2": false,
       "reasoning_channel_id": "",
       "streaming": {

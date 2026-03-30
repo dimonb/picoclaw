@@ -44,12 +44,13 @@ var (
 
 type TelegramChannel struct {
 	*channels.BaseChannel
-	bot     *telego.Bot
-	bh      *th.BotHandler
-	config  *config.Config
-	chatIDs map[string]int64
-	ctx     context.Context
-	cancel  context.CancelFunc
+	bot        *telego.Bot
+	bh         *th.BotHandler
+	config     *config.Config
+	chatIDs    map[string]int64
+	allowChats map[string]struct{}
+	ctx        context.Context
+	cancel     context.CancelFunc
 
 	registerFunc     func(context.Context, []commands.Definition) error
 	commandRegCancel context.CancelFunc
@@ -103,7 +104,39 @@ func NewTelegramChannel(cfg *config.Config, bus *bus.MessageBus) (*TelegramChann
 		bot:         bot,
 		config:      cfg,
 		chatIDs:     make(map[string]int64),
+		allowChats:  buildAllowedTelegramChats(telegramCfg.AllowChats),
 	}, nil
+}
+
+func buildAllowedTelegramChats(chats []string) map[string]struct{} {
+	if len(chats) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(chats))
+	for _, chat := range chats {
+		chat = strings.TrimSpace(chat)
+		if chat == "" {
+			continue
+		}
+		allowed[chat] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	return allowed
+}
+
+func (c *TelegramChannel) isAllowedChat(chatID, compositeChatID string) bool {
+	if len(c.allowChats) == 0 {
+		return true
+	}
+	if _, ok := c.allowChats[compositeChatID]; ok {
+		return true
+	}
+	if _, ok := c.allowChats[chatID]; ok {
+		return true
+	}
+	return false
 }
 
 func (c *TelegramChannel) Start(ctx context.Context) error {
@@ -566,7 +599,6 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	chatIDStr := fmt.Sprintf("%d", chatID)
 	messageIDStr := fmt.Sprintf("%d", message.MessageID)
 	scope := channels.BuildMediaScope("telegram", chatIDStr, messageIDStr)
-
 	// Helper to register a local file with the media store
 	storeMedia := func(localPath, filename string) string {
 		if store := c.GetMediaStore(); store != nil {
@@ -668,6 +700,12 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 	threadID := message.MessageThreadID
 	if message.Chat.IsForum && threadID != 0 {
 		compositeChatID = fmt.Sprintf("%d/%d", chatID, threadID)
+	}
+	if !c.isAllowedChat(chatIDStr, compositeChatID) {
+		logger.DebugCF("telegram", "Message rejected by chat allowlist", map[string]any{
+			"chat_id": compositeChatID,
+		})
+		return nil
 	}
 
 	logger.DebugCF("telegram", "Received message", map[string]any{

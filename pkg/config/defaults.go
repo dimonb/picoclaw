@@ -48,9 +48,11 @@ func DefaultConfig() *Config {
 				AllowFrom:        FlexibleStringSlice{},
 			},
 			Telegram: TelegramConfig{
-				Enabled:   false,
-				AllowFrom: FlexibleStringSlice{},
-				Typing:    TypingConfig{Enabled: true},
+				Enabled:              false,
+				AllowFrom:            FlexibleStringSlice{},
+				AllowChats:           FlexibleStringSlice{},
+				AllowedReactionEmoji: FlexibleStringSlice{"👍", "👎", "❤️", "🔥", "✅", "🎉", "🤔"},
+				Typing:               TypingConfig{Enabled: true},
 				Placeholder: PlaceholderConfig{
 					Enabled: true,
 					Text:    FlexibleStringSlice{"Thinking... 💭"},
