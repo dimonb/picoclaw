@@ -253,10 +253,10 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 
 ```go
 // 旧代码：只返回 error
-func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
-    if !c.running { return nil, fmt.Errorf("not running") }
+func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+    if !c.running { return fmt.Errorf("not running") }
     // ...
-    if err != nil { return nil, err }
+    if err != nil { return err }
 }
 
 // 新代码：返回投递后的消息 ID，以及供 Manager 判断重试策略的哨兵错误

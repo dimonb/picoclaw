@@ -253,10 +253,10 @@ func (c *TelegramChannel) Stop(ctx context.Context) error {
 
 ```go
 // Old code: returned only error
-func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
-    if !c.running { return nil, fmt.Errorf("not running") }
+func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) error {
+    if !c.running { return fmt.Errorf("not running") }
     // ...
-    if err != nil { return nil, err }
+    if err != nil { return err }
 }
 
 // New code: return delivered message IDs plus sentinel errors
