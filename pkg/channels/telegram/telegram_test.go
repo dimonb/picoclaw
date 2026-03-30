@@ -168,7 +168,7 @@ func TestSendMedia_ImageFallbacksToDocumentOnInvalidDimensions(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
 		ChatID: "12345",
 		Parts: []bus.MediaPart{{
 			Type:    "image",
@@ -206,7 +206,7 @@ func TestSendMedia_ImageNonDimensionErrorDoesNotFallback(t *testing.T) {
 	ref, err := store.Store(localPath, media.MediaMeta{Filename: "image.png", ContentType: "image/png"}, "scope-1")
 	require.NoError(t, err)
 
-	err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
+	_, err = ch.SendMedia(context.Background(), bus.OutboundMediaMessage{
 		ChatID: "12345",
 		Parts: []bus.MediaPart{{
 			Type: "image",
@@ -231,7 +231,7 @@ func TestSend_EmptyContent(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	err := ch.Send(context.Background(), bus.OutboundMessage{
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
 		Content: "",
 	})
@@ -248,7 +248,7 @@ func TestSend_ShortMessage_SingleCall(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	err := ch.Send(context.Background(), bus.OutboundMessage{
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
 		Content: "Hello, world!",
 	})
@@ -271,7 +271,7 @@ func TestSend_LongMessage_SingleCall(t *testing.T) {
 
 	longContent := strings.Repeat("a", 4000)
 
-	err := ch.Send(context.Background(), bus.OutboundMessage{
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
 		Content: longContent,
 	})
@@ -294,7 +294,7 @@ func TestSend_HTMLFallback_PerChunk(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	err := ch.Send(context.Background(), bus.OutboundMessage{
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
 		Content: "Hello **world**",
 	})
@@ -312,7 +312,7 @@ func TestSend_HTMLFallback_BothFail(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	err := ch.Send(context.Background(), bus.OutboundMessage{
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
 		Content: "Hello",
 	})
@@ -334,7 +334,7 @@ func TestSend_LongMessage_HTMLFallback_StopsOnError(t *testing.T) {
 
 	longContent := strings.Repeat("x", 4001)
 
-	err := ch.Send(context.Background(), bus.OutboundMessage{
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
 		Content: longContent,
 	})
@@ -364,7 +364,7 @@ func TestSend_MarkdownShortButHTMLLong_MultipleCalls(t *testing.T) {
 		"HTML expansion must exceed Telegram limit for this test to be meaningful",
 	)
 
-	err := ch.Send(context.Background(), bus.OutboundMessage{
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
 		Content: markdownContent,
 	})
@@ -399,7 +399,7 @@ func TestSend_HTMLOverflow_WordBoundary(t *testing.T) {
 	// Ensure the test content matches the intended boundary conditions.
 	assert.LessOrEqual(t, len([]rune(content)), 4000, "markdown content must not exceed chunk size for this test")
 
-	err := ch.Send(context.Background(), bus.OutboundMessage{
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "123456",
 		Content: content,
 	})
@@ -435,7 +435,7 @@ func TestSend_NotRunning(t *testing.T) {
 	ch := newTestChannel(t, caller)
 	ch.SetRunning(false)
 
-	err := ch.Send(context.Background(), bus.OutboundMessage{
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "12345",
 		Content: "Hello",
 	})
@@ -453,7 +453,7 @@ func TestSend_InvalidChatID(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	err := ch.Send(context.Background(), bus.OutboundMessage{
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "not-a-number",
 		Content: "Hello",
 	})
@@ -510,7 +510,7 @@ func TestSend_WithForumThreadID(t *testing.T) {
 	}
 	ch := newTestChannel(t, caller)
 
-	err := ch.Send(context.Background(), bus.OutboundMessage{
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
 		ChatID:  "-1001234567890/42",
 		Content: "Hello from topic",
 	})
