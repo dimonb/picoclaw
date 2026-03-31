@@ -10,6 +10,8 @@ func TestParseThinkingLevel(t *testing.T) {
 	}{
 		{"off", "off", ThinkingOff},
 		{"empty", "", ThinkingOff},
+		{"none", "none", ThinkingNone},
+		{"minimal", "minimal", ThinkingMinimal},
 		{"low", "low", ThinkingLow},
 		{"medium", "medium", ThinkingMedium},
 		{"high", "high", ThinkingHigh},
@@ -19,6 +21,8 @@ func TestParseThinkingLevel(t *testing.T) {
 		// Case-insensitive and whitespace-tolerant
 		{"upper_Medium", "Medium", ThinkingMedium},
 		{"upper_HIGH", "HIGH", ThinkingHigh},
+		{"mixed_None", "None", ThinkingNone},
+		{"mixed_Minimal", "Minimal", ThinkingMinimal},
 		{"mixed_Adaptive", "Adaptive", ThinkingAdaptive},
 		{"leading_space", " high", ThinkingHigh},
 		{"trailing_space", "low ", ThinkingLow},

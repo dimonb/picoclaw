@@ -4,13 +4,17 @@ import "strings"
 
 // ThinkingLevel controls how the provider sends thinking parameters.
 //
-//   - "adaptive": sends {thinking: {type: "adaptive"}} + output_config.effort (Claude 4.6+)
-//   - "low"/"medium"/"high"/"xhigh": sends {thinking: {type: "enabled", budget_tokens: N}} (all models)
-//   - "off": disables thinking
+//   - "none"/"minimal"/"low"/"medium"/"high"/"xhigh": sent as reasoning effort
+//     for OpenAI reasoning models (including Codex-backed Responses API models)
+//   - "adaptive": sends {thinking: {type: "adaptive"}} + output_config.effort
+//     for Anthropic Claude 4.6+
+//   - "off": disables provider-specific thinking/reasoning controls
 type ThinkingLevel string
 
 const (
 	ThinkingOff      ThinkingLevel = "off"
+	ThinkingNone     ThinkingLevel = "none"
+	ThinkingMinimal  ThinkingLevel = "minimal"
 	ThinkingLow      ThinkingLevel = "low"
 	ThinkingMedium   ThinkingLevel = "medium"
 	ThinkingHigh     ThinkingLevel = "high"
@@ -23,6 +27,10 @@ const (
 // Returns ThinkingOff for unknown or empty values.
 func parseThinkingLevel(level string) ThinkingLevel {
 	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "none":
+		return ThinkingNone
+	case "minimal":
+		return ThinkingMinimal
 	case "adaptive":
 		return ThinkingAdaptive
 	case "low":
