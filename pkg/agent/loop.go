@@ -47,18 +47,19 @@ type AgentLoop struct {
 	hooks    *HookManager
 
 	// Runtime state
-	running        atomic.Bool
-	contextManager ContextManager
-	fallback       *providers.FallbackChain
-	channelManager *channels.Manager
-	mediaStore     media.MediaStore
-	transcriber    asr.Transcriber
-	cmdRegistry    *commands.Registry
-	mcp            mcpRuntime
-	hookRuntime    hookRuntime
-	steering       *steeringQueue
-	pendingSkills  sync.Map
-	mu             sync.RWMutex
+	running           atomic.Bool
+	contextManager    ContextManager
+	fallback          *providers.FallbackChain
+	channelManager    *channels.Manager
+	mediaStore        media.MediaStore
+	transcriber       asr.Transcriber
+	cmdRegistry       *commands.Registry
+	mcp               mcpRuntime
+	hookRuntime       hookRuntime
+	steering          *steeringQueue
+	pendingSkills     sync.Map
+	pendingDeliveries sync.Map // sessionKey -> string: last undelivered assistant content
+	mu                sync.RWMutex
 
 	// Concurrent turn management (from HEAD)
 	activeTurnStates sync.Map     // key: sessionKey (string), value: *turnState
@@ -1697,9 +1698,14 @@ func (al *AgentLoop) runAgentLoop(
 	}
 
 	if !opts.NoHistory && result.finalContent != "" {
+		// Register the pending content so that fast follow-up inbound turns can
+		// inject it into their LLM context before OnDelivered persists it.
+		al.pendingDeliveries.Store(opts.SessionKey, result.finalContent)
+
 		var once sync.Once
 		response.OnDelivered = func(msgIDs []string) {
 			once.Do(func() {
+				al.pendingDeliveries.Delete(opts.SessionKey)
 				assistantMsg := providers.Message{
 					Role:       "assistant",
 					Content:    result.finalContent,
@@ -1842,6 +1848,20 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 		}
 	}
 	ts.captureRestorePoint(history, summary)
+
+	// Inject pending undelivered assistant reply into history so regular inbound turns
+	// see it in LLM context even before OnDelivered persists it to session storage.
+	// Only inject if history doesn't already end with an assistant message (avoids duplication
+	// when OnDelivered fires before the next turn starts).
+	if !ts.opts.NoHistory {
+		if pendingRaw, ok := al.pendingDeliveries.Load(ts.sessionKey); ok {
+			if pendingContent, _ := pendingRaw.(string); pendingContent != "" {
+				if len(history) == 0 || history[len(history)-1].Role != "assistant" {
+					history = append(history, providers.Message{Role: "assistant", Content: pendingContent})
+				}
+			}
+		}
+	}
 
 	messages := ts.agent.ContextBuilder.BuildMessages(
 		history,
