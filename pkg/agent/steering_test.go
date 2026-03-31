@@ -298,7 +298,7 @@ func TestAgentLoop_Continue_NoMessages(t *testing.T) {
 		t.Fatal("expected provider to be initialized")
 	}
 
-	resp, err := al.continueResponse(context.Background(), "test-session", "test", "chat1")
+	resp, err := al.Continue(context.Background(), "test-session", "test", "chat1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestAgentLoop_Continue_WithMessages(t *testing.T) {
 
 	al.Steer(providers.Message{Role: "user", Content: "new direction"})
 
-	resp, err := al.continueResponse(context.Background(), "test-session", "test", "chat1")
+	resp, err := al.Continue(context.Background(), "test-session", "test", "chat1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1073,9 +1073,9 @@ func TestAgentLoop_Continue_PreservesSteeringMedia(t *testing.T) {
 		t.Fatalf("Steer failed: %v", err)
 	}
 
-	resp, err := al.continueResponse(context.Background(), sessionKey, "test", "chat1")
+	resp, err := al.Continue(context.Background(), sessionKey, "test", "chat1")
 	if err != nil {
-		t.Fatalf("continueResponse failed: %v", err)
+		t.Fatalf("Continue failed: %v", err)
 	}
 	if resp.Content != "ack" {
 		t.Fatalf("expected ack, got %q", resp.Content)
@@ -1587,7 +1587,7 @@ func (w *wrappingProvider) GetDefaultModel() string {
 // a steering continuation sees the previous assistant reply in its LLM context
 // even when OnDelivered has not fired yet (reply not yet in session history).
 // The pending reply is injected via pendingDeliveries/injectPendingDelivery,
-// not via EphemeralPrefix.
+// not via a separate injection mechanism.
 //
 //  1. The steering continuation's LLM call sees the previous assistant reply.
 //  2. Session history does not contain the assistant reply (OnDelivered not called).
@@ -1672,9 +1672,9 @@ func TestContinueResponse_PendingDeliveryVisibleBeforePersistence(t *testing.T) 
 		t.Fatalf("pushScope: %v", pushErr)
 	}
 
-	continued, err := al.continueResponse(ctx, sessionKey, channel, chatID)
+	continued, err := al.Continue(ctx, sessionKey, channel, chatID)
 	if err != nil {
-		t.Fatalf("continueResponse: %v", err)
+		t.Fatalf("Continue: %v", err)
 	}
 	if continued.Content != continuationReply {
 		t.Fatalf("continuation reply = %q, want %q", continued.Content, continuationReply)

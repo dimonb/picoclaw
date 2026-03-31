@@ -102,7 +102,7 @@ type processOptions struct {
 	SendResponse            bool                     // Whether to send response via bus
 	SuppressToolFeedback    bool                     // Whether to suppress inline tool feedback messages
 	NoHistory               bool                     // If true, don't load session history (for heartbeat)
-	SkipInitialSteeringPoll bool                     // If true, skip the steering poll at loop start (used by continueResponse)
+	SkipInitialSteeringPoll bool                     // If true, skip the steering poll at loop start (used by Continue)
 	Sender                  *providers.MessageSender // Author identity (nil for system/automated messages)
 }
 
@@ -605,7 +605,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 							"queue_depth": al.pendingSteeringCountForScope(target.SessionKey),
 						})
 
-					continued, continueErr := al.continueResponse(
+					continued, continueErr := al.Continue(
 						ctx,
 						target.SessionKey,
 						target.Channel,
@@ -637,7 +637,7 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 							"queue_depth": al.pendingSteeringCountForScope(target.SessionKey),
 						})
 
-					continued, continueErr := al.continueResponse(
+					continued, continueErr := al.Continue(
 						ctx,
 						target.SessionKey,
 						target.Channel,

@@ -319,10 +319,10 @@ func (al *AgentLoop) agentForSession(sessionKey string) *AgentInstance {
 	return registry.GetDefaultAgent()
 }
 
-// continueResponse dequeues pending steering messages and runs them through the agent loop.
+// Continue dequeues pending steering messages and runs them through the agent loop.
 // Returns an agentResponse with OnDelivered set for delayed session persistence.
 // If no steering messages are pending, returns an empty agentResponse.
-func (al *AgentLoop) continueResponse(
+func (al *AgentLoop) Continue(
 	ctx context.Context,
 	sessionKey, channel, chatID string,
 ) (agentResponse, error) {
@@ -353,18 +353,6 @@ func (al *AgentLoop) continueResponse(
 	}
 
 	return al.continueWithSteeringMessages(ctx, agent, sessionKey, channel, chatID, steeringMsgs)
-}
-
-// Continue is the public API for resuming an idle agent from external callers.
-// It dequeues pending steering messages and runs them through the agent loop,
-// returning the assistant reply content on success.
-// If no steering messages are pending, it returns an empty string.
-func (al *AgentLoop) Continue(ctx context.Context, sessionKey, channel, chatID string) (string, error) {
-	resp, err := al.continueResponse(ctx, sessionKey, channel, chatID)
-	if err != nil {
-		return "", err
-	}
-	return resp.Content, nil
 }
 
 func (al *AgentLoop) InterruptGraceful(hint string) error {
