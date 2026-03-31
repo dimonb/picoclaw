@@ -355,6 +355,18 @@ func (al *AgentLoop) continueResponse(
 	return al.continueWithSteeringMessages(ctx, agent, sessionKey, channel, chatID, steeringMsgs)
 }
 
+// Continue is the public API for resuming an idle agent from external callers.
+// It dequeues pending steering messages and runs them through the agent loop,
+// returning the assistant reply content on success.
+// If no steering messages are pending, it returns an empty string.
+func (al *AgentLoop) Continue(ctx context.Context, sessionKey, channel, chatID string) (string, error) {
+	resp, err := al.continueResponse(ctx, sessionKey, channel, chatID)
+	if err != nil {
+		return "", err
+	}
+	return resp.Content, nil
+}
+
 func (al *AgentLoop) InterruptGraceful(hint string) error {
 	ts := al.getAnyActiveTurnState()
 	if ts == nil {
