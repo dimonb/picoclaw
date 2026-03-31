@@ -10,6 +10,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/sipeed/picoclaw/pkg/auth"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -159,6 +160,9 @@ func (p *CodexProvider) Chat(
 func (p *CodexProvider) GetDefaultModel() string {
 	return codexDefaultModel
 }
+
+// SupportsThinking implements providers.ThinkingCapable.
+func (p *CodexProvider) SupportsThinking() bool { return true }
 
 func (p *CodexProvider) SupportsNativeSearch() bool {
 	return p.enableWebSearch
@@ -312,9 +316,67 @@ func buildCodexParams(
 		params.Tools = translateToolsForCodex(tools, enableWebSearch)
 	}
 
+	if level, ok := options["thinking_level"].(string); ok && level != "" && level != "off" {
+		if effort, ok := codexReasoningEffort(level); ok {
+			params.Reasoning = shared.ReasoningParam{Effort: effort}
+		} else {
+			logger.WarnCF("provider.codex", "Unsupported thinking_level for Codex, ignoring",
+				map[string]any{"thinking_level": level, "model": model})
+		}
+	}
+
 	return params
 }
 
+func codexReasoningEffort(level string) (shared.ReasoningEffort, bool) {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "none":
+		return shared.ReasoningEffortNone, true
+	case "minimal":
+		return shared.ReasoningEffortMinimal, true
+	case "low":
+		return shared.ReasoningEffortLow, true
+	case "medium":
+		return shared.ReasoningEffortMedium, true
+	case "high":
+		return shared.ReasoningEffortHigh, true
+	case "xhigh":
+		return shared.ReasoningEffortXhigh, true
+	default:
+		return "", false
+	}
+}
+
+func buildCodexMessageContent(msg Message) responses.EasyInputMessageContentUnionParam {
+	if len(msg.Media) == 0 {
+		return responses.EasyInputMessageContentUnionParam{OfString: openai.Opt(msg.Content)}
+	}
+
+	parts := make(responses.ResponseInputMessageContentListParam, 0, 1+len(msg.Media))
+	if msg.Content != "" {
+		parts = append(parts, responses.ResponseInputContentUnionParam{
+			OfInputText: &responses.ResponseInputTextParam{
+				Text: msg.Content,
+			},
+		})
+	}
+	for _, mediaURL := range msg.Media {
+		if !strings.HasPrefix(mediaURL, "data:image/") {
+			continue
+		}
+		parts = append(parts, responses.ResponseInputContentUnionParam{
+			OfInputImage: &responses.ResponseInputImageParam{
+				Detail:   responses.ResponseInputImageDetailAuto,
+				ImageURL: openai.Opt(mediaURL),
+			},
+		})
+	}
+	if len(parts) == 0 {
+		return responses.EasyInputMessageContentUnionParam{OfString: openai.Opt(msg.Content)}
+	}
+
+	return responses.EasyInputMessageContentUnionParam{OfInputItemContentList: parts}
+}
 func resolveCodexToolCall(tc ToolCall) (name string, arguments string, ok bool) {
 	name = tc.Name
 	if name == "" && tc.Function != nil {

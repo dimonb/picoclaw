@@ -10,6 +10,7 @@ import (
 	"github.com/openai/openai-go/v3"
 	openaiopt "github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/responses"
+	"github.com/openai/openai-go/v3/shared"
 )
 
 func TestBuildCodexParams_BasicMessage(t *testing.T) {
@@ -139,6 +140,30 @@ func TestBuildCodexParams_StoreIsFalse(t *testing.T) {
 	params := buildCodexParams([]Message{{Role: "user", Content: "Hi"}}, nil, "gpt-4o", map[string]any{}, false)
 	if !params.Store.Valid() || params.Store.Or(true) != false {
 		t.Error("Store should be explicitly set to false")
+	}
+}
+
+func TestBuildCodexParams_WithThinkingLevel(t *testing.T) {
+	params := buildCodexParams([]Message{{Role: "user", Content: "Hi"}}, nil, "gpt-5.3-codex", map[string]any{
+		"thinking_level": "minimal",
+	}, false)
+	if params.Reasoning.Effort != shared.ReasoningEffortMinimal {
+		t.Fatalf("Reasoning.Effort = %q, want %q", params.Reasoning.Effort, shared.ReasoningEffortMinimal)
+	}
+}
+
+func TestBuildCodexParams_IgnoresUnsupportedThinkingLevel(t *testing.T) {
+	params := buildCodexParams([]Message{{Role: "user", Content: "Hi"}}, nil, "gpt-5.3-codex", map[string]any{
+		"thinking_level": "adaptive",
+	}, false)
+	if params.Reasoning.Effort != "" {
+		t.Fatalf("Reasoning.Effort = %q, want empty", params.Reasoning.Effort)
+	}
+}
+
+func TestCodexProvider_SupportsThinking(t *testing.T) {
+	if !NewCodexProvider("test-token", "").SupportsThinking() {
+		t.Fatal("SupportsThinking() = false, want true")
 	}
 }
 
