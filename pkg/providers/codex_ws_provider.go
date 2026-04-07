@@ -17,9 +17,11 @@ import (
 )
 
 const (
-	codexWSEndpoint       = "wss://chatgpt.com/backend-api/codex/responses"
-	codexWSBetaHeader     = "responses_websockets=2026-02-06"
-	codexWSEndpointEnvVar = "CODEX_WS_URL"
+	codexWSEndpoint          = "wss://chatgpt.com/backend-api/codex/responses"
+	codexWSBetaHeader        = "responses_websockets=2026-02-06"
+	codexWSEndpointEnvVar    = "CODEX_WS_URL"
+	wsSessionIdleTimeout     = 10 * time.Minute
+	wsSessionCleanupInterval = 2 * time.Minute
 )
 
 // ---------- request structs ----------
@@ -147,19 +149,23 @@ type wsUsage struct {
 // ---------- provider ----------
 
 // wsSessionState holds per-conversation WebSocket state.
+// Each session has its own mutex so concurrent sessions run in parallel.
 type wsSessionState struct {
+	mu                 sync.Mutex
 	conn               *websocket.Conn
 	previousResponseID string
 	// sentMsgCount tracks how many non-system messages we've already sent
 	// in this WS session so we only transmit new ones each turn.
 	sentMsgCount int
 	sessionID    string
+	lastUsed     time.Time
 }
 
 // CodexWSProvider connects to the Codex backend via persistent WebSocket
 // using the same protocol as the official Codex CLI.
 // Each logical conversation (identified by session_key in options) gets its
 // own WebSocket connection to avoid cross-session state contamination.
+// Concurrent sessions run in parallel — the global mu only guards the map.
 type CodexWSProvider struct {
 	tokenSource     func() (string, string, error)
 	accountID       string
@@ -168,6 +174,7 @@ type CodexWSProvider struct {
 
 	mu       sync.Mutex
 	sessions map[string]*wsSessionState
+	done     chan struct{}
 }
 
 func NewCodexWSProvider(token, accountID string) *CodexWSProvider {
@@ -176,13 +183,16 @@ func NewCodexWSProvider(token, accountID string) *CodexWSProvider {
 		baseURL = codexWSEndpoint
 	}
 	_ = token // token fetched fresh via tokenSource
-	return &CodexWSProvider{
+	p := &CodexWSProvider{
 		tokenSource:     createCodexTokenSource(),
 		accountID:       accountID,
 		enableWebSearch: true,
 		baseURL:         baseURL,
 		sessions:        make(map[string]*wsSessionState),
+		done:            make(chan struct{}),
 	}
+	go p.cleanupIdleSessions()
+	return p
 }
 
 func (p *CodexWSProvider) GetDefaultModel() string { return codexDefaultModel }
@@ -191,13 +201,51 @@ func (p *CodexWSProvider) SupportsNativeSearch() bool {
 	return p.enableWebSearch
 }
 
-// Close tears down all WebSocket connections.
+// Close tears down all WebSocket connections and stops the cleanup goroutine.
 func (p *CodexWSProvider) Close() {
+	select {
+	case <-p.done:
+	default:
+		close(p.done)
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for key, sess := range p.sessions {
+		sess.mu.Lock()
 		p.closeSession(sess)
+		sess.mu.Unlock()
 		delete(p.sessions, key)
+	}
+}
+
+// cleanupIdleSessions runs in the background and closes WS connections that
+// have been idle for longer than wsSessionIdleTimeout.
+func (p *CodexWSProvider) cleanupIdleSessions() {
+	ticker := time.NewTicker(wsSessionCleanupInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+		}
+		now := time.Now()
+		p.mu.Lock()
+		for key, sess := range p.sessions {
+			if now.Sub(sess.lastUsed) < wsSessionIdleTimeout {
+				continue
+			}
+			// Skip sessions currently in use.
+			if !sess.mu.TryLock() {
+				continue
+			}
+			p.closeSession(sess)
+			sess.mu.Unlock()
+			delete(p.sessions, key)
+			logger.DebugCF("provider.codex_ws", "Idle session closed",
+				map[string]any{"session_key": key})
+		}
+		p.mu.Unlock()
 	}
 }
 
@@ -210,19 +258,25 @@ func (p *CodexWSProvider) closeSession(sess *wsSessionState) {
 	}
 }
 
-// getOrCreateSession returns the session state for the given key,
-// creating and connecting a new one if it doesn't exist.
-// Must be called with p.mu held.
-func (p *CodexWSProvider) getOrCreateSession(sessionKey, instructions string, tools []wsToolDef, model string, options map[string]any) (*wsSessionState, error) {
-	if sess, ok := p.sessions[sessionKey]; ok && sess.conn != nil {
-		return sess, nil
+// getSession returns the session for sessionKey, creating a new (disconnected)
+// one if it doesn't exist. Only the map is touched under the global lock;
+// the caller is responsible for connecting and locking the session itself.
+func (p *CodexWSProvider) getSession(sessionKey string) *wsSessionState {
+	p.mu.Lock()
+	sess, ok := p.sessions[sessionKey]
+	if !ok {
+		sess = &wsSessionState{sessionID: uuid.New().String()}
+		p.sessions[sessionKey] = sess
 	}
-	sess := &wsSessionState{sessionID: uuid.New().String()}
-	if err := p.connectSession(sess, instructions, tools, model, options); err != nil {
-		return nil, err
-	}
-	p.sessions[sessionKey] = sess
-	return sess, nil
+	p.mu.Unlock()
+	return sess
+}
+
+// deleteSession removes the session from the map under the global lock.
+func (p *CodexWSProvider) deleteSession(sessionKey string) {
+	p.mu.Lock()
+	delete(p.sessions, sessionKey)
+	p.mu.Unlock()
 }
 
 // connectSession dials a new WebSocket and runs the prewarm turn for the given session.
@@ -525,29 +579,38 @@ func (p *CodexWSProvider) chatStream(
 		instructions = defaultCodexInstructions
 	}
 
-	// Each logical session gets its own WS connection.
+	// Each logical session (Telegram chat, DM, etc.) gets its own WS connection.
 	sessionKey, _ := options["session_key"].(string)
 	if sessionKey == "" {
 		sessionKey = "default"
 	}
 
-	p.mu.Lock()
-	defer p.mu.Unlock()
+	// Phase A: look up (or allocate) the session struct — global lock, map only.
+	sess := p.getSession(sessionKey)
 
-	sess, err := p.getOrCreateSession(sessionKey, instructions, wsTools, resolvedModel, options)
-	if err != nil {
-		return wsUsage{}, fmt.Errorf("codex ws connect: %w", err)
+	// Phase B: all WS I/O under the per-session lock so different sessions
+	// proceed in parallel while turns within the same session are serialized.
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+
+	sess.lastUsed = time.Now()
+
+	// Connect if first use or the connection was closed by the cleanup routine.
+	if sess.conn == nil {
+		if err := p.connectSession(sess, instructions, wsTools, resolvedModel, options); err != nil {
+			p.deleteSession(sessionKey)
+			return wsUsage{}, fmt.Errorf("codex ws connect: %w", err)
+		}
 	}
 
 	// If history was compacted (summarized), the message array shrinks below
-	// sentMsgCount. We must reconnect and replay the full (compressed) history.
+	// sentMsgCount. Reconnect and replay the full (compressed) history.
 	if len(convMsgs) < sess.sentMsgCount {
 		logger.DebugCF("provider.codex_ws", "History compacted, reconnecting session",
 			map[string]any{"session_key": sessionKey, "old_sent": sess.sentMsgCount, "new_len": len(convMsgs)})
 		p.closeSession(sess)
-		delete(p.sessions, sessionKey)
-		sess, err = p.getOrCreateSession(sessionKey, instructions, wsTools, resolvedModel, options)
-		if err != nil {
+		if err := p.connectSession(sess, instructions, wsTools, resolvedModel, options); err != nil {
+			p.deleteSession(sessionKey)
 			return wsUsage{}, fmt.Errorf("codex ws reconnect after compaction: %w", err)
 		}
 	}
@@ -560,20 +623,19 @@ func (p *CodexWSProvider) chatStream(
 	req := p.buildRequest(sess, instructions, sess.previousResponseID, input, wsTools, resolvedModel, options)
 
 	if err := p.sendToSession(sess, req); err != nil {
-		// Connection broken — reset and retry once.
+		// Connection broken — reconnect once and replay full history.
 		p.closeSession(sess)
-		delete(p.sessions, sessionKey)
-		logger.WarnCF("provider.codex_ws", "Send failed, reconnecting", map[string]any{"error": err.Error(), "session_key": sessionKey})
-		sess, err = p.getOrCreateSession(sessionKey, instructions, wsTools, resolvedModel, options)
-		if err != nil {
-			return wsUsage{}, fmt.Errorf("codex ws reconnect: %w", err)
+		logger.WarnCF("provider.codex_ws", "Send failed, reconnecting",
+			map[string]any{"error": err.Error(), "session_key": sessionKey})
+		if err2 := p.connectSession(sess, instructions, wsTools, resolvedModel, options); err2 != nil {
+			p.deleteSession(sessionKey)
+			return wsUsage{}, fmt.Errorf("codex ws reconnect: %w", err2)
 		}
-		// After reconnect sentMsgCount was reset to 0, rebuild full input.
 		sess.sentMsgCount = len(convMsgs)
 		req = p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(convMsgs), wsTools, resolvedModel, options)
 		if err3 := p.sendToSession(sess, req); err3 != nil {
 			p.closeSession(sess)
-			delete(p.sessions, sessionKey)
+			p.deleteSession(sessionKey)
 			return wsUsage{}, fmt.Errorf("codex ws send after reconnect: %w", err3)
 		}
 	}
@@ -581,7 +643,7 @@ func (p *CodexWSProvider) chatStream(
 	respID, usage, streamErr := p.drainStream(sess, onText, onItem)
 	if streamErr != nil {
 		p.closeSession(sess)
-		delete(p.sessions, sessionKey)
+		p.deleteSession(sessionKey)
 		return wsUsage{}, fmt.Errorf("codex ws stream: %w", streamErr)
 	}
 	sess.previousResponseID = respID
