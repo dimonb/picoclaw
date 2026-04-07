@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
@@ -16,7 +17,7 @@ import (
 )
 
 const (
-	codexWSEndpoint       = "wss://chatgpt.com/backend-api/responses"
+	codexWSEndpoint       = "wss://chatgpt.com/backend-api/codex/responses"
 	codexWSBetaHeader     = "responses_websockets=2026-02-06"
 	codexWSEndpointEnvVar = "CODEX_WS_URL"
 )
@@ -223,18 +224,43 @@ func (p *CodexWSProvider) connect(instructions string, tools []wsToolDef, model 
 	}
 
 	wsURL := p.baseURL
-	conn, _, err := dialer.Dial(wsURL, hdrs)
+	conn, resp, err := dialer.Dial(wsURL, hdrs)
 	if err != nil {
+		if resp != nil {
+			logger.ErrorCF("provider.codex_ws", "WebSocket handshake failed",
+				map[string]any{
+					"status": resp.Status,
+					"url":    wsURL,
+					"error":  err.Error(),
+				})
+		}
 		return fmt.Errorf("ws dial: %w", err)
 	}
 	p.conn = conn
 	p.previousResponseID = ""
 	p.sentMsgCount = 0
 
+	logger.DebugCF("provider.codex_ws", "WebSocket connected, sending prewarm", map[string]any{"url": wsURL})
 	// Prewarm: send generate=false to let the server load context.
+	// Use a minimal request — extra fields (text, prompt_cache_key, client_metadata)
+	// can cause the server to close with 1000 before emitting response.completed.
+	prewarmInstructions := instructions
+	if prewarmInstructions == "" {
+		prewarmInstructions = "You are a helpful assistant."
+	}
 	boolFalse := false
-	req := p.buildRequest(instructions, "", nil, tools, model, options)
-	req.Generate = &boolFalse
+	req := wsRequest{
+		Type:              "response.create",
+		Model:             model,
+		Instructions:      prewarmInstructions,
+		Input:             []wsInputItem{},
+		Tools:             []wsToolDef{},
+		ToolChoice:        "auto",
+		ParallelToolCalls: true,
+		Store:             false,
+		Stream:            true,
+		Generate:          &boolFalse,
+	}
 
 	if err := p.sendRequest(req); err != nil {
 		p.closeConn()
@@ -246,6 +272,7 @@ func (p *CodexWSProvider) connect(instructions string, tools []wsToolDef, model 
 		return fmt.Errorf("prewarm drain: %w", err)
 	}
 	p.previousResponseID = respID
+	logger.DebugCF("provider.codex_ws", "Prewarm done", map[string]any{"response_id": respID})
 	return nil
 }
 
@@ -268,6 +295,10 @@ func (p *CodexWSProvider) drainStream(
 	argsByItem := map[string]strings.Builder{}
 	itemsByID := map[string]wsOutputItem{}
 
+	// 120s read deadline so we never hang indefinitely.
+	_ = p.conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+	defer p.conn.SetReadDeadline(time.Time{})
+
 	for {
 		_, msg, readErr := p.conn.ReadMessage()
 		if readErr != nil {
@@ -277,8 +308,10 @@ func (p *CodexWSProvider) drainStream(
 
 		var evt wsEvent
 		if jsonErr := json.Unmarshal(msg, &evt); jsonErr != nil {
+			logger.DebugCF("provider.codex_ws", "Failed to parse event", map[string]any{"raw": string(msg[:min(len(msg), 200)])})
 			continue
 		}
+		logger.DebugCF("provider.codex_ws", "WS event", map[string]any{"type": evt.Type, "raw": string(msg[:min(len(msg), 300)])})
 
 		switch evt.Type {
 		case "response.created":
@@ -360,6 +393,12 @@ func (p *CodexWSProvider) buildRequest(
 	model string,
 	options map[string]any,
 ) wsRequest {
+	if input == nil {
+		input = []wsInputItem{}
+	}
+	if tools == nil {
+		tools = []wsToolDef{}
+	}
 	req := wsRequest{
 		Type:               "response.create",
 		Model:              model,
