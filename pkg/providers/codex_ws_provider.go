@@ -399,7 +399,9 @@ func (p *CodexWSProvider) drainStream(
 			logger.DebugCF("provider.codex_ws", "Failed to parse event", map[string]any{"raw": string(msg[:min(len(msg), 200)])})
 			continue
 		}
-		logger.DebugCF("provider.codex_ws", "WS event", map[string]any{"type": evt.Type, "raw": string(msg[:min(len(msg), 300)])})
+		if evt.Type != "response.output_text.delta" && evt.Type != "response.function_call_arguments.delta" {
+			logger.DebugCF("provider.codex_ws", "WS event", map[string]any{"type": evt.Type, "raw": string(msg[:min(len(msg), 300)])})
+		}
 
 		switch evt.Type {
 		case "response.created":
