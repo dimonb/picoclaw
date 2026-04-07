@@ -9,9 +9,28 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
+// flexString unmarshals both JSON strings and numbers into a string.
+type flexString string
+
+func (f *flexString) UnmarshalJSON(data []byte) error {
+	// Try string first
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*f = flexString(s)
+		return nil
+	}
+	// Fall back to number (int or float)
+	var n json.Number
+	if err := json.Unmarshal(data, &n); err != nil {
+		return err
+	}
+	*f = flexString(n.String())
+	return nil
+}
+
 type finalMetaAction struct {
-	ReplyTo       string `json:"reply_to,omitempty"`
-	EditMessageID string `json:"edit_message_id,omitempty"`
+	ReplyTo       flexString `json:"reply_to,omitempty"`
+	EditMessageID flexString `json:"edit_message_id,omitempty"`
 	SendFinal     *bool  `json:"send_final,omitempty"`
 	Reaction      *struct {
 		MessageID string `json:"message_id,omitempty"`
@@ -58,10 +77,10 @@ func resolveFinalResponse(rawContent string) agentResponse {
 	logStrippedMessageAnnotations(stripped)
 	response := agentResponse{Content: content}
 	if meta.ReplyTo != "" {
-		response.ReplyToMessageID = strings.TrimSpace(meta.ReplyTo)
+		response.ReplyToMessageID = strings.TrimSpace(string(meta.ReplyTo))
 	}
 	if meta.EditMessageID != "" {
-		response.EditMessageID = strings.TrimSpace(meta.EditMessageID)
+		response.EditMessageID = strings.TrimSpace(string(meta.EditMessageID))
 	}
 	if meta.Reaction != nil && strings.TrimSpace(meta.Reaction.MessageID) != "" &&
 		strings.TrimSpace(meta.Reaction.Emoji) != "" {
