@@ -23,6 +23,7 @@ const (
 	codexWSEndpointEnvVar    = "CODEX_WS_URL"
 	wsSessionIdleTimeout     = 10 * time.Minute
 	wsSessionCleanupInterval = 2 * time.Minute
+	wsRetryTimeout           = 30 * time.Second
 )
 
 // ---------- request structs ----------
@@ -625,55 +626,68 @@ func (p *CodexWSProvider) chatStream(
 		}
 	}
 
-	// Build the input slice with only NEW messages since the last turn.
+	// Build the initial request with only NEW messages since the last turn.
 	newMsgs := convMsgs[sess.sentMsgCount:]
-	input := buildWSInput(newMsgs)
+	req := p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(newMsgs), wsTools, resolvedModel, options)
 	sess.sentMsgCount = len(convMsgs)
 
-	req := p.buildRequest(sess, instructions, sess.previousResponseID, input, wsTools, resolvedModel, options)
-
-	if err := p.sendToSession(sess, req); err != nil {
-		// Connection broken — reconnect once and replay full history.
-		p.closeSession(sess)
-		logger.WarnCF("provider.codex_ws", "Send failed, reconnecting",
-			map[string]any{"error": err.Error(), "session_key": sessionKey})
-		if err2 := p.connectSession(sess, instructions, wsTools, resolvedModel, options); err2 != nil {
-			p.deleteSession(sessionKey)
-			return wsUsage{}, fmt.Errorf("codex ws reconnect: %w", err2)
-		}
-		sess.sentMsgCount = len(convMsgs)
-		req = p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(convMsgs), wsTools, resolvedModel, options)
-		if err3 := p.sendToSession(sess, req); err3 != nil {
+	// Send + drain with reconnect backoff.
+	// On any connection error (send failure or mid-stream drop) we reconnect
+	// and replay the full history, retrying until ~30 seconds have elapsed.
+	var (
+		respID    string
+		usage     wsUsage
+		lastErr   error
+		backoff   = 2 * time.Second
+		deadline  = time.Now().Add(wsRetryTimeout)
+		firstSend = true
+	)
+	for {
+		if firstSend {
+			firstSend = false
+		} else {
+			// Reconnect before retry: close broken conn, wait, dial again.
 			p.closeSession(sess)
-			p.deleteSession(sessionKey)
-			return wsUsage{}, fmt.Errorf("codex ws send after reconnect: %w", err3)
+			remaining := time.Until(deadline)
+			if remaining <= 0 {
+				break
+			}
+			sleep := backoff
+			if sleep > remaining {
+				sleep = remaining
+			}
+			logger.WarnCF("provider.codex_ws", "Reconnecting after error",
+				map[string]any{"error": lastErr.Error(), "backoff": sleep.String(), "session_key": sessionKey})
+			select {
+			case <-ctx.Done():
+				p.deleteSession(sessionKey)
+				return wsUsage{}, ctx.Err()
+			case <-time.After(sleep):
+			}
+			backoff = min(backoff*2, 15*time.Second)
+			if err := p.connectSession(sess, instructions, wsTools, resolvedModel, options); err != nil {
+				lastErr = err
+				continue
+			}
+			// Replay full history after reconnect.
+			sess.sentMsgCount = len(convMsgs)
+			req = p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(convMsgs), wsTools, resolvedModel, options)
+		}
+
+		if err := p.sendToSession(sess, req); err != nil {
+			lastErr = err
+			continue
+		}
+		respID, usage, lastErr = p.drainStream(sess, onText, onItem)
+		if lastErr == nil {
+			break
 		}
 	}
 
-	respID, usage, streamErr := p.drainStream(sess, onText, onItem)
-	if streamErr != nil {
-		// Connection dropped mid-stream (e.g. keepalive ping timeout, network reset).
-		// Reconnect once and replay the full message history.
+	if lastErr != nil {
 		p.closeSession(sess)
-		logger.WarnCF("provider.codex_ws", "Stream read failed, reconnecting and retrying",
-			map[string]any{"error": streamErr.Error(), "session_key": sessionKey})
-		if err := p.connectSession(sess, instructions, wsTools, resolvedModel, options); err != nil {
-			p.deleteSession(sessionKey)
-			return wsUsage{}, fmt.Errorf("codex ws stream: %w", streamErr)
-		}
-		sess.sentMsgCount = len(convMsgs)
-		retryReq := p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(convMsgs), wsTools, resolvedModel, options)
-		if err := p.sendToSession(sess, retryReq); err != nil {
-			p.closeSession(sess)
-			p.deleteSession(sessionKey)
-			return wsUsage{}, fmt.Errorf("codex ws stream retry send: %w", err)
-		}
-		respID, usage, streamErr = p.drainStream(sess, onText, onItem)
-		if streamErr != nil {
-			p.closeSession(sess)
-			p.deleteSession(sessionKey)
-			return wsUsage{}, fmt.Errorf("codex ws stream: %w", streamErr)
-		}
+		p.deleteSession(sessionKey)
+		return wsUsage{}, fmt.Errorf("codex ws: %w", lastErr)
 	}
 	sess.previousResponseID = respID
 	return usage, nil
