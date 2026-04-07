@@ -3551,6 +3551,10 @@ func (al *AgentLoop) retryLLMCall(
 					"max_tokens":       agent.MaxTokens,
 					"temperature":      llmTemperature,
 					"prompt_cache_key": agent.ID,
+					// Each summarization attempt is a standalone one-shot call.
+					// Use a unique session key so stateful providers (e.g. CodexWS)
+					// don't mix it with the ongoing conversation session.
+					"session_key": fmt.Sprintf("%s:summarize:%d", agent.ID, al.turnSeq.Add(1)),
 				},
 			)
 		}()
