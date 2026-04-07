@@ -352,8 +352,11 @@ func buildCodexParams(
 		Input: responses.ResponseNewParamsInputUnion{
 			OfInputItemList: inputItems,
 		},
-		Instructions: openai.Opt(instructions),
-		Store:        openai.Opt(false),
+		Store:             openai.Opt(false),
+		ParallelToolCalls: openai.Opt(false),
+		ToolChoice: responses.ResponseNewParamsToolChoiceUnion{
+			OfToolChoiceMode: openai.Opt(responses.ToolChoiceOptionsAuto),
+		},
 	}
 
 	if instructions != "" {
@@ -377,6 +380,7 @@ func buildCodexParams(
 	if level, ok := options["thinking_level"].(string); ok && level != "" && level != "off" {
 		if effort, ok := codexReasoningEffort(level); ok {
 			params.Reasoning = shared.ReasoningParam{Effort: effort}
+			params.Include = []responses.ResponseIncludable{"reasoning.encrypted_content"}
 		} else {
 			logger.WarnCF("provider.codex", "Unsupported thinking_level for Codex, ignoring",
 				map[string]any{"thinking_level": level, "model": model})
