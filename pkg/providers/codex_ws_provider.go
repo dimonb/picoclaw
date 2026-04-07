@@ -44,7 +44,7 @@ type wsRequest struct {
 }
 
 type wsReasoning struct {
-	Effort string `json:"effort"`
+	Effort string `json:"effort,omitempty"`
 }
 
 type wsText struct {
@@ -421,7 +421,11 @@ func (p *CodexWSProvider) buildRequest(
 	}
 
 	if level, ok := options["thinking_level"].(string); ok && level != "" && level != "off" {
-		if effort, effortOK := codexReasoningEffort(level); effortOK {
+		if level == "auto" {
+			// Let server choose effort (send reasoning block with no explicit effort).
+			req.Reasoning = &wsReasoning{}
+			req.Include = []string{"reasoning.encrypted_content"}
+		} else if effort, effortOK := codexReasoningEffort(level); effortOK {
 			req.Reasoning = &wsReasoning{Effort: string(effort)}
 			req.Include = []string{"reasoning.encrypted_content"}
 		}
