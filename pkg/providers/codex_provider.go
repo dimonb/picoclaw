@@ -2,6 +2,7 @@ package providers
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -68,14 +69,28 @@ func codexUserAgent() string {
 }
 
 func NewCodexProvider(token, accountID string) *CodexProvider {
+	baseURL := os.Getenv("CODEX_BASE_URL")
+	if baseURL == "" {
+		baseURL = "https://chatgpt.com/backend-api/codex"
+	}
+
 	opts := []option.RequestOption{
-		option.WithBaseURL("https://chatgpt.com/backend-api/codex"),
+		option.WithBaseURL(baseURL),
 		option.WithAPIKey(token),
 		option.WithHeader("originator", "codex_cli_rs"),
 		option.WithHeader("User-Agent", codexUserAgent()),
 	}
 	if accountID != "" {
 		opts = append(opts, option.WithHeader("Chatgpt-Account-Id", accountID))
+	}
+	// CODEX_TLS_INSECURE=true disables TLS verification — useful with mitmproxy.
+	if os.Getenv("CODEX_TLS_INSECURE") == "true" {
+		opts = append(opts, option.WithHTTPClient(&http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, //nolint:gosec
+				Proxy:           http.ProxyFromEnvironment,
+			},
+		}))
 	}
 	client := openai.NewClient(opts...)
 	return &CodexProvider{
