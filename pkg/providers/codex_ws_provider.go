@@ -101,7 +101,7 @@ type wsToolDef struct {
 	Type        string         `json:"type"`
 	Name        string         `json:"name,omitempty"`
 	Description string         `json:"description,omitempty"`
-	Strict      bool           `json:"strict"`
+	Strict      *bool          `json:"strict,omitempty"`
 	Parameters  map[string]any `json:"parameters,omitempty"`
 }
 
@@ -606,7 +606,6 @@ func translateToolsForWS(tools []ToolDefinition, enableWebSearch bool) []wsToolD
 			Type:        "function",
 			Name:        t.Function.Name,
 			Description: t.Function.Description,
-			Strict:      false,
 			Parameters:  paramsMap,
 		}
 		result = append(result, td)
