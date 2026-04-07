@@ -652,9 +652,28 @@ func (p *CodexWSProvider) chatStream(
 
 	respID, usage, streamErr := p.drainStream(sess, onText, onItem)
 	if streamErr != nil {
+		// Connection dropped mid-stream (e.g. keepalive ping timeout, network reset).
+		// Reconnect once and replay the full message history.
 		p.closeSession(sess)
-		p.deleteSession(sessionKey)
-		return wsUsage{}, fmt.Errorf("codex ws stream: %w", streamErr)
+		logger.WarnCF("provider.codex_ws", "Stream read failed, reconnecting and retrying",
+			map[string]any{"error": streamErr.Error(), "session_key": sessionKey})
+		if err := p.connectSession(sess, instructions, wsTools, resolvedModel, options); err != nil {
+			p.deleteSession(sessionKey)
+			return wsUsage{}, fmt.Errorf("codex ws stream: %w", streamErr)
+		}
+		sess.sentMsgCount = len(convMsgs)
+		retryReq := p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(convMsgs), wsTools, resolvedModel, options)
+		if err := p.sendToSession(sess, retryReq); err != nil {
+			p.closeSession(sess)
+			p.deleteSession(sessionKey)
+			return wsUsage{}, fmt.Errorf("codex ws stream retry send: %w", err)
+		}
+		respID, usage, streamErr = p.drainStream(sess, onText, onItem)
+		if streamErr != nil {
+			p.closeSession(sess)
+			p.deleteSession(sessionKey)
+			return wsUsage{}, fmt.Errorf("codex ws stream: %w", streamErr)
+		}
 	}
 	sess.previousResponseID = respID
 	return usage, nil
