@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -158,7 +159,9 @@ type wsSessionState struct {
 	// in this WS session so we only transmit new ones each turn.
 	sentMsgCount int
 	sessionID    string
-	lastUsed     time.Time
+	// lastUsed is stored as Unix nanoseconds for atomic access — the cleanup
+	// goroutine reads it under p.mu (not sess.mu), so plain time.Time would race.
+	lastUsedNs atomic.Int64
 }
 
 // CodexWSProvider connects to the Codex backend via persistent WebSocket
@@ -168,7 +171,9 @@ type wsSessionState struct {
 // Concurrent sessions run in parallel — the global mu only guards the map.
 type CodexWSProvider struct {
 	tokenSource     func() (string, string, error)
-	accountID       string
+	// accountID is written by concurrent connectSession calls (each under their
+	// own sess.mu), so use atomic to avoid data races.
+	accountID       atomic.Pointer[string]
 	enableWebSearch bool
 	baseURL         string
 
@@ -185,11 +190,13 @@ func NewCodexWSProvider(token, accountID string) *CodexWSProvider {
 	_ = token // token fetched fresh via tokenSource
 	p := &CodexWSProvider{
 		tokenSource:     createCodexTokenSource(),
-		accountID:       accountID,
 		enableWebSearch: true,
 		baseURL:         baseURL,
 		sessions:        make(map[string]*wsSessionState),
 		done:            make(chan struct{}),
+	}
+	if accountID != "" {
+		p.accountID.Store(&accountID)
 	}
 	go p.cleanupIdleSessions()
 	return p
@@ -229,10 +236,11 @@ func (p *CodexWSProvider) cleanupIdleSessions() {
 			return
 		case <-ticker.C:
 		}
-		now := time.Now()
+		nowNs := time.Now().UnixNano()
 		p.mu.Lock()
 		for key, sess := range p.sessions {
-			if now.Sub(sess.lastUsed) < wsSessionIdleTimeout {
+			lastNs := sess.lastUsedNs.Load()
+			if lastNs == 0 || time.Duration(nowNs-lastNs) < wsSessionIdleTimeout {
 				continue
 			}
 			// Skip sessions currently in use.
@@ -280,14 +288,14 @@ func (p *CodexWSProvider) deleteSession(sessionKey string) {
 }
 
 // connectSession dials a new WebSocket and runs the prewarm turn for the given session.
-// Must be called with p.mu held.
+// Called with sess.mu held.
 func (p *CodexWSProvider) connectSession(sess *wsSessionState, instructions string, tools []wsToolDef, model string, options map[string]any) error {
 	tok, accID, err := p.tokenSource()
 	if err != nil {
 		return fmt.Errorf("token: %w", err)
 	}
 	if accID != "" {
-		p.accountID = accID
+		p.accountID.Store(&accID)
 	}
 
 	dialer := websocket.Dialer{
@@ -298,8 +306,8 @@ func (p *CodexWSProvider) connectSession(sess *wsSessionState, instructions stri
 	hdrs.Set("originator", "codex_cli_rs")
 	hdrs.Set("User-Agent", codexUserAgent())
 	hdrs.Set("openai-beta", codexWSBetaHeader)
-	if p.accountID != "" {
-		hdrs.Set("Chatgpt-Account-Id", p.accountID)
+	if ptr := p.accountID.Load(); ptr != nil && *ptr != "" {
+		hdrs.Set("Chatgpt-Account-Id", *ptr)
 	}
 
 	wsURL := p.baseURL
@@ -593,7 +601,7 @@ func (p *CodexWSProvider) chatStream(
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 
-	sess.lastUsed = time.Now()
+	sess.lastUsedNs.Store(time.Now().UnixNano())
 
 	// Connect if first use or the connection was closed by the cleanup routine.
 	if sess.conn == nil {
