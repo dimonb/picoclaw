@@ -236,8 +236,10 @@ func TestRefreshAccessToken(t *testing.T) {
 			return
 		}
 
-		r.ParseForm()
-		if r.FormValue("grant_type") != "refresh_token" {
+		var body struct {
+			GrantType string `json:"grant_type"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.GrantType != "refresh_token" {
 			http.Error(w, "invalid grant_type", http.StatusBadRequest)
 			return
 		}

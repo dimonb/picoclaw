@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"os"
+	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -13,6 +17,7 @@ import (
 	"github.com/openai/openai-go/v3/shared"
 
 	"github.com/sipeed/picoclaw/pkg/auth"
+	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
@@ -21,21 +26,53 @@ const (
 	codexDefaultInstructions = "You are Codex, a coding assistant."
 )
 
+// x-codex header names matching the Codex CLI protocol.
+const (
+	xCodexTurnStateHeader    = "x-codex-turn-state"
+	xCodexTurnMetadataHeader = "x-codex-turn-metadata"
+	xCodexParentThreadHeader = "x-codex-parent-thread-id"
+	xCodexWindowIDHeader     = "x-codex-window-id"
+)
+
 type CodexProvider struct {
 	client          *openai.Client
 	accountID       string
 	tokenSource     func() (string, string, error)
 	enableWebSearch bool
+	mu              sync.Mutex
+	turnState       string // last x-codex-turn-state received from server
 }
 
 const defaultCodexInstructions = "You are Codex, a coding assistant."
+
+// codexUserAgent returns a User-Agent string matching the Codex CLI format:
+// codex_cli_rs/<version> (OS; arch) terminal
+func codexUserAgent() string {
+	osName := runtime.GOOS
+	switch osName {
+	case "darwin":
+		osName = "macOS"
+	case "linux":
+		osName = "Linux"
+	case "windows":
+		osName = "Windows"
+	}
+	terminal := os.Getenv("TERM_PROGRAM")
+	if terminal == "" {
+		terminal = os.Getenv("TERM")
+	}
+	if terminal == "" {
+		terminal = "unknown"
+	}
+	return fmt.Sprintf("codex_cli_rs/%s (%s; %s) %s", config.Version, osName, runtime.GOARCH, terminal)
+}
 
 func NewCodexProvider(token, accountID string) *CodexProvider {
 	opts := []option.RequestOption{
 		option.WithBaseURL("https://chatgpt.com/backend-api/codex"),
 		option.WithAPIKey(token),
 		option.WithHeader("originator", "codex_cli_rs"),
-		option.WithHeader("OpenAI-Beta", "responses=experimental"),
+		option.WithHeader("User-Agent", codexUserAgent()),
 	}
 	if accountID != "" {
 		opts = append(opts, option.WithHeader("Chatgpt-Account-Id", accountID))
@@ -96,13 +133,34 @@ func (p *CodexProvider) Chat(
 		)
 	}
 
+	// Attach x-codex-turn-state from previous response if available.
+	p.mu.Lock()
+	if p.turnState != "" {
+		opts = append(opts, option.WithHeader(xCodexTurnStateHeader, p.turnState))
+	}
+	p.mu.Unlock()
+
+	// Capture raw HTTP response to read x-codex-turn-state for next request.
+	var rawResp *http.Response
+	opts = append(opts, option.WithResponseInto(&rawResp))
+
 	// Respect tools.web.prefer_native: only inject native search when the agent
 	// loop requested it (options["native_search"]), so prefer_native: false
 	useNativeSearch := p.enableWebSearch && (options["native_search"] == true)
 	params := buildCodexParams(messages, tools, resolvedModel, options, useNativeSearch)
 
 	stream := p.client.Responses.NewStreaming(ctx, params, opts...)
-	defer stream.Close()
+	defer func() {
+		stream.Close()
+		// Persist x-codex-turn-state from the HTTP response headers for the next request.
+		if rawResp != nil {
+			if ts := rawResp.Header.Get(xCodexTurnStateHeader); ts != "" {
+				p.mu.Lock()
+				p.turnState = ts
+				p.mu.Unlock()
+			}
+		}
+	}()
 
 	var resp *responses.Response
 	for stream.Next() {

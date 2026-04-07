@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -34,7 +33,7 @@ func OpenAIOAuthConfig() OAuthProviderConfig {
 	return OAuthProviderConfig{
 		Issuer:     "https://auth.openai.com",
 		ClientID:   "app_EMoamEEZ73f0CkXaXp7hrann",
-		Scopes:     "openid profile email offline_access",
+		Scopes:     "openid profile email offline_access api.connectors.read api.connectors.invoke",
 		Originator: "codex_cli_rs",
 		Port:       1455,
 	}
@@ -72,7 +71,7 @@ func GenerateState() (string, error) {
 	if _, err := rand.Read(buf); err != nil {
 		return "", err
 	}
-	return hex.EncodeToString(buf), nil
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
 func LoginBrowser(cfg OAuthProviderConfig) (*AuthCredential, error) {
@@ -389,22 +388,35 @@ func RefreshAccessToken(cred *AuthCredential, cfg OAuthProviderConfig) (*AuthCre
 		return nil, fmt.Errorf("no refresh token available")
 	}
 
-	data := url.Values{
-		"client_id":     {cfg.ClientID},
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {cred.RefreshToken},
-		"scope":         {"openid profile email"},
-	}
-	if cfg.ClientSecret != "" {
-		data.Set("client_secret", cfg.ClientSecret)
-	}
-
 	tokenURL := cfg.Issuer + "/oauth/token"
 	if cfg.TokenURL != "" {
 		tokenURL = cfg.TokenURL
 	}
 
-	resp, err := http.PostForm(tokenURL, data)
+	isGoogle := cfg.ClientSecret != "" || strings.Contains(tokenURL, "googleapis.com")
+
+	var resp *http.Response
+	var err error
+
+	if isGoogle {
+		// Google OAuth uses form-urlencoded with client_secret
+		data := url.Values{
+			"client_id":     {cfg.ClientID},
+			"client_secret": {cfg.ClientSecret},
+			"grant_type":    {"refresh_token"},
+			"refresh_token": {cred.RefreshToken},
+		}
+		resp, err = http.PostForm(tokenURL, data)
+	} else {
+		// OpenAI uses JSON body without scope (matches Codex CLI behavior)
+		reqBody, _ := json.Marshal(map[string]string{
+			"client_id":     cfg.ClientID,
+			"grant_type":    "refresh_token",
+			"refresh_token": cred.RefreshToken,
+		})
+		resp, err = http.Post(tokenURL, "application/json", strings.NewReader(string(reqBody)))
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("refreshing token: %w", err)
 	}
@@ -461,9 +473,6 @@ func buildAuthorizeURL(cfg OAuthProviderConfig, pkce PKCECodes, state, redirectU
 		// OpenAI-specific parameters
 		params.Set("id_token_add_organizations", "true")
 		params.Set("codex_cli_simplified_flow", "true")
-		if strings.Contains(strings.ToLower(cfg.Issuer), "auth.openai.com") {
-			params.Set("originator", "picoclaw")
-		}
 		if cfg.Originator != "" {
 			params.Set("originator", cfg.Originator)
 		}
