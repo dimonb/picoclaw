@@ -146,21 +146,28 @@ type wsUsage struct {
 
 // ---------- provider ----------
 
+// wsSessionState holds per-conversation WebSocket state.
+type wsSessionState struct {
+	conn               *websocket.Conn
+	previousResponseID string
+	// sentMsgCount tracks how many non-system messages we've already sent
+	// in this WS session so we only transmit new ones each turn.
+	sentMsgCount int
+	sessionID    string
+}
+
 // CodexWSProvider connects to the Codex backend via persistent WebSocket
 // using the same protocol as the official Codex CLI.
+// Each logical conversation (identified by session_key in options) gets its
+// own WebSocket connection to avoid cross-session state contamination.
 type CodexWSProvider struct {
 	tokenSource     func() (string, string, error)
 	accountID       string
 	enableWebSearch bool
 	baseURL         string
 
-	mu                 sync.Mutex
-	conn               *websocket.Conn
-	previousResponseID string
-	// sentMsgCount tracks how many non-system messages we've already sent
-	// in this session so we only transmit new ones each turn.
-	sentMsgCount int
-	sessionID    string
+	mu       sync.Mutex
+	sessions map[string]*wsSessionState
 }
 
 func NewCodexWSProvider(token, accountID string) *CodexWSProvider {
@@ -174,7 +181,7 @@ func NewCodexWSProvider(token, accountID string) *CodexWSProvider {
 		accountID:       accountID,
 		enableWebSearch: true,
 		baseURL:         baseURL,
-		sessionID:       uuid.New().String(),
+		sessions:        make(map[string]*wsSessionState),
 	}
 }
 
@@ -184,25 +191,43 @@ func (p *CodexWSProvider) SupportsNativeSearch() bool {
 	return p.enableWebSearch
 }
 
-// Close tears down the WebSocket connection.
+// Close tears down all WebSocket connections.
 func (p *CodexWSProvider) Close() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.closeConn()
-}
-
-func (p *CodexWSProvider) closeConn() {
-	if p.conn != nil {
-		_ = p.conn.WriteMessage(websocket.CloseMessage,
-			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
-		_ = p.conn.Close()
-		p.conn = nil
+	for key, sess := range p.sessions {
+		p.closeSession(sess)
+		delete(p.sessions, key)
 	}
 }
 
-// connect dials the WebSocket and runs the prewarm turn.
+func (p *CodexWSProvider) closeSession(sess *wsSessionState) {
+	if sess != nil && sess.conn != nil {
+		_ = sess.conn.WriteMessage(websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
+		_ = sess.conn.Close()
+		sess.conn = nil
+	}
+}
+
+// getOrCreateSession returns the session state for the given key,
+// creating and connecting a new one if it doesn't exist.
 // Must be called with p.mu held.
-func (p *CodexWSProvider) connect(instructions string, tools []wsToolDef, model string, options map[string]any) error {
+func (p *CodexWSProvider) getOrCreateSession(sessionKey, instructions string, tools []wsToolDef, model string, options map[string]any) (*wsSessionState, error) {
+	if sess, ok := p.sessions[sessionKey]; ok && sess.conn != nil {
+		return sess, nil
+	}
+	sess := &wsSessionState{sessionID: uuid.New().String()}
+	if err := p.connectSession(sess, instructions, tools, model, options); err != nil {
+		return nil, err
+	}
+	p.sessions[sessionKey] = sess
+	return sess, nil
+}
+
+// connectSession dials a new WebSocket and runs the prewarm turn for the given session.
+// Must be called with p.mu held.
+func (p *CodexWSProvider) connectSession(sess *wsSessionState, instructions string, tools []wsToolDef, model string, options map[string]any) error {
 	tok, accID, err := p.tokenSource()
 	if err != nil {
 		return fmt.Errorf("token: %w", err)
@@ -236,9 +261,9 @@ func (p *CodexWSProvider) connect(instructions string, tools []wsToolDef, model 
 		}
 		return fmt.Errorf("ws dial: %w", err)
 	}
-	p.conn = conn
-	p.previousResponseID = ""
-	p.sentMsgCount = 0
+	sess.conn = conn
+	sess.previousResponseID = ""
+	sess.sentMsgCount = 0
 
 	logger.DebugCF("provider.codex_ws", "WebSocket connected, sending prewarm", map[string]any{"url": wsURL})
 	// Prewarm: send generate=false to let the server load context.
@@ -262,32 +287,33 @@ func (p *CodexWSProvider) connect(instructions string, tools []wsToolDef, model 
 		Generate:          &boolFalse,
 	}
 
-	if err := p.sendRequest(req); err != nil {
-		p.closeConn()
+	if err := p.sendToSession(sess, req); err != nil {
+		p.closeSession(sess)
 		return fmt.Errorf("prewarm send: %w", err)
 	}
-	respID, _, err := p.drainStream(nil, nil)
+	respID, _, err := p.drainStream(sess, nil, nil)
 	if err != nil {
-		p.closeConn()
+		p.closeSession(sess)
 		return fmt.Errorf("prewarm drain: %w", err)
 	}
-	p.previousResponseID = respID
+	sess.previousResponseID = respID
 	logger.DebugCF("provider.codex_ws", "Prewarm done", map[string]any{"response_id": respID})
 	return nil
 }
 
-func (p *CodexWSProvider) sendRequest(req wsRequest) error {
+func (p *CodexWSProvider) sendToSession(sess *wsSessionState, req wsRequest) error {
 	data, err := json.Marshal(req)
 	if err != nil {
 		return err
 	}
-	return p.conn.WriteMessage(websocket.TextMessage, data)
+	return sess.conn.WriteMessage(websocket.TextMessage, data)
 }
 
 // drainStream reads events until response.completed / response.failed.
 // onText is called with accumulated text on each delta; onItem is called
 // for each completed output item.
 func (p *CodexWSProvider) drainStream(
+	sess *wsSessionState,
 	onText func(string),
 	onItem func(wsOutputItem),
 ) (responseID string, usage wsUsage, err error) {
@@ -296,11 +322,11 @@ func (p *CodexWSProvider) drainStream(
 	itemsByID := map[string]wsOutputItem{}
 
 	// 120s read deadline so we never hang indefinitely.
-	_ = p.conn.SetReadDeadline(time.Now().Add(120 * time.Second))
-	defer p.conn.SetReadDeadline(time.Time{})
+	_ = sess.conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+	defer sess.conn.SetReadDeadline(time.Time{})
 
 	for {
-		_, msg, readErr := p.conn.ReadMessage()
+		_, msg, readErr := sess.conn.ReadMessage()
 		if readErr != nil {
 			err = fmt.Errorf("ws read: %w", readErr)
 			return
@@ -387,6 +413,7 @@ func (p *CodexWSProvider) drainStream(
 // buildRequest constructs the wsRequest. input must already be the slice of
 // only NEW items for this turn (empty for prewarm).
 func (p *CodexWSProvider) buildRequest(
+	sess *wsSessionState,
 	instructions, prevRespID string,
 	input []wsInputItem,
 	tools []wsToolDef,
@@ -410,12 +437,12 @@ func (p *CodexWSProvider) buildRequest(
 		ParallelToolCalls:  true,
 		Store:              false,
 		Stream:             true,
-		PromptCacheKey:     p.sessionID,
+		PromptCacheKey:     sess.sessionID,
 		Text:               &wsText{Verbosity: "low"},
 		ClientMetadata: map[string]any{
 			"x-codex-turn-metadata": fmt.Sprintf(
 				`{"session_id":%q,"turn_id":%q,"sandbox":"none"}`,
-				p.sessionID, uuid.New().String(),
+				sess.sessionID, uuid.New().String(),
 			),
 		},
 	}
@@ -498,46 +525,66 @@ func (p *CodexWSProvider) chatStream(
 		instructions = defaultCodexInstructions
 	}
 
+	// Each logical session gets its own WS connection.
+	sessionKey, _ := options["session_key"].(string)
+	if sessionKey == "" {
+		sessionKey = "default"
+	}
+
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	// (Re)connect if needed.
-	if p.conn == nil {
-		if err := p.connect(instructions, wsTools, resolvedModel, options); err != nil {
-			return wsUsage{}, fmt.Errorf("codex ws connect: %w", err)
+	sess, err := p.getOrCreateSession(sessionKey, instructions, wsTools, resolvedModel, options)
+	if err != nil {
+		return wsUsage{}, fmt.Errorf("codex ws connect: %w", err)
+	}
+
+	// If history was compacted (summarized), the message array shrinks below
+	// sentMsgCount. We must reconnect and replay the full (compressed) history.
+	if len(convMsgs) < sess.sentMsgCount {
+		logger.DebugCF("provider.codex_ws", "History compacted, reconnecting session",
+			map[string]any{"session_key": sessionKey, "old_sent": sess.sentMsgCount, "new_len": len(convMsgs)})
+		p.closeSession(sess)
+		delete(p.sessions, sessionKey)
+		sess, err = p.getOrCreateSession(sessionKey, instructions, wsTools, resolvedModel, options)
+		if err != nil {
+			return wsUsage{}, fmt.Errorf("codex ws reconnect after compaction: %w", err)
 		}
 	}
 
 	// Build the input slice with only NEW messages since the last turn.
-	newMsgs := convMsgs[p.sentMsgCount:]
+	newMsgs := convMsgs[sess.sentMsgCount:]
 	input := buildWSInput(newMsgs)
-	p.sentMsgCount = len(convMsgs)
+	sess.sentMsgCount = len(convMsgs)
 
-	req := p.buildRequest(instructions, p.previousResponseID, input, wsTools, resolvedModel, options)
+	req := p.buildRequest(sess, instructions, sess.previousResponseID, input, wsTools, resolvedModel, options)
 
-	if err := p.sendRequest(req); err != nil {
+	if err := p.sendToSession(sess, req); err != nil {
 		// Connection broken — reset and retry once.
-		p.closeConn()
-		logger.WarnCF("provider.codex_ws", "Send failed, reconnecting", map[string]any{"error": err.Error()})
-		if err2 := p.connect(instructions, wsTools, resolvedModel, options); err2 != nil {
-			return wsUsage{}, fmt.Errorf("codex ws reconnect: %w", err2)
+		p.closeSession(sess)
+		delete(p.sessions, sessionKey)
+		logger.WarnCF("provider.codex_ws", "Send failed, reconnecting", map[string]any{"error": err.Error(), "session_key": sessionKey})
+		sess, err = p.getOrCreateSession(sessionKey, instructions, wsTools, resolvedModel, options)
+		if err != nil {
+			return wsUsage{}, fmt.Errorf("codex ws reconnect: %w", err)
 		}
 		// After reconnect sentMsgCount was reset to 0, rebuild full input.
-		newMsgs = convMsgs
-		p.sentMsgCount = len(convMsgs)
-		req = p.buildRequest(instructions, p.previousResponseID, buildWSInput(newMsgs), wsTools, resolvedModel, options)
-		if err3 := p.sendRequest(req); err3 != nil {
-			p.closeConn()
+		sess.sentMsgCount = len(convMsgs)
+		req = p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(convMsgs), wsTools, resolvedModel, options)
+		if err3 := p.sendToSession(sess, req); err3 != nil {
+			p.closeSession(sess)
+			delete(p.sessions, sessionKey)
 			return wsUsage{}, fmt.Errorf("codex ws send after reconnect: %w", err3)
 		}
 	}
 
-	respID, usage, err := p.drainStream(onText, onItem)
-	if err != nil {
-		p.closeConn()
-		return wsUsage{}, fmt.Errorf("codex ws stream: %w", err)
+	respID, usage, streamErr := p.drainStream(sess, onText, onItem)
+	if streamErr != nil {
+		p.closeSession(sess)
+		delete(p.sessions, sessionKey)
+		return wsUsage{}, fmt.Errorf("codex ws stream: %w", streamErr)
 	}
-	p.previousResponseID = respID
+	sess.previousResponseID = respID
 	return usage, nil
 }
 
