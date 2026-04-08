@@ -340,7 +340,7 @@ func TestAgentLoop_Continue_WithMessages(t *testing.T) {
 	}
 }
 
-func TestDrainBusToSteering_RequeuesDifferentScopeMessage(t *testing.T) {
+func TestDrainBusToSteering_RedispatchesDifferentScopeMessage(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -422,13 +422,20 @@ func TestDrainBusToSteering_RequeuesDifferentScopeMessage(t *testing.T) {
 
 	select {
 	case <-ctx.Done():
-		t.Fatalf("timeout waiting for requeued message on outbound bus")
-	case requeued := <-msgBus.OutboundChan():
-		if requeued.Channel != otherMsg.Channel || requeued.ChatID != otherMsg.ChatID ||
-			requeued.Content != otherMsg.Content {
-			t.Fatalf("requeued message mismatch: got %+v want %+v", requeued, otherMsg)
+		t.Fatalf("timeout waiting for redispatched message to complete")
+	case out := <-msgBus.OutboundChan():
+		if out.Channel != otherMsg.Channel || out.ChatID != otherMsg.ChatID {
+			t.Fatalf("redispatched message routed incorrectly: got %+v want channel=%q chat=%q", out, otherMsg.Channel, otherMsg.ChatID)
+		}
+		if out.Content != "Mock response" {
+			t.Fatalf("expected redispatched message to be processed by LLM, got %q", out.Content)
+		}
+		if out.Content == otherMsg.Content {
+			t.Fatalf("expected no echo response for different scope message, got %q", out.Content)
 		}
 	}
+
+	al.dispatcher.Wait()
 }
 
 func TestDrainBusToSteering_PreservesSenderAndThreadingMetadata(t *testing.T) {

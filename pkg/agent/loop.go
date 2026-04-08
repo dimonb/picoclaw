@@ -565,9 +565,10 @@ func (al *AgentLoop) processDispatchedInbound(ctx context.Context, msg bus.Inbou
 }
 
 // drainBusToSteering consumes inbound messages and redirects messages from the
-// active scope into the steering queue. Messages from other scopes are requeued
-// so they can be processed normally after the active turn. It drains all
-// immediately available messages, blocking for the first one until ctx is done.
+// active scope into the steering queue. Messages from other scopes are handed
+// back to the session dispatcher so they can continue independently. It drains
+// all immediately available messages, blocking for the first one until ctx is
+// done.
 func (al *AgentLoop) drainBusToSteering(ctx context.Context, activeScope, activeAgentID string) {
 	blocking := true
 	for {
@@ -600,13 +601,7 @@ func (al *AgentLoop) drainBusToSteering(ctx context.Context, activeScope, active
 
 		msgScope, _, scopeOK := al.resolveSteeringTarget(msg)
 		if !scopeOK || msgScope != activeScope {
-			if err := al.requeueInboundMessage(msg); err != nil {
-				logger.WarnCF("agent", "Failed to requeue non-steering inbound message", map[string]any{
-					"error":     err.Error(),
-					"channel":   msg.Channel,
-					"sender_id": msg.SenderID,
-				})
-			}
+			al.requeueInboundMessage(msg)
 			continue
 		}
 
@@ -1527,17 +1522,11 @@ func (al *AgentLoop) resolveSteeringTarget(msg bus.InboundMessage) (string, stri
 	return resolveScopeKey(route, msg.SessionKey), agent.ID, true
 }
 
-func (al *AgentLoop) requeueInboundMessage(msg bus.InboundMessage) error {
-	if al.bus == nil {
-		return nil
+func (al *AgentLoop) requeueInboundMessage(msg bus.InboundMessage) {
+	if al.dispatcher == nil {
+		return
 	}
-	pubCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	return al.bus.PublishOutbound(pubCtx, bus.OutboundMessage{
-		Channel: msg.Channel,
-		ChatID:  msg.ChatID,
-		Content: msg.Content,
-	})
+	al.dispatcher.Dispatch(context.Background(), msg)
 }
 
 func (al *AgentLoop) processSystemMessage(
