@@ -5,6 +5,10 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // FallbackChain orchestrates model fallback across multiple candidates.
@@ -103,6 +107,10 @@ func (fc *FallbackChain) Execute(
 	candidates []FallbackCandidate,
 	run func(ctx context.Context, provider, model string) (*LLMResponse, error),
 ) (*FallbackResult, error) {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "LLMFallbackChain")
+	defer span.End()
+
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("fallback: no candidates configured")
 	}
@@ -138,11 +146,25 @@ func (fc *FallbackChain) Execute(
 
 		// Execute the run function.
 		start := time.Now()
+		ctx, subSpan := tr.Start(ctx, "LLMAttempt",
+			trace.WithAttributes(
+				attribute.String("provider", candidate.Provider),
+				attribute.String("model", candidate.Model),
+			),
+		)
 		resp, err := run(ctx, candidate.Provider, candidate.Model)
 		elapsed := time.Since(start)
 
 		if err == nil {
 			// Success.
+			if resp != nil && resp.Usage != nil {
+				subSpan.SetAttributes(
+					attribute.Int("prompt_tokens", resp.Usage.PromptTokens),
+					attribute.Int("completion_tokens", resp.Usage.CompletionTokens),
+				)
+			}
+			subSpan.End()
+
 			fc.cooldown.MarkSuccess(cooldownKey)
 			result.Response = resp
 			result.Provider = candidate.Provider
@@ -152,6 +174,9 @@ func (fc *FallbackChain) Execute(
 
 		// Context cancellation: abort immediately, no fallback.
 		if ctx.Err() == context.Canceled {
+			subSpan.RecordError(err)
+			subSpan.End()
+
 			result.Attempts = append(result.Attempts, FallbackAttempt{
 				Provider: candidate.Provider,
 				Model:    candidate.Model,
@@ -166,6 +191,9 @@ func (fc *FallbackChain) Execute(
 
 		if failErr == nil {
 			// Unclassifiable error: do not fallback, return immediately.
+			subSpan.RecordError(err)
+			subSpan.End()
+
 			result.Attempts = append(result.Attempts, FallbackAttempt{
 				Provider: candidate.Provider,
 				Model:    candidate.Model,
@@ -178,6 +206,9 @@ func (fc *FallbackChain) Execute(
 
 		// Non-retriable error: abort immediately.
 		if !failErr.IsRetriable() {
+			subSpan.RecordError(failErr)
+			subSpan.End()
+
 			result.Attempts = append(result.Attempts, FallbackAttempt{
 				Provider: candidate.Provider,
 				Model:    candidate.Model,
@@ -190,6 +221,9 @@ func (fc *FallbackChain) Execute(
 
 		// Retriable error: mark failure and continue to next candidate.
 		fc.cooldown.MarkFailure(cooldownKey, failErr.Reason)
+		subSpan.RecordError(failErr)
+		subSpan.End()
+
 		result.Attempts = append(result.Attempts, FallbackAttempt{
 			Provider: candidate.Provider,
 			Model:    candidate.Model,
@@ -216,6 +250,10 @@ func (fc *FallbackChain) ExecuteImage(
 	candidates []FallbackCandidate,
 	run func(ctx context.Context, provider, model string) (*LLMResponse, error),
 ) (*FallbackResult, error) {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "LLMFallbackChain")
+	defer span.End()
+
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("image fallback: no candidates configured")
 	}
@@ -230,10 +268,24 @@ func (fc *FallbackChain) ExecuteImage(
 		}
 
 		start := time.Now()
+		ctx, subSpan := tr.Start(ctx, "LLMAttempt",
+			trace.WithAttributes(
+				attribute.String("provider", candidate.Provider),
+				attribute.String("model", candidate.Model),
+			),
+		)
 		resp, err := run(ctx, candidate.Provider, candidate.Model)
 		elapsed := time.Since(start)
 
 		if err == nil {
+			if resp != nil && resp.Usage != nil {
+				subSpan.SetAttributes(
+					attribute.Int("prompt_tokens", resp.Usage.PromptTokens),
+					attribute.Int("completion_tokens", resp.Usage.CompletionTokens),
+				)
+			}
+			subSpan.End()
+
 			result.Response = resp
 			result.Provider = candidate.Provider
 			result.Model = candidate.Model
@@ -241,6 +293,9 @@ func (fc *FallbackChain) ExecuteImage(
 		}
 
 		if ctx.Err() == context.Canceled {
+			subSpan.RecordError(err)
+			subSpan.End()
+
 			result.Attempts = append(result.Attempts, FallbackAttempt{
 				Provider: candidate.Provider,
 				Model:    candidate.Model,
@@ -253,6 +308,9 @@ func (fc *FallbackChain) ExecuteImage(
 		// Image dimension/size errors are non-retriable.
 		errMsg := strings.ToLower(err.Error())
 		if IsImageDimensionError(errMsg) || IsImageSizeError(errMsg) {
+			subSpan.RecordError(err)
+			subSpan.End()
+
 			result.Attempts = append(result.Attempts, FallbackAttempt{
 				Provider: candidate.Provider,
 				Model:    candidate.Model,
@@ -269,6 +327,9 @@ func (fc *FallbackChain) ExecuteImage(
 		}
 
 		// Any other error: record and try next.
+		subSpan.RecordError(err)
+		subSpan.End()
+
 		result.Attempts = append(result.Attempts, FallbackAttempt{
 			Provider: candidate.Provider,
 			Model:    candidate.Model,

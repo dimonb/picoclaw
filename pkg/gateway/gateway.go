@@ -38,6 +38,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/state"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"github.com/sipeed/picoclaw/pkg/tools"
 	"github.com/sipeed/picoclaw/pkg/voice"
 )
@@ -99,6 +100,13 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) error 
 	if err != nil {
 		return fmt.Errorf("error loading config: %w", err)
 	}
+
+	// Initialize telemetry
+	telemetryShutdown, err := telemetry.Init(context.Background(), cfg.Telemetry)
+	if err != nil {
+		logger.ErrorCF("gateway", "Failed to initialize telemetry", map[string]any{"error": err.Error()})
+	}
+	defer telemetryShutdown()
 
 	logger.SetLevelFromString(cfg.Gateway.LogLevel)
 

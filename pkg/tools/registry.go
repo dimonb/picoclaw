@@ -11,6 +11,10 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
+	"github.com/sipeed/picoclaw/pkg/utils"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type ToolEntry struct {
@@ -241,8 +245,28 @@ func (r *ToolRegistry) ExecuteWithContext(
 	args map[string]any,
 	channel, chatID string,
 	asyncCallback AsyncCallback,
-) *ToolResult {
-	logger.InfoCF("tool", "Tool execution started",
+) (result *ToolResult) {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "ToolExecute",
+		trace.WithAttributes(
+			attribute.String("tool", name),
+			attribute.String("args", utils.Truncate(fmt.Sprintf("%v", args), 1024)),
+		),
+	)
+	defer func() {
+		if result != nil {
+			span.SetAttributes(
+				attribute.String("output", utils.Truncate(result.ForLLM, 1024)),
+				attribute.Bool("is_error", result.IsError),
+			)
+			if result.Err != nil {
+				span.RecordError(result.Err)
+			}
+		}
+		span.End()
+	}()
+
+	logger.InfoCFCtx(ctx, "tool", "Tool execution started",
 		map[string]any{
 			"tool": name,
 			"args": args,
@@ -270,7 +294,6 @@ func (r *ToolRegistry) ExecuteWithContext(
 	}
 	// If tool implements AsyncExecutor and callback is provided, use ExecuteAsync.
 	// The callback is a call parameter, not mutable state on the tool instance.
-	var result *ToolResult
 	start := time.Now()
 
 	// Use recover to catch any panics during tool execution

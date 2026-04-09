@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
@@ -61,6 +62,12 @@ func NewHTTPClient(proxy string) *http.Client {
 			log.Printf("common: invalid proxy URL %q: %v", proxy, err)
 		}
 	}
+
+	if client.Transport == nil {
+		client.Transport = http.DefaultTransport
+	}
+	client.Transport = otelhttp.NewTransport(client.Transport)
+
 	return client
 }
 

@@ -110,6 +110,7 @@ type Config struct {
 	Heartbeat HeartbeatConfig `json:"heartbeat"`
 	Devices   DevicesConfig   `json:"devices"`
 	Voice     VoiceConfig     `json:"voice"`
+	Telemetry TelemetryConfig `json:"telemetry,omitempty"`
 	// BuildInfo contains build-time version information
 	BuildInfo BuildInfo `json:"build_info,omitempty"`
 
@@ -2206,4 +2207,12 @@ func (t *ToolsConfig) IsToolEnabled(name string) bool {
 	default:
 		return true
 	}
+}
+
+type TelemetryConfig struct {
+	Enabled     bool              `json:"enabled"`
+	Endpoint    string            `json:"endpoint"`
+	Protocol    string            `json:"protocol"` // "http" or "grpc"
+	Headers     map[string]string `json:"headers"`
+	ServiceName string            `json:"service_name"`
 }

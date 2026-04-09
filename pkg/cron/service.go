@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,9 @@ import (
 	"github.com/adhocore/gronx"
 
 	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type CronSchedule struct {
@@ -269,7 +273,20 @@ func (cs *CronService) executeJobByID(jobID string) {
 
 	var err error
 	if cs.onJob != nil {
+		tr := telemetry.GetTracer()
+		ctx, span := tr.Start(context.Background(), "CronJobExecute",
+			trace.WithAttributes(
+				attribute.String("job_id", jobID),
+				attribute.String("job_name", callbackJob.Name),
+			),
+		)
+		defer span.End()
+		defer telemetry.WithPanicRecovery(ctx)
+
 		_, err = cs.onJob(callbackJob)
+		if err != nil {
+			span.RecordError(err)
+		}
 	}
 
 	execDuration := time.Now().UnixMilli() - startTime

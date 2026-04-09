@@ -7,6 +7,11 @@ import (
 	"sync/atomic"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ErrBusClosed is returned when publishing to a closed MessageBus.
@@ -80,6 +85,7 @@ func publish[T any](ctx context.Context, mb *MessageBus, ch chan T, msg T) error
 }
 
 func (mb *MessageBus) PublishInbound(ctx context.Context, msg InboundMessage) error {
+	msg.TraceCarrier = injectTrace(ctx)
 	return publish(ctx, mb, mb.inbound, msg)
 }
 
@@ -88,6 +94,17 @@ func (mb *MessageBus) InboundChan() <-chan InboundMessage {
 }
 
 func (mb *MessageBus) PublishOutbound(ctx context.Context, msg OutboundMessage) error {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "ChannelSend",
+		trace.WithAttributes(
+			attribute.String("channel", msg.Channel),
+			attribute.String("chat_id", msg.ChatID),
+			attribute.String("msg.content", msg.Content),
+		),
+	)
+	defer span.End()
+
+	msg.TraceCarrier = injectTrace(ctx)
 	return publish(ctx, mb, mb.outbound, msg)
 }
 
@@ -106,7 +123,35 @@ func (mb *MessageBus) SubscribeOutbound(ctx context.Context) (OutboundMessage, b
 }
 
 func (mb *MessageBus) PublishOutboundMedia(ctx context.Context, msg OutboundMediaMessage) error {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "ChannelSendMedia",
+		trace.WithAttributes(
+			attribute.String("channel", msg.Channel),
+			attribute.String("chat_id", msg.ChatID),
+			attribute.Int("media_count", len(msg.Parts)),
+		),
+	)
+	defer span.End()
+
+	msg.TraceCarrier = injectTrace(ctx)
 	return publish(ctx, mb, mb.outboundMedia, msg)
+}
+
+// ExtractTrace returns a new context with trace information from the message.
+func (mb *MessageBus) ExtractTrace(ctx context.Context, carrier map[string]string) context.Context {
+	if carrier == nil {
+		return ctx
+	}
+	return otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(carrier))
+}
+
+func injectTrace(ctx context.Context) map[string]string {
+	carrier := make(propagation.MapCarrier)
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	if len(carrier) == 0 {
+		return nil
+	}
+	return map[string]string(carrier)
 }
 
 func (mb *MessageBus) OutboundMediaChan() <-chan OutboundMediaMessage {

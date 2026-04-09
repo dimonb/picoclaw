@@ -15,6 +15,9 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type (
@@ -126,6 +129,12 @@ func (p *Provider) Chat(
 	model string,
 	options map[string]any,
 ) (*LLMResponse, error) {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "OpenAIRequest",
+		trace.WithAttributes(attribute.String("model", model)),
+	)
+	defer span.End()
+
 	if p.apiBase == "" {
 		return nil, fmt.Errorf("API base not configured")
 	}
@@ -210,7 +219,26 @@ func (p *Provider) chatCompletions(
 	tools []ToolDefinition,
 	model string,
 	options map[string]any,
-) (*LLMResponse, error) {
+) (resp *LLMResponse, err error) {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "chat/completions",
+		trace.WithAttributes(attribute.String("model", model)),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+		} else if resp != nil {
+			if resp.Usage != nil {
+				span.SetAttributes(
+					attribute.Int("prompt_tokens", resp.Usage.PromptTokens),
+					attribute.Int("completion_tokens", resp.Usage.CompletionTokens),
+				)
+			}
+			span.SetAttributes(attribute.String("msg.content", truncate(resp.Content, 1024)))
+		}
+		span.End()
+	}()
+
 	requestBody := buildChatCompletionsRequestBody(messages, tools, model, options, p.maxTokensField, p.apiBase)
 	for k, v := range p.extraBody {
 		requestBody[k] = v
@@ -224,7 +252,26 @@ func (p *Provider) chatResponses(
 	tools []ToolDefinition,
 	model string,
 	options map[string]any,
-) (*LLMResponse, error) {
+) (resp *LLMResponse, err error) {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "/responses",
+		trace.WithAttributes(attribute.String("model", model)),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+		} else if resp != nil {
+			if resp.Usage != nil {
+				span.SetAttributes(
+					attribute.Int("prompt_tokens", resp.Usage.PromptTokens),
+					attribute.Int("completion_tokens", resp.Usage.CompletionTokens),
+				)
+			}
+			span.SetAttributes(attribute.String("msg.content", truncate(resp.Content, 1024)))
+		}
+		span.End()
+	}()
+
 	requestBody, err := buildResponsesRequestBody(messages, tools, model, options, p.apiBase, p.extraBody)
 	if err != nil {
 		return nil, err
@@ -1187,4 +1234,11 @@ func asFloat(v any) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+func truncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

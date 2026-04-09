@@ -29,16 +29,19 @@ type InboundMessage struct {
 	MediaScope string            `json:"media_scope,omitempty"` // media lifecycle scope
 	SessionKey string            `json:"session_key"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
+	TraceCarrier map[string]string `json:"trace_carrier,omitempty"`
 
-	ReplyToMessageID string `json:"reply_to_message_id,omitempty"` // parent platform message ID
-}
+	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
+	}
 
-type OutboundMessage struct {
+	type OutboundMessage struct {
 	Channel string `json:"channel"`
 	ChatID  string `json:"chat_id"`
 	Content string `json:"content"`
+	TraceCarrier map[string]string `json:"trace_carrier,omitempty"`
 
 	ReplyToMessageID string                `json:"reply_to_message_id,omitempty"`
+
 	OnDelivered      func(msgIDs []string) `json:"-"`
 }
 
@@ -57,4 +60,5 @@ type OutboundMediaMessage struct {
 	ChatID           string      `json:"chat_id"`
 	ReplyToMessageID string      `json:"reply_to_message_id,omitempty"`
 	Parts            []MediaPart `json:"parts"`
+	TraceCarrier     map[string]string `json:"trace_carrier,omitempty"`
 }

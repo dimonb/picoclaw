@@ -25,52 +25,62 @@ type Logger struct {
 
 // Debug logs debug messages
 func (b *Logger) Debug(v ...any) {
-	logMessage(DEBUG, b.component, maskSecrets(fmt.Sprint(v...)), nil)
+	logMessage(nil, 
+DEBUG, b.component, maskSecrets(fmt.Sprint(v...)), nil)
 }
 
 // Info logs info messages
 func (b *Logger) Info(v ...any) {
-	logMessage(INFO, b.component, maskSecrets(fmt.Sprint(v...)), nil)
+	logMessage(nil, 
+INFO, b.component, maskSecrets(fmt.Sprint(v...)), nil)
 }
 
 // Warn logs warning messages
 func (b *Logger) Warn(v ...any) {
-	logMessage(WARN, b.component, maskSecrets(fmt.Sprint(v...)), nil)
+	logMessage(nil, 
+WARN, b.component, maskSecrets(fmt.Sprint(v...)), nil)
 }
 
 // Error logs error messages
 func (b *Logger) Error(v ...any) {
-	logMessage(ERROR, b.component, maskSecrets(fmt.Sprint(v...)), nil)
+	logMessage(nil, 
+ERROR, b.component, maskSecrets(fmt.Sprint(v...)), nil)
 }
 
 // Debugf logs formatted debug messages
 func (b *Logger) Debugf(format string, v ...any) {
-	logMessage(DEBUG, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
+	logMessage(nil, 
+DEBUG, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
 }
 
 // Infof logs formatted info messages
 func (b *Logger) Infof(format string, v ...any) {
-	logMessage(INFO, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
+	logMessage(nil, 
+INFO, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
 }
 
 // Warnf logs formatted warning messages
 func (b *Logger) Warnf(format string, v ...any) {
-	logMessage(WARN, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
+	logMessage(nil, 
+WARN, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
 }
 
 // Warningf logs formatted warning messages
 func (b *Logger) Warningf(format string, v ...any) {
-	logMessage(WARN, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
+	logMessage(nil, 
+WARN, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
 }
 
 // Errorf logs formatted error messages
 func (b *Logger) Errorf(format string, v ...any) {
-	logMessage(ERROR, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
+	logMessage(nil, 
+ERROR, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
 }
 
 // Fatalf logs formatted fatal messages and exits
 func (b *Logger) Fatalf(format string, v ...any) {
-	logMessage(FATAL, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
+	logMessage(nil, 
+FATAL, b.component, maskSecrets(fmt.Sprintf(format, v...)), nil)
 }
 
 // Log logs a message at a given level with caller information
@@ -88,7 +98,8 @@ func (b *Logger) Log(msgL, caller int, format string, a ...any) {
 			level = lvl
 		}
 	}
-	logMessage(level, b.component, maskSecrets(fmt.Sprintf(format, a...)), nil)
+	logMessage(nil, 
+level, b.component, maskSecrets(fmt.Sprintf(format, a...)), nil)
 }
 
 // Sync flushes log buffer (no-op for this implementation)

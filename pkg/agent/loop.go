@@ -29,9 +29,12 @@ import (
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/skills"
 	"github.com/sipeed/picoclaw/pkg/state"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"github.com/sipeed/picoclaw/pkg/tools"
 	"github.com/sipeed/picoclaw/pkg/utils"
 	"github.com/sipeed/picoclaw/pkg/voice"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type AgentLoop struct {
@@ -469,6 +472,8 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 }
 
 func (al *AgentLoop) processDispatchedInbound(ctx context.Context, msg bus.InboundMessage) {
+	ctx = al.bus.ExtractTrace(ctx, msg.TraceCarrier)
+
 	defer func() {
 		if al.channelManager != nil {
 			al.channelManager.InvokeTypingStop(msg.Channel, msg.ChatID)
@@ -1363,7 +1368,26 @@ func (al *AgentLoop) ProcessHeartbeat(
 	return response.Content, nil
 }
 
-func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (agentResponse, error) {
+func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (resp agentResponse, err error) {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "AgentTurn",
+		trace.WithAttributes(
+			attribute.String("channel", msg.Channel),
+			attribute.String("chat_id", msg.ChatID),
+			attribute.String("session_key", msg.SessionKey),
+			attribute.String("msg.content", utils.Truncate(msg.Content, 1024)),
+		),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+		} else {
+			span.SetAttributes(attribute.String("response.content", utils.Truncate(resp.Content, 1024)))
+		}
+		span.End()
+	}()
+	defer telemetry.WithPanicRecovery(ctx)
+
 	// Hidden tool discovery must stay request-scoped so concurrent sessions do
 	// not age out each other's unlocked tools.
 	ctx = tools.WithHiddenToolState(ctx)
@@ -1376,7 +1400,8 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	} else {
 		logContent = utils.Truncate(msg.Content, 80)
 	}
-	logger.InfoCF(
+	logger.InfoCFCtx(
+		ctx,
 		"agent",
 		fmt.Sprintf("Processing message from %s:%s: %s", msg.Channel, msg.SenderID, logContent),
 		map[string]any{
@@ -1409,6 +1434,9 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	// Resolve session key from route, while preserving explicit agent-scoped keys.
 	scopeKey := resolveScopeKey(route, msg.SessionKey)
 	sessionKey := scopeKey
+
+	// Update span with the resolved session key
+	span.SetAttributes(attribute.String("session_key", sessionKey))
 
 	logger.InfoCF("agent", "Routed message",
 		map[string]any{
@@ -1657,7 +1685,7 @@ func (al *AgentLoop) runAgentLoop(
 				return
 			}
 			if opts.EnableSummary {
-				al.maybeSummarize(agent, opts.SessionKey, ts.scope)
+				al.maybeSummarize(ctx, agent, opts.SessionKey, ts.scope)
 			}
 		}
 	}
@@ -1872,6 +1900,10 @@ turnLoop:
 		iteration := ts.currentIteration() + 1
 		ts.setIteration(iteration)
 		ts.setPhase(TurnPhaseRunning)
+
+		trace.SpanFromContext(turnCtx).AddEvent("IterationStart",
+			trace.WithAttributes(attribute.Int("iteration", iteration)),
+		)
 
 		if iteration > 1 {
 			if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
@@ -2807,7 +2839,7 @@ turnLoop:
 				}
 			}
 			if ts.opts.EnableSummary {
-				al.maybeSummarize(ts.agent, ts.sessionKey, ts.scope)
+				al.maybeSummarize(ctx, ts.agent, ts.sessionKey, ts.scope)
 			}
 
 			ts.setPhase(TurnPhaseCompleted)
@@ -2944,7 +2976,16 @@ func (al *AgentLoop) selectCandidates(
 }
 
 // maybeSummarize triggers summarization if the session history exceeds thresholds.
-func (al *AgentLoop) maybeSummarize(agent *AgentInstance, sessionKey string, turnScope turnEventScope) {
+func (al *AgentLoop) maybeSummarize(ctx context.Context, agent *AgentInstance, sessionKey string, turnScope turnEventScope) {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "CompactionCheck",
+		trace.WithAttributes(
+			attribute.String("session_key", sessionKey),
+			attribute.String("agent_id", agent.ID),
+		),
+	)
+	defer span.End()
+
 	snapshot := agent.Sessions.GetContextSnapshot(sessionKey)
 	newHistory := snapshot.History
 	tokenEstimate := al.estimateTokens(newHistory)
@@ -2968,20 +3009,20 @@ func (al *AgentLoop) maybeSummarize(agent *AgentInstance, sessionKey string, tur
 			"summarize_token_percent":    agent.SummarizeTokenPercent,
 		}
 		if _, loading := al.summarizing.LoadOrStore(summarizeKey, true); !loading {
-			logger.DebugCF("agent", "Summarization scheduled", fields)
-			go func() {
+			logger.DebugCFCtx(ctx, "agent", "Summarization scheduled", fields)
+			go func(ctx context.Context) {
 				defer al.summarizing.Delete(summarizeKey)
 
 				startedAt := time.Now()
-				logger.DebugCF("agent", "Memory threshold reached. Optimizing conversation history...", fields)
-				al.summarizeSession(agent, sessionKey, turnScope)
-				logger.DebugCF("agent", "Summarization worker finished", map[string]any{
+				logger.DebugCFCtx(ctx, "agent", "Memory threshold reached. Optimizing conversation history...", fields)
+				al.summarizeSession(ctx, agent, sessionKey, turnScope)
+				logger.DebugCFCtx(ctx, "agent", "Summarization worker finished", map[string]any{
 					"session_key": sessionKey,
 					"duration_ms": time.Since(startedAt).Milliseconds(),
 				})
-			}()
+			}(ctx)
 		} else {
-			logger.DebugCF("agent", "Summarization already in progress", fields)
+			logger.DebugCFCtx(ctx, "agent", "Summarization already in progress", fields)
 		}
 	}
 }
@@ -3156,8 +3197,17 @@ func formatToolsForLog(toolDefs []providers.ToolDefinition) string {
 }
 
 // summarizeSession summarizes the conversation history for a session.
-func (al *AgentLoop) summarizeSession(agent *AgentInstance, sessionKey string, turnScope turnEventScope) {
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance, sessionKey string, turnScope turnEventScope) {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "ContextCompaction",
+		trace.WithAttributes(
+			attribute.String("session_key", sessionKey),
+			attribute.String("agent_id", agent.ID),
+		),
+	)
+	defer span.End()
+
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	snapshot := agent.Sessions.GetContextSnapshot(sessionKey)
