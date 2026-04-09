@@ -1901,9 +1901,6 @@ turnLoop:
 		ts.setIteration(iteration)
 		ts.setPhase(TurnPhaseRunning)
 
-		trace.SpanFromContext(turnCtx).AddEvent("IterationStart",
-			trace.WithAttributes(attribute.Int("iteration", iteration)),
-		)
 
 		if iteration > 1 {
 			if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
@@ -2094,8 +2091,8 @@ turnLoop:
 				"tools_json":    formatToolsForLog(providerToolDefs),
 			})
 
-		callLLM := func(messagesForCall []providers.Message, toolDefsForCall []providers.ToolDefinition) (*providers.LLMResponse, error) {
-			providerCtx, providerCancel := context.WithCancel(turnCtx)
+		callLLM := func(ctx context.Context, messagesForCall []providers.Message, toolDefsForCall []providers.ToolDefinition) (*providers.LLMResponse, error) {
+			providerCtx, providerCancel := context.WithCancel(ctx)
 			ts.setProviderCancel(providerCancel)
 			defer func() {
 				providerCancel()
@@ -2135,15 +2132,24 @@ turnLoop:
 			return ts.agent.Provider.Chat(providerCtx, messagesForCall, toolDefsForCall, llmModel, llmOpts)
 		}
 
+		llmCallCtx, llmSpan := telemetry.GetTracer().Start(turnCtx, "LLMCall",
+			trace.WithAttributes(
+				attribute.Int("iteration", iteration),
+				attribute.String("model", llmModel),
+			),
+		)
+
 		var response *providers.LLMResponse
 		var err error
 		maxRetries := 2
 		for retry := 0; retry <= maxRetries; retry++ {
-			response, err = callLLM(callMessages, providerToolDefs)
+			response, err = callLLM(llmCallCtx, callMessages, providerToolDefs)
 			if err == nil {
 				break
 			}
 			if ts.hardAbortRequested() && errors.Is(err, context.Canceled) {
+				llmSpan.RecordError(err)
+				llmSpan.End()
 				turnStatus = TurnEndStatusAborted
 				return al.abortTurn(ts)
 			}
@@ -2186,6 +2192,8 @@ turnLoop:
 				})
 				if sleepErr := sleepWithContext(turnCtx, backoff); sleepErr != nil {
 					if ts.hardAbortRequested() {
+						llmSpan.RecordError(sleepErr)
+						llmSpan.End()
 						turnStatus = TurnEndStatusAborted
 						return al.abortTurn(ts)
 					}
@@ -2252,6 +2260,11 @@ turnLoop:
 			}
 			break
 		}
+
+		if err != nil {
+			llmSpan.RecordError(err)
+		}
+		llmSpan.End()
 
 		if err != nil {
 			turnStatus = TurnEndStatusError
