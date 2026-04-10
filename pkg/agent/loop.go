@@ -1844,7 +1844,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState) (turnResult, er
 	if !ts.opts.NoHistory {
 		toolDefs := ts.agent.Tools.ToProviderDefsWithContext(ctx, ts.channel, ts.chatID)
 		if isOverContextBudget(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens) {
-			logger.WarnCF("agent", "Proactive compression: context budget exceeded before LLM call",
+			logger.WarnCFCtx(turnCtx, "agent", "Proactive compression: context budget exceeded before LLM call",
 				map[string]any{"session_key": ts.sessionKey})
 			if compression, ok := al.forceCompression(ts.agent, ts.sessionKey); ok {
 				al.emitEvent(
@@ -1917,14 +1917,14 @@ turnLoop:
 		// Check if parent turn has ended (SubTurn support from HEAD)
 		if ts.parentTurnState != nil && ts.IsParentEnded() {
 			if !ts.critical {
-				logger.InfoCF("agent", "Parent turn ended, non-critical SubTurn exiting gracefully", map[string]any{
+				logger.InfoCFCtx(turnCtx, "agent", "Parent turn ended, non-critical SubTurn exiting gracefully", map[string]any{
 					"agent_id":  ts.agentID,
 					"iteration": iteration,
 					"turn_id":   ts.turnID,
 				})
 				break
 			}
-			logger.InfoCF("agent", "Parent turn ended, critical SubTurn continues running", map[string]any{
+			logger.InfoCFCtx(turnCtx, "agent", "Parent turn ended, critical SubTurn continues running", map[string]any{
 				"agent_id":  ts.agentID,
 				"iteration": iteration,
 				"turn_id":   ts.turnID,
@@ -1958,7 +1958,7 @@ turnLoop:
 					ts.agent.Sessions.AddFullMessage(ts.sessionKey, pm)
 					ts.recordPersistedMessage(pm)
 				}
-				logger.InfoCF("agent", "Injected steering message into context",
+				logger.InfoCFCtx(turnCtx, "agent", "Injected steering message into context",
 					map[string]any{
 						"agent_id":    ts.agent.ID,
 						"iteration":   iteration,
@@ -1986,7 +1986,7 @@ turnLoop:
 			pendingMessages = nil
 		}
 
-		logger.DebugCF("agent", "LLM iteration",
+		logger.DebugCFCtx(turnCtx, "agent", "LLM iteration",
 			map[string]any{
 				"agent_id":  ts.agent.ID,
 				"iteration": iteration,
@@ -2039,7 +2039,7 @@ turnLoop:
 			if tc, ok := ts.agent.Provider.(providers.ThinkingCapable); ok && tc.SupportsThinking() {
 				llmOpts["thinking_level"] = string(ts.agent.ThinkingLevel)
 			} else {
-				logger.WarnCF("agent", "thinking_level is set but current provider does not support it, ignoring",
+				logger.WarnCFCtx(turnCtx, "agent", "thinking_level is set but current provider does not support it, ignoring",
 					map[string]any{"agent_id": ts.agent.ID, "thinking_level": string(ts.agent.ThinkingLevel)})
 			}
 		}
@@ -2086,7 +2086,7 @@ turnLoop:
 			},
 		)
 
-		logger.DebugCF("agent", "LLM request",
+		logger.DebugCFCtx(turnCtx, "agent", "LLM request",
 			map[string]any{
 				"agent_id":          ts.agent.ID,
 				"iteration":         iteration,
@@ -2097,7 +2097,7 @@ turnLoop:
 				"temperature":       ts.agent.Temperature,
 				"system_prompt_len": len(callMessages[0].Content),
 			})
-		logger.DebugCF("agent", "Full LLM request",
+		logger.DebugCFCtx(turnCtx, "agent", "Full LLM request",
 			map[string]any{
 				"iteration":     iteration,
 				"messages_json": formatMessagesForLog(callMessages),
@@ -2133,7 +2133,7 @@ turnLoop:
 					return nil, fbErr
 				}
 				if fbResult.Provider != "" && len(fbResult.Attempts) > 0 {
-					logger.InfoCF(
+					logger.InfoCFCtx(ctx, 
 						"agent",
 						fmt.Sprintf("Fallback: succeeded with %s/%s after %d attempts",
 							fbResult.Provider, fbResult.Model, len(fbResult.Attempts)+1),
@@ -2211,7 +2211,7 @@ turnLoop:
 						Backoff:    backoff,
 					},
 				)
-				logger.WarnCF("agent", "Timeout error, retrying after backoff", map[string]any{
+				logger.WarnCFCtx(turnCtx, "agent", "Timeout error, retrying after backoff", map[string]any{
 					"error":   err.Error(),
 					"retry":   retry,
 					"backoff": backoff.String(),
@@ -2241,7 +2241,7 @@ turnLoop:
 						Error:      err.Error(),
 					},
 				)
-				logger.WarnCF(
+				logger.WarnCFCtx(turnCtx, 
 					"agent",
 					"Context window error detected, attempting compression",
 					map[string]any{
@@ -2319,7 +2319,7 @@ turnLoop:
 					Message: err.Error(),
 				},
 			)
-			logger.ErrorCF("agent", "LLM call failed",
+			logger.ErrorCFCtx(turnCtx, "agent", "LLM call failed",
 				map[string]any{
 					"agent_id":  ts.agent.ID,
 					"iteration": iteration,
@@ -2381,7 +2381,7 @@ turnLoop:
 			},
 		)
 
-		logger.DebugCF("agent", "LLM response",
+		logger.DebugCFCtx(turnCtx, "agent", "LLM response",
 			map[string]any{
 				"agent_id":       ts.agent.ID,
 				"iteration":      iteration,
@@ -2398,7 +2398,7 @@ turnLoop:
 				responseContent = response.ReasoningContent
 			}
 			if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
-				logger.InfoCF("agent", "Steering arrived after direct LLM response; continuing turn",
+				logger.InfoCFCtx(turnCtx, "agent", "Steering arrived after direct LLM response; continuing turn",
 					map[string]any{
 						"agent_id":       ts.agent.ID,
 						"iteration":      iteration,
@@ -2408,7 +2408,7 @@ turnLoop:
 				continue
 			}
 			finalContent = responseContent
-			logger.InfoCF("agent", "LLM response without tool calls (direct answer)",
+			logger.InfoCFCtx(turnCtx, "agent", "LLM response without tool calls (direct answer)",
 				map[string]any{
 					"agent_id":      ts.agent.ID,
 					"iteration":     iteration,
@@ -2426,7 +2426,7 @@ turnLoop:
 		for _, tc := range normalizedToolCalls {
 			toolNames = append(toolNames, tc.Name)
 		}
-		logger.InfoCF("agent", "LLM requested tool calls",
+		logger.InfoCFCtx(turnCtx, "agent", "LLM requested tool calls",
 			map[string]any{
 				"agent_id":  ts.agent.ID,
 				"tools":     toolNames,
@@ -2557,7 +2557,7 @@ turnLoop:
 
 			argsJSON, _ := json.Marshal(toolArgs)
 			argsPreview := utils.Truncate(string(argsJSON), 200)
-			logger.InfoCF("agent", fmt.Sprintf("Tool call: %s(%s)", toolName, argsPreview),
+			logger.InfoCFCtx(turnCtx, "agent", fmt.Sprintf("Tool call: %s(%s)", toolName, argsPreview),
 				map[string]any{
 					"agent_id":  ts.agent.ID,
 					"tool":      toolName,
@@ -2615,7 +2615,7 @@ turnLoop:
 				// Filter sensitive data before publishing
 				content = al.cfg.FilterSensitiveData(content)
 
-				logger.InfoCF("agent", "Async tool completed, publishing result",
+				logger.InfoCFCtx(turnCtx, "agent", "Async tool completed, publishing result",
 					map[string]any{
 						"tool":        asyncToolName,
 						"content_len": len(content),
@@ -2719,7 +2719,7 @@ turnLoop:
 				}
 				if al.channelManager != nil && ts.channel != "" && !constants.IsInternalChannel(ts.channel) {
 					if err := al.channelManager.SendMedia(ctx, outboundMedia); err != nil {
-						logger.WarnCF("agent", "Failed to deliver handled tool media",
+						logger.WarnCFCtx(turnCtx, "agent", "Failed to deliver handled tool media",
 							map[string]any{
 								"agent_id": ts.agent.ID,
 								"tool":     toolName,
@@ -2754,7 +2754,7 @@ turnLoop:
 					ChatID:  ts.chatID,
 					Content: toolResult.ForUser,
 				})
-				logger.DebugCF("agent", "Sent tool result to user",
+				logger.DebugCFCtx(turnCtx, "agent", "Sent tool result to user",
 					map[string]any{
 						"tool":        toolName,
 						"content_len": len(toolResult.ForUser),
@@ -2808,7 +2808,7 @@ turnLoop:
 			if skipReason != "" {
 				remaining := len(normalizedToolCalls) - i - 1
 				if remaining > 0 {
-					logger.InfoCF("agent", "Turn checkpoint: skipping remaining tools",
+					logger.InfoCFCtx(turnCtx, "agent", "Turn checkpoint: skipping remaining tools",
 						map[string]any{
 							"agent_id":  ts.agent.ID,
 							"completed": i + 1,
@@ -2858,7 +2858,7 @@ turnLoop:
 
 		if allResponsesHandled {
 			if len(pendingMessages) > 0 {
-				logger.InfoCF("agent", "Pending steering exists after handled tool delivery; continuing turn before finalizing",
+				logger.InfoCFCtx(turnCtx, "agent", "Pending steering exists after handled tool delivery; continuing turn before finalizing",
 					map[string]any{
 						"agent_id":       ts.agent.ID,
 						"steering_count": len(pendingMessages),
@@ -2869,7 +2869,7 @@ turnLoop:
 			}
 
 			if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
-				logger.InfoCF("agent", "Steering arrived after handled tool delivery; continuing turn before finalizing",
+				logger.InfoCFCtx(turnCtx, "agent", "Steering arrived after handled tool delivery; continuing turn before finalizing",
 					map[string]any{
 						"agent_id":       ts.agent.ID,
 						"steering_count": len(steerMsgs),
@@ -2907,7 +2907,7 @@ turnLoop:
 
 			ts.setPhase(TurnPhaseCompleted)
 			ts.setFinalContent("")
-			logger.InfoCF("agent", "Tool output satisfied delivery; ending turn without follow-up LLM",
+			logger.InfoCFCtx(turnCtx, "agent", "Tool output satisfied delivery; ending turn without follow-up LLM",
 				map[string]any{
 					"agent_id":   ts.agent.ID,
 					"iteration":  iteration,
@@ -2927,13 +2927,13 @@ turnLoop:
 		if !tools.TickHiddenTools(ctx) {
 			ts.agent.Tools.TickTTL()
 		}
-		logger.DebugCF("agent", "TTL tick after tool execution", map[string]any{
+		logger.DebugCFCtx(turnCtx, "agent", "TTL tick after tool execution", map[string]any{
 			"agent_id": ts.agent.ID, "iteration": iteration,
 		})
 	}
 
 	if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
-		logger.InfoCF("agent", "Steering arrived after turn completion; continuing turn before finalizing",
+		logger.InfoCFCtx(turnCtx, "agent", "Steering arrived after turn completion; continuing turn before finalizing",
 			map[string]any{
 				"agent_id":       ts.agent.ID,
 				"steering_count": len(steerMsgs),
@@ -3309,7 +3309,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 
 	// Keep last N messages for continuity, extended to thread root if needed.
 	keepCount := threadAwareKeepCount(history, agent.SummarizeKeepMessages)
-	logger.DebugCF("agent", "Summarization started", map[string]any{
+	logger.DebugCFCtx(ctx, "agent", "Summarization started", map[string]any{
 		"session_key":            sessionKey,
 		"history_count":          len(history),
 		"keep_count":             keepCount,
@@ -3318,7 +3318,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 	})
 	if len(history) <= keepCount {
 		outcome = "skipped:keep_window_full"
-		logger.DebugCF("agent", "Summarization skipped: keep window covers full history", map[string]any{
+		logger.DebugCFCtx(ctx, "agent", "Summarization skipped: keep window covers full history", map[string]any{
 			"session_key":    sessionKey,
 			"history_count":  len(history),
 			"keep_count":     keepCount,
@@ -3350,7 +3350,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 		validMessages = append(validMessages, m)
 	}
 
-	logger.DebugCF("agent", "Summarization filtered history", map[string]any{
+	logger.DebugCFCtx(ctx, "agent", "Summarization filtered history", map[string]any{
 		"session_key":           sessionKey,
 		"messages_to_summarize": len(toSummarize),
 		"valid_messages":        len(validMessages),
@@ -3361,7 +3361,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 
 	if len(validMessages) == 0 {
 		outcome = "skipped:no_valid_messages"
-		logger.WarnCF("agent", "Summarization skipped: no valid user/assistant messages", map[string]any{
+		logger.WarnCFCtx(ctx, "agent", "Summarization skipped: no valid user/assistant messages", map[string]any{
 			"session_key":           sessionKey,
 			"messages_to_summarize": len(toSummarize),
 			"non_dialogue_skipped":  nonDialogueCount,
@@ -3387,7 +3387,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 		part1 := validMessages[:mid]
 		part2 := validMessages[mid:]
 
-		logger.DebugCF("agent", "Summarization using multi-part compaction", map[string]any{
+		logger.DebugCFCtx(ctx, "agent", "Summarization using multi-part compaction", map[string]any{
 			"session_key":    sessionKey,
 			"valid_messages": len(validMessages),
 			"split_index":    mid,
@@ -3397,7 +3397,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 
 		s1, err1 := al.summarizeBatch(ctx, agent, part1, "")
 		if err1 != nil {
-			logger.WarnCF("agent", "Summarization batch fallback used", map[string]any{
+			logger.WarnCFCtx(ctx, "agent", "Summarization batch fallback used", map[string]any{
 				"session_key":   sessionKey,
 				"batch":         1,
 				"batch_size":    len(part1),
@@ -3407,7 +3407,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 		}
 		s2, err2 := al.summarizeBatch(ctx, agent, part2, "")
 		if err2 != nil {
-			logger.WarnCF("agent", "Summarization batch fallback used", map[string]any{
+			logger.WarnCFCtx(ctx, "agent", "Summarization batch fallback used", map[string]any{
 				"session_key":   sessionKey,
 				"batch":         2,
 				"batch_size":    len(part2),
@@ -3428,7 +3428,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 			if err != nil {
 				errText = err.Error()
 			}
-			logger.WarnCF("agent", "Summarization merge fallback used", map[string]any{
+			logger.WarnCFCtx(ctx, "agent", "Summarization merge fallback used", map[string]any{
 				"session_key":             sessionKey,
 				"existing_summary_chars":  len(summary),
 				"partial_summary_1_chars": len(s1),
@@ -3443,7 +3443,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 		var summaryErr error
 		finalSummary, summaryErr = al.summarizeBatch(ctx, agent, validMessages, summary)
 		if summaryErr != nil {
-			logger.WarnCF("agent", "Summarization fallback used", map[string]any{
+			logger.WarnCFCtx(ctx, "agent", "Summarization fallback used", map[string]any{
 				"session_key":            sessionKey,
 				"batch_size":             len(validMessages),
 				"existing_summary_chars": len(summary),
@@ -3460,7 +3460,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 	if finalSummary == "" {
 		outcome = "failed:empty_summary"
 		span.SetStatus(codes.Error, "compaction produced empty summary")
-		logger.WarnCF("agent", "Summarization produced empty summary", map[string]any{
+		logger.WarnCFCtx(ctx, "agent", "Summarization produced empty summary", map[string]any{
 			"session_key":            sessionKey,
 			"valid_messages":         len(validMessages),
 			"existing_summary_chars": len(summary),
@@ -3477,7 +3477,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 	)
 	if !applyResult.Applied {
 		outcome = "skipped:session_changed"
-		logger.WarnCF("agent", "Summarization skipped: session changed before compaction commit", map[string]any{
+		logger.WarnCFCtx(ctx, "agent", "Summarization skipped: session changed before compaction commit", map[string]any{
 			"session_key":            sessionKey,
 			"history_snapshot_count": len(history),
 			"history_count_before":   applyResult.HistoryCountBefore,
@@ -3492,12 +3492,12 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 		outcome = "save_failed"
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		logger.WarnCF("agent", "Summarization save failed", map[string]any{
+		logger.WarnCFCtx(ctx, "agent", "Summarization save failed", map[string]any{
 			"session_key": sessionKey,
 			"error":       err.Error(),
 		})
 	}
-	logger.InfoCF("agent", "Summarization applied", map[string]any{
+	logger.InfoCFCtx(ctx, "agent", "Summarization applied", map[string]any{
 		"session_key":                sessionKey,
 		"history_snapshot_count":     len(history),
 		"history_count_before":       applyResult.HistoryCountBefore,
@@ -3525,7 +3525,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 		meta,
 	)
 	if detailErr != nil {
-		logger.WarnCF("agent", "Detailed compaction summary generation failed", map[string]any{
+		logger.WarnCFCtx(ctx, "agent", "Detailed compaction summary generation failed", map[string]any{
 			"session_key": sessionKey,
 			"error":       detailErr.Error(),
 		})
@@ -3543,18 +3543,18 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 			content,
 		)
 		if err != nil {
-			logger.WarnCF("agent", "Failed to persist compaction summary", map[string]any{
+			logger.WarnCFCtx(ctx, "agent", "Failed to persist compaction summary", map[string]any{
 				"session_key": sessionKey,
 				"error":       err.Error(),
 			})
 		} else {
-			logger.DebugCF("agent", "Compaction summary persisted", map[string]any{
+			logger.DebugCFCtx(ctx, "agent", "Compaction summary persisted", map[string]any{
 				"session_key": sessionKey,
 				"path":        path,
 			})
 		}
 	} else {
-		logger.DebugCF("agent", "Compaction summary persistence skipped: memory store unavailable", map[string]any{
+		logger.DebugCFCtx(ctx, "agent", "Compaction summary persistence skipped: memory store unavailable", map[string]any{
 			"session_key": sessionKey,
 		})
 	}
@@ -3701,7 +3701,7 @@ func (al *AgentLoop) retryLLMCall(
 
 		if err == nil && resp != nil && resp.Content != "" {
 			if attempt > 0 {
-				logger.DebugCF("agent", "Summarization LLM call succeeded after retry", map[string]any{
+				logger.DebugCFCtx(ctx, "agent", "Summarization LLM call succeeded after retry", map[string]any{
 					"attempt":      attempt + 1,
 					"max_retries":  maxRetries,
 					"prompt_chars": len(prompt),
@@ -3713,7 +3713,7 @@ func (al *AgentLoop) retryLLMCall(
 		if err != nil {
 			errText = err.Error()
 		}
-		logger.WarnCF("agent", "Summarization LLM call failed", map[string]any{
+		logger.WarnCFCtx(ctx, "agent", "Summarization LLM call failed", map[string]any{
 			"attempt":      attempt + 1,
 			"max_retries":  maxRetries,
 			"prompt_chars": len(prompt),
