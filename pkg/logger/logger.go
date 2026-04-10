@@ -249,7 +249,7 @@ func otelLog(ctx context.Context, level LogLevel, component string, message stri
 	}
 	l := global.GetLoggerProvider().Logger("picoclaw")
 	var record log.Record
-	record.SetBody(log.StringValue(message))
+	record.SetBody(log.StringValue(strings.ToValidUTF8(message, "\uFFFD")))
 
 	severity := log.SeverityInfo
 	switch level {
@@ -274,7 +274,7 @@ func otelLog(ctx context.Context, level LogLevel, component string, message stri
 	for k, v := range fields {
 		switch val := v.(type) {
 		case string:
-			record.AddAttributes(log.String(k, val))
+			record.AddAttributes(log.String(k, strings.ToValidUTF8(val, "\uFFFD")))
 		case int:
 			record.AddAttributes(log.Int(k, val))
 		case bool:
@@ -282,7 +282,7 @@ func otelLog(ctx context.Context, level LogLevel, component string, message stri
 		case float64:
 			record.AddAttributes(log.Float64(k, val))
 		default:
-			record.AddAttributes(log.String(k, fmt.Sprintf("%v", v)))
+			record.AddAttributes(log.String(k, strings.ToValidUTF8(fmt.Sprintf("%v", v), "\uFFFD")))
 		}
 	}
 

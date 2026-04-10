@@ -38,17 +38,18 @@ func SanitizeMessageContent(input string) string {
 // Truncate returns a truncated version of s with at most maxLen runes.
 // Handles multi-byte Unicode characters properly.
 // If the string is truncated, "..." is appended to indicate truncation.
+// Invalid UTF-8 sequences are replaced with the Unicode replacement character.
 func Truncate(s string, maxLen int) string {
 	// If the no-truncate flag is active, it returns the full string
 	if disableTruncation.Load() {
-		return s
+		return strings.ToValidUTF8(s, "\uFFFD")
 	}
 	if maxLen <= 0 {
 		return ""
 	}
-	runes := []rune(s)
+	runes := []rune(s) // invalid UTF-8 bytes become RuneError (U+FFFD) — valid UTF-8
 	if len(runes) <= maxLen {
-		return s
+		return string(runes)
 	}
 	// Reserve 3 chars for "..."
 	if maxLen <= 3 {
@@ -58,13 +59,14 @@ func Truncate(s string, maxLen int) string {
 }
 
 // TruncateTail returns the last maxLen runes of s, prefixed with "..." if truncated.
+// Invalid UTF-8 sequences are replaced with the Unicode replacement character.
 func TruncateTail(s string, maxLen int) string {
 	if maxLen <= 0 {
 		return ""
 	}
-	runes := []rune(s)
+	runes := []rune(s) // invalid UTF-8 bytes become RuneError (U+FFFD) — valid UTF-8
 	if len(runes) <= maxLen {
-		return s
+		return string(runes)
 	}
 	if maxLen <= 3 {
 		return string(runes[len(runes)-maxLen:])
