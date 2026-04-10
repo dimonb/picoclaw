@@ -17,6 +17,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/fileutil"
 	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -286,6 +287,7 @@ func (cs *CronService) executeJobByID(jobID string) {
 		_, err = cs.onJob(callbackJob)
 		if err != nil {
 			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		}
 	}
 

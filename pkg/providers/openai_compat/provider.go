@@ -17,6 +17,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -128,12 +129,18 @@ func (p *Provider) Chat(
 	tools []ToolDefinition,
 	model string,
 	options map[string]any,
-) (*LLMResponse, error) {
+) (_ *LLMResponse, err error) {
 	tr := telemetry.GetTracer()
 	ctx, span := tr.Start(ctx, "OpenAIRequest",
 		trace.WithAttributes(attribute.String("model", model)),
 	)
-	defer span.End()
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
 
 	if p.apiBase == "" {
 		return nil, fmt.Errorf("API base not configured")
@@ -227,6 +234,7 @@ func (p *Provider) chatCompletions(
 	defer func() {
 		if err != nil {
 			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		} else if resp != nil {
 			if resp.Usage != nil {
 				span.SetAttributes(
@@ -260,6 +268,7 @@ func (p *Provider) chatResponses(
 	defer func() {
 		if err != nil {
 			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		} else if resp != nil {
 			if resp.Usage != nil {
 				span.SetAttributes(

@@ -8,6 +8,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -106,10 +107,16 @@ func (fc *FallbackChain) Execute(
 	ctx context.Context,
 	candidates []FallbackCandidate,
 	run func(ctx context.Context, provider, model string) (*LLMResponse, error),
-) (*FallbackResult, error) {
+) (_ *FallbackResult, retErr error) {
 	tr := telemetry.GetTracer()
 	ctx, span := tr.Start(ctx, "LLMFallbackChain")
-	defer span.End()
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
 
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("fallback: no candidates configured")
@@ -175,6 +182,7 @@ func (fc *FallbackChain) Execute(
 		// Context cancellation: abort immediately, no fallback.
 		if ctx.Err() == context.Canceled {
 			subSpan.RecordError(err)
+			subSpan.SetStatus(codes.Error, err.Error())
 			subSpan.End()
 
 			result.Attempts = append(result.Attempts, FallbackAttempt{
@@ -192,6 +200,7 @@ func (fc *FallbackChain) Execute(
 		if failErr == nil {
 			// Unclassifiable error: do not fallback, return immediately.
 			subSpan.RecordError(err)
+			subSpan.SetStatus(codes.Error, err.Error())
 			subSpan.End()
 
 			result.Attempts = append(result.Attempts, FallbackAttempt{
@@ -207,6 +216,7 @@ func (fc *FallbackChain) Execute(
 		// Non-retriable error: abort immediately.
 		if !failErr.IsRetriable() {
 			subSpan.RecordError(failErr)
+			subSpan.SetStatus(codes.Error, failErr.Error())
 			subSpan.End()
 
 			result.Attempts = append(result.Attempts, FallbackAttempt{
@@ -222,6 +232,7 @@ func (fc *FallbackChain) Execute(
 		// Retriable error: mark failure and continue to next candidate.
 		fc.cooldown.MarkFailure(cooldownKey, failErr.Reason)
 		subSpan.RecordError(failErr)
+		subSpan.SetStatus(codes.Error, failErr.Error())
 		subSpan.End()
 
 		result.Attempts = append(result.Attempts, FallbackAttempt{
@@ -249,10 +260,16 @@ func (fc *FallbackChain) ExecuteImage(
 	ctx context.Context,
 	candidates []FallbackCandidate,
 	run func(ctx context.Context, provider, model string) (*LLMResponse, error),
-) (*FallbackResult, error) {
+) (_ *FallbackResult, retErr error) {
 	tr := telemetry.GetTracer()
 	ctx, span := tr.Start(ctx, "LLMFallbackChain")
-	defer span.End()
+	defer func() {
+		if retErr != nil {
+			span.RecordError(retErr)
+			span.SetStatus(codes.Error, retErr.Error())
+		}
+		span.End()
+	}()
 
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("image fallback: no candidates configured")
@@ -294,6 +311,7 @@ func (fc *FallbackChain) ExecuteImage(
 
 		if ctx.Err() == context.Canceled {
 			subSpan.RecordError(err)
+			subSpan.SetStatus(codes.Error, err.Error())
 			subSpan.End()
 
 			result.Attempts = append(result.Attempts, FallbackAttempt{
@@ -309,6 +327,7 @@ func (fc *FallbackChain) ExecuteImage(
 		errMsg := strings.ToLower(err.Error())
 		if IsImageDimensionError(errMsg) || IsImageSizeError(errMsg) {
 			subSpan.RecordError(err)
+			subSpan.SetStatus(codes.Error, err.Error())
 			subSpan.End()
 
 			result.Attempts = append(result.Attempts, FallbackAttempt{
@@ -328,6 +347,7 @@ func (fc *FallbackChain) ExecuteImage(
 
 		// Any other error: record and try next.
 		subSpan.RecordError(err)
+		subSpan.SetStatus(codes.Error, err.Error())
 		subSpan.End()
 
 		result.Attempts = append(result.Attempts, FallbackAttempt{

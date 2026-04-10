@@ -14,6 +14,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"github.com/sipeed/picoclaw/pkg/utils"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -259,8 +260,11 @@ func (r *ToolRegistry) ExecuteWithContext(
 				attribute.String("output", utils.Truncate(result.ForLLM, 1024)),
 				attribute.Bool("is_error", result.IsError),
 			)
-			if result.Err != nil {
-				span.RecordError(result.Err)
+			if result.IsError {
+				if result.Err != nil {
+					span.RecordError(result.Err)
+				}
+				span.SetStatus(codes.Error, result.ForLLM)
 			}
 		}
 		span.End()

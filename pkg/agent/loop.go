@@ -34,6 +34,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 	"github.com/sipeed/picoclaw/pkg/voice"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -1381,6 +1382,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	defer func() {
 		if err != nil {
 			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 		} else {
 			span.SetAttributes(attribute.String("response.content", utils.Truncate(resp.Content, 1024)))
 		}
@@ -1947,9 +1949,11 @@ turnLoop:
 		if len(pendingMessages) > 0 {
 			resolvedPending := resolveMediaRefs(pendingMessages, al.mediaStore, maxMediaSize)
 			totalContentLen := 0
+			snippets := make([]string, 0, len(pendingMessages))
 			for i, pm := range pendingMessages {
 				messages = append(messages, resolvedPending[i])
 				totalContentLen += len(pm.Content)
+				snippets = append(snippets, utils.Truncate(pm.Content, 256))
 				if !ts.opts.NoHistory {
 					ts.agent.Sessions.AddFullMessage(ts.sessionKey, pm)
 					ts.recordPersistedMessage(pm)
@@ -1970,6 +1974,15 @@ turnLoop:
 					TotalContentLen: totalContentLen,
 				},
 			)
+			_, steerSpan := telemetry.GetTracer().Start(turnCtx, "SteeringInjected",
+				trace.WithAttributes(
+					attribute.Int("iteration", iteration),
+					attribute.Int("count", len(pendingMessages)),
+					attribute.Int("total_content_len", totalContentLen),
+					attribute.StringSlice("snippets", snippets),
+				),
+			)
+			steerSpan.End()
 			pendingMessages = nil
 		}
 
@@ -2161,6 +2174,7 @@ turnLoop:
 			}
 			if ts.hardAbortRequested() && errors.Is(err, context.Canceled) {
 				llmSpan.RecordError(err)
+				llmSpan.SetStatus(codes.Error, err.Error())
 				llmSpan.End()
 				turnStatus = TurnEndStatusAborted
 				return al.abortTurn(ts)
@@ -2205,6 +2219,7 @@ turnLoop:
 				if sleepErr := sleepWithContext(turnCtx, backoff); sleepErr != nil {
 					if ts.hardAbortRequested() {
 						llmSpan.RecordError(sleepErr)
+						llmSpan.SetStatus(codes.Error, sleepErr.Error())
 						llmSpan.End()
 						turnStatus = TurnEndStatusAborted
 						return al.abortTurn(ts)
@@ -2275,6 +2290,7 @@ turnLoop:
 
 		if err != nil {
 			llmSpan.RecordError(err)
+			llmSpan.SetStatus(codes.Error, err.Error())
 		} else if response != nil {
 			attrs := []attribute.KeyValue{
 				attribute.String("finish_reason", response.FinishReason),
@@ -3278,7 +3294,11 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 			attribute.String("agent_id", agent.ID),
 		),
 	)
-	defer span.End()
+	outcome := "applied"
+	defer func() {
+		span.SetAttributes(attribute.String("outcome", outcome))
+		span.End()
+	}()
 
 	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
@@ -3297,6 +3317,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 		"existing_summary_chars": len(summary),
 	})
 	if len(history) <= keepCount {
+		outcome = "skipped:keep_window_full"
 		logger.DebugCF("agent", "Summarization skipped: keep window covers full history", map[string]any{
 			"session_key":    sessionKey,
 			"history_count":  len(history),
@@ -3339,6 +3360,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 	})
 
 	if len(validMessages) == 0 {
+		outcome = "skipped:no_valid_messages"
 		logger.WarnCF("agent", "Summarization skipped: no valid user/assistant messages", map[string]any{
 			"session_key":           sessionKey,
 			"messages_to_summarize": len(toSummarize),
@@ -3436,6 +3458,8 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 	}
 
 	if finalSummary == "" {
+		outcome = "failed:empty_summary"
+		span.SetStatus(codes.Error, "compaction produced empty summary")
 		logger.WarnCF("agent", "Summarization produced empty summary", map[string]any{
 			"session_key":            sessionKey,
 			"valid_messages":         len(validMessages),
@@ -3452,6 +3476,7 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 		keepCount,
 	)
 	if !applyResult.Applied {
+		outcome = "skipped:session_changed"
 		logger.WarnCF("agent", "Summarization skipped: session changed before compaction commit", map[string]any{
 			"session_key":            sessionKey,
 			"history_snapshot_count": len(history),
@@ -3464,6 +3489,9 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 	}
 
 	if err := agent.Sessions.Save(sessionKey); err != nil {
+		outcome = "save_failed"
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 		logger.WarnCF("agent", "Summarization save failed", map[string]any{
 			"session_key": sessionKey,
 			"error":       err.Error(),
