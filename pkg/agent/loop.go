@@ -2637,6 +2637,13 @@ turnLoop:
 			)
 			toolDuration := time.Since(toolStart)
 
+			// If the tool produced a user-visible side effect (e.g. sent a message or
+			// added a reaction), preSend will have stopped the typing indicator.
+			// Restart it so the user sees typing while the agent continues processing.
+			if toolResult != nil && toolResult.UserVisibleSideEffect && al.channelManager != nil {
+				al.channelManager.RestartTyping(turnCtx, ts.channel, ts.chatID)
+			}
+
 			if ts.hardAbortRequested() {
 				turnStatus = TurnEndStatusAborted
 				return al.abortTurn(ts)

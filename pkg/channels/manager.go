@@ -150,6 +150,25 @@ func (m *Manager) InvokeTypingStop(channel, chatID string) {
 	}
 }
 
+// RestartTyping re-establishes a typing indicator for the given channel/chatID.
+// Should be called after a mid-turn tool send (e.g. message or reaction tool)
+// that caused preSend to stop the existing typing indicator.
+func (m *Manager) RestartTyping(ctx context.Context, channelName, chatID string) {
+	m.mu.RLock()
+	ch, ok := m.channels[channelName]
+	m.mu.RUnlock()
+	if !ok {
+		return
+	}
+	tc, ok := ch.(TypingCapable)
+	if !ok {
+		return
+	}
+	if stop, err := tc.StartTyping(ctx, chatID); err == nil {
+		m.RecordTypingStop(channelName, chatID, stop)
+	}
+}
+
 // RecordReactionUndo registers a reaction undo function for later invocation.
 // Implements PlaceholderRecorder.
 func (m *Manager) RecordReactionUndo(channel, chatID string, undo func()) {
