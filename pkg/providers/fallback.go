@@ -107,19 +107,28 @@ func (fc *FallbackChain) Execute(
 	ctx context.Context,
 	candidates []FallbackCandidate,
 	run func(ctx context.Context, provider, model string) (*LLMResponse, error),
-) (_ *FallbackResult, retErr error) {
-	tr := telemetry.GetTracer()
-	ctx, span := tr.Start(ctx, "LLMFallbackChain")
-	defer func() {
-		if retErr != nil {
-			span.RecordError(retErr)
-			span.SetStatus(codes.Error, retErr.Error())
-		}
-		span.End()
-	}()
-
+) (*FallbackResult, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("fallback: no candidates configured")
+	}
+
+	tr := telemetry.GetTracer()
+	// baseCtx is preserved across iterations so LLMAttempt spans are siblings,
+	// not nested inside each other.
+	baseCtx := ctx
+
+	// fallbackSpan is created lazily on the second attempt (actual fallback).
+	var fallbackSpan trace.Span
+	endFallbackSpan := func(err error) {
+		if fallbackSpan == nil {
+			return
+		}
+		if err != nil {
+			fallbackSpan.RecordError(err)
+			fallbackSpan.SetStatus(codes.Error, err.Error())
+		}
+		fallbackSpan.End()
+		fallbackSpan = nil
 	}
 
 	result := &FallbackResult{
@@ -128,7 +137,8 @@ func (fc *FallbackChain) Execute(
 
 	for i, candidate := range candidates {
 		// Check context before each attempt.
-		if ctx.Err() == context.Canceled {
+		if baseCtx.Err() == context.Canceled {
+			endFallbackSpan(context.Canceled)
 			return nil, context.Canceled
 		}
 
@@ -151,15 +161,20 @@ func (fc *FallbackChain) Execute(
 			continue
 		}
 
+		// Start the Fallback span lazily when we actually fall back (i > 0).
+		if i > 0 && fallbackSpan == nil {
+			baseCtx, fallbackSpan = tr.Start(baseCtx, "Fallback")
+		}
+
 		// Execute the run function.
 		start := time.Now()
-		ctx, subSpan := tr.Start(ctx, "LLMAttempt",
+		attemptCtx, subSpan := tr.Start(baseCtx, "LLMAttempt",
 			trace.WithAttributes(
 				attribute.String("provider", candidate.Provider),
 				attribute.String("model", candidate.Model),
 			),
 		)
-		resp, err := run(ctx, candidate.Provider, candidate.Model)
+		resp, err := run(attemptCtx, candidate.Provider, candidate.Model)
 		elapsed := time.Since(start)
 
 		if err == nil {
@@ -171,6 +186,7 @@ func (fc *FallbackChain) Execute(
 				)
 			}
 			subSpan.End()
+			endFallbackSpan(nil)
 
 			fc.cooldown.MarkSuccess(cooldownKey)
 			result.Response = resp
@@ -180,7 +196,7 @@ func (fc *FallbackChain) Execute(
 		}
 
 		// Context cancellation: abort immediately, no fallback.
-		if ctx.Err() == context.Canceled {
+		if attemptCtx.Err() == context.Canceled {
 			subSpan.RecordError(err)
 			subSpan.SetStatus(codes.Error, err.Error())
 			subSpan.End()
@@ -191,6 +207,7 @@ func (fc *FallbackChain) Execute(
 				Error:    err,
 				Duration: elapsed,
 			})
+			endFallbackSpan(context.Canceled)
 			return nil, context.Canceled
 		}
 
@@ -209,8 +226,10 @@ func (fc *FallbackChain) Execute(
 				Error:    err,
 				Duration: elapsed,
 			})
-			return nil, fmt.Errorf("fallback: unclassified error from %s/%s: %w",
+			retErr := fmt.Errorf("fallback: unclassified error from %s/%s: %w",
 				candidate.Provider, candidate.Model, err)
+			endFallbackSpan(retErr)
+			return nil, retErr
 		}
 
 		// Non-retriable error: abort immediately.
@@ -226,6 +245,7 @@ func (fc *FallbackChain) Execute(
 				Reason:   failErr.Reason,
 				Duration: elapsed,
 			})
+			endFallbackSpan(failErr)
 			return nil, failErr
 		}
 
@@ -245,12 +265,16 @@ func (fc *FallbackChain) Execute(
 
 		// If this was the last candidate, return aggregate error.
 		if i == len(candidates)-1 {
-			return nil, &FallbackExhaustedError{Attempts: result.Attempts}
+			retErr := &FallbackExhaustedError{Attempts: result.Attempts}
+			endFallbackSpan(retErr)
+			return nil, retErr
 		}
 	}
 
 	// All candidates were skipped (all in cooldown).
-	return nil, &FallbackExhaustedError{Attempts: result.Attempts}
+	retErr := &FallbackExhaustedError{Attempts: result.Attempts}
+	endFallbackSpan(retErr)
+	return nil, retErr
 }
 
 // ExecuteImage runs the fallback chain for image/vision requests.
@@ -260,19 +284,25 @@ func (fc *FallbackChain) ExecuteImage(
 	ctx context.Context,
 	candidates []FallbackCandidate,
 	run func(ctx context.Context, provider, model string) (*LLMResponse, error),
-) (_ *FallbackResult, retErr error) {
-	tr := telemetry.GetTracer()
-	ctx, span := tr.Start(ctx, "LLMFallbackChain")
-	defer func() {
-		if retErr != nil {
-			span.RecordError(retErr)
-			span.SetStatus(codes.Error, retErr.Error())
-		}
-		span.End()
-	}()
-
+) (*FallbackResult, error) {
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("image fallback: no candidates configured")
+	}
+
+	tr := telemetry.GetTracer()
+	baseCtx := ctx
+
+	var fallbackSpan trace.Span
+	endFallbackSpan := func(err error) {
+		if fallbackSpan == nil {
+			return
+		}
+		if err != nil {
+			fallbackSpan.RecordError(err)
+			fallbackSpan.SetStatus(codes.Error, err.Error())
+		}
+		fallbackSpan.End()
+		fallbackSpan = nil
 	}
 
 	result := &FallbackResult{
@@ -280,18 +310,23 @@ func (fc *FallbackChain) ExecuteImage(
 	}
 
 	for i, candidate := range candidates {
-		if ctx.Err() == context.Canceled {
+		if baseCtx.Err() == context.Canceled {
+			endFallbackSpan(context.Canceled)
 			return nil, context.Canceled
 		}
 
+		if i > 0 && fallbackSpan == nil {
+			baseCtx, fallbackSpan = tr.Start(baseCtx, "Fallback")
+		}
+
 		start := time.Now()
-		ctx, subSpan := tr.Start(ctx, "LLMAttempt",
+		attemptCtx, subSpan := tr.Start(baseCtx, "LLMAttempt",
 			trace.WithAttributes(
 				attribute.String("provider", candidate.Provider),
 				attribute.String("model", candidate.Model),
 			),
 		)
-		resp, err := run(ctx, candidate.Provider, candidate.Model)
+		resp, err := run(attemptCtx, candidate.Provider, candidate.Model)
 		elapsed := time.Since(start)
 
 		if err == nil {
@@ -302,6 +337,7 @@ func (fc *FallbackChain) ExecuteImage(
 				)
 			}
 			subSpan.End()
+			endFallbackSpan(nil)
 
 			result.Response = resp
 			result.Provider = candidate.Provider
@@ -309,7 +345,7 @@ func (fc *FallbackChain) ExecuteImage(
 			return result, nil
 		}
 
-		if ctx.Err() == context.Canceled {
+		if attemptCtx.Err() == context.Canceled {
 			subSpan.RecordError(err)
 			subSpan.SetStatus(codes.Error, err.Error())
 			subSpan.End()
@@ -320,6 +356,7 @@ func (fc *FallbackChain) ExecuteImage(
 				Error:    err,
 				Duration: elapsed,
 			})
+			endFallbackSpan(context.Canceled)
 			return nil, context.Canceled
 		}
 
@@ -337,12 +374,14 @@ func (fc *FallbackChain) ExecuteImage(
 				Reason:   FailoverFormat,
 				Duration: elapsed,
 			})
-			return nil, &FailoverError{
+			retErr := &FailoverError{
 				Reason:   FailoverFormat,
 				Provider: candidate.Provider,
 				Model:    candidate.Model,
 				Wrapped:  err,
 			}
+			endFallbackSpan(retErr)
+			return nil, retErr
 		}
 
 		// Any other error: record and try next.
@@ -358,11 +397,15 @@ func (fc *FallbackChain) ExecuteImage(
 		})
 
 		if i == len(candidates)-1 {
-			return nil, &FallbackExhaustedError{Attempts: result.Attempts}
+			retErr := &FallbackExhaustedError{Attempts: result.Attempts}
+			endFallbackSpan(retErr)
+			return nil, retErr
 		}
 	}
 
-	return nil, &FallbackExhaustedError{Attempts: result.Attempts}
+	retErr := &FallbackExhaustedError{Attempts: result.Attempts}
+	endFallbackSpan(retErr)
+	return nil, retErr
 }
 
 // FallbackExhaustedError indicates all fallback candidates were tried and failed.
