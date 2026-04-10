@@ -60,6 +60,11 @@ func (c *FeishuChannel) SetMessageReaction(ctx context.Context, chatID, messageI
 	return errUnsupported
 }
 
+// RemoveMessageReaction is a stub method to satisfy MessageReactor
+func (c *FeishuChannel) RemoveMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	return errUnsupported
+}
+
 // GetReactionSupport is a stub method to satisfy MessageReactor
 func (c *FeishuChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
 	return channels.ReactionSupport{}

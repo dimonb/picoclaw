@@ -264,6 +264,20 @@ func (c *DiscordChannel) SetMessageReaction(ctx context.Context, chatID, message
 	return c.session.MessageReactionAdd(chatID, messageID, emoji)
 }
 
+// RemoveMessageReaction implements channels.MessageReactor.
+func (c *DiscordChannel) RemoveMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	if strings.TrimSpace(chatID) == "" {
+		return fmt.Errorf("discord channel ID is empty")
+	}
+	if strings.TrimSpace(messageID) == "" {
+		return fmt.Errorf("discord message ID is empty")
+	}
+	if strings.TrimSpace(emoji) == "" {
+		return fmt.Errorf("discord emoji is empty")
+	}
+	return c.session.MessageReactionRemove(chatID, messageID, emoji, "@me")
+}
+
 func (c *DiscordChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
 	return channels.ReactionSupport{AnyUnicode: true}
 }

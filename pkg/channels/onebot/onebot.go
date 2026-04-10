@@ -157,6 +157,11 @@ func (c *OneBotChannel) SetMessageReaction(ctx context.Context, chatID, messageI
 	return nil
 }
 
+// RemoveMessageReaction implements channels.MessageReactor.
+func (c *OneBotChannel) RemoveMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	return fmt.Errorf("reaction removal is not supported on OneBot")
+}
+
 func (c *OneBotChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
 	if !strings.HasPrefix(chatID, "group:") {
 		return channels.ReactionSupport{}

@@ -13,8 +13,9 @@ type ReactionCallback func(ctx context.Context, channel, chatID, messageID, emoj
 type ReactionSupportFunc func(ctx context.Context, channel, chatID string) channels.ReactionSupport
 
 type ReactionTool struct {
-	reactCallback ReactionCallback
-	supportFunc   ReactionSupportFunc
+	reactCallback  ReactionCallback
+	removeCallback ReactionCallback
+	supportFunc    ReactionSupportFunc
 }
 
 func NewReactionTool() *ReactionTool {
@@ -26,7 +27,7 @@ func (t *ReactionTool) Name() string {
 }
 
 func (t *ReactionTool) Description() string {
-	return "Add an emoji reaction to a specific message. Use explicit message IDs from context."
+	return "Add or remove an emoji reaction on a specific message. Use explicit message IDs from context."
 }
 
 func (t *ReactionTool) Parameters() map[string]any {
@@ -50,12 +51,20 @@ func (t *ReactionTool) Parameters() map[string]any {
 				"description": "Optional target chat ID; defaults to current tool context chat",
 			},
 		},
+			"remove": map[string]any{
+				"type":        "boolean",
+				"description": "If true, remove the reaction instead of adding it. Defaults to false.",
+			},
 		"required": []string{"emoji", "message_id"},
 	}
 }
 
 func (t *ReactionTool) SetReactionCallback(callback ReactionCallback) {
 	t.reactCallback = callback
+}
+
+func (t *ReactionTool) SetRemoveReactionCallback(callback ReactionCallback) {
+	t.removeCallback = callback
 }
 
 func (t *ReactionTool) SetSupportFunc(fn ReactionSupportFunc) {
@@ -88,6 +97,20 @@ func (t *ReactionTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 	if channel == "" || chatID == "" {
 		return ErrorResult("reaction tool requires a target channel/chat")
 	}
+	remove, _ := args["remove"].(bool)
+
+	if remove {
+		if t.removeCallback == nil {
+			return ErrorResult("reaction removal not configured")
+		}
+		if err := t.removeCallback(ctx, channel, chatID, messageID, emoji); err != nil {
+			return ErrorResult(fmt.Sprintf("removing reaction: %v", err)).WithError(err)
+		}
+		return SilentResult(
+			fmt.Sprintf("Reaction %s removed from %s:%s message %s", emoji, channel, chatID, messageID),
+		).WithUserVisibleSideEffect()
+	}
+
 	if t.reactCallback == nil {
 		return ErrorResult("reaction sending not configured")
 	}

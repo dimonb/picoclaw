@@ -41,6 +41,7 @@ type ReactionSupport struct {
 // final reaction on a specific message and can describe their supported emoji set.
 type MessageReactor interface {
 	SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error
+	RemoveMessageReaction(ctx context.Context, chatID, messageID, emoji string) error
 	GetReactionSupport(ctx context.Context, chatID string) ReactionSupport
 }
 

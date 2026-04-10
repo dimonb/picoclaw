@@ -1202,6 +1202,18 @@ func (m *Manager) SetMessageReaction(ctx context.Context, channelName, chatID, m
 	return reactor.SetMessageReaction(ctx, chatID, messageID, emoji)
 }
 
+func (m *Manager) RemoveMessageReaction(ctx context.Context, channelName, chatID, messageID, emoji string) error {
+	ch, ok := m.GetChannel(channelName)
+	if !ok {
+		return fmt.Errorf("channel %s not found", channelName)
+	}
+	reactor, ok := ch.(MessageReactor)
+	if !ok {
+		return fmt.Errorf("channel %s does not support final message reactions", channelName)
+	}
+	return reactor.RemoveMessageReaction(ctx, chatID, messageID, emoji)
+}
+
 func (m *Manager) GetReactionSupport(ctx context.Context, channelName, chatID string) ReactionSupport {
 	ch, ok := m.GetChannel(channelName)
 	if !ok {

@@ -245,6 +245,22 @@ func (c *SlackChannel) SetMessageReaction(ctx context.Context, chatID, messageID
 	})
 }
 
+// RemoveMessageReaction implements channels.MessageReactor.
+func (c *SlackChannel) RemoveMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	channelID, _ := parseSlackChatID(chatID)
+	if channelID == "" {
+		return fmt.Errorf("slack channel ID is empty")
+	}
+	reaction := strings.Trim(strings.TrimSpace(emoji), ":")
+	if reaction == "" {
+		return fmt.Errorf("slack reaction is empty")
+	}
+	return c.api.RemoveReactionContext(ctx, reaction, slack.ItemRef{
+		Channel:   channelID,
+		Timestamp: messageID,
+	})
+}
+
 func (c *SlackChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
 	return channels.ReactionSupport{Allowed: []string{"eyes"}}
 }

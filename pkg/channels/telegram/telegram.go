@@ -448,6 +448,22 @@ func (c *TelegramChannel) SetMessageReaction(ctx context.Context, chatID, messag
 		WithReaction(tu.ReactionEmoji(emoji)))
 }
 
+// RemoveMessageReaction implements channels.MessageReactor.
+// Telegram removes all reactions on a message by setting an empty reaction list.
+func (c *TelegramChannel) RemoveMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	cid, _, err := parseTelegramChatID(chatID)
+	if err != nil {
+		return err
+	}
+	mid, err := strconv.Atoi(strings.TrimSpace(messageID))
+	if err != nil {
+		return err
+	}
+	return c.bot.SetMessageReaction(ctx, (&telego.SetMessageReactionParams{}).
+		WithChatID(tu.ID(cid)).
+		WithMessageID(mid))
+}
+
 func (c *TelegramChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
 	allowed := c.config.Channels.Telegram.AllowedReactionEmoji
 	if len(allowed) == 0 {

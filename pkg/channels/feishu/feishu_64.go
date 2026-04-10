@@ -282,6 +282,13 @@ func (c *FeishuChannel) SetMessageReaction(ctx context.Context, chatID, messageI
 	return err
 }
 
+// RemoveMessageReaction implements channels.MessageReactor.
+// Feishu requires the reaction ID (not emoji) to delete; without tracking reaction IDs
+// at creation time, removal is not currently supported.
+func (c *FeishuChannel) RemoveMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	return fmt.Errorf("reaction removal is not supported on Feishu")
+}
+
 func (c *FeishuChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
 	allowed := append([]string(nil), c.config.RandomReactionEmoji...)
 	if len(allowed) == 0 {

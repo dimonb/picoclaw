@@ -937,6 +937,9 @@ func (al *AgentLoop) bindReactionTools(cm *channels.Manager) {
 			rt.SetReactionCallback(func(ctx context.Context, channel, chatID, messageID, emoji string) error {
 				return cm.SetMessageReaction(ctx, channel, chatID, messageID, emoji)
 			})
+			rt.SetRemoveReactionCallback(func(ctx context.Context, channel, chatID, messageID, emoji string) error {
+				return cm.RemoveMessageReaction(ctx, channel, chatID, messageID, emoji)
+			})
 			rt.SetSupportFunc(func(ctx context.Context, channel, chatID string) channels.ReactionSupport {
 				support := cm.GetReactionSupport(ctx, channel, chatID)
 				return channels.ReactionSupport{

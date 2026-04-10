@@ -662,6 +662,13 @@ func (c *MatrixChannel) SetMessageReaction(ctx context.Context, chatID, messageI
 	return err
 }
 
+// RemoveMessageReaction implements channels.MessageReactor.
+// Matrix requires looking up the reaction event ID to redact it, which is not
+// currently supported — returning an error is the safest option.
+func (c *MatrixChannel) RemoveMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	return fmt.Errorf("reaction removal is not supported on Matrix")
+}
+
 func (c *MatrixChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
 	return channels.ReactionSupport{AnyUnicode: true}
 }
