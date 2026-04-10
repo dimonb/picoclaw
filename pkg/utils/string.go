@@ -57,6 +57,21 @@ func Truncate(s string, maxLen int) string {
 	return string(runes[:maxLen-3]) + "..."
 }
 
+// TruncateTail returns the last maxLen runes of s, prefixed with "..." if truncated.
+func TruncateTail(s string, maxLen int) string {
+	if maxLen <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= maxLen {
+		return s
+	}
+	if maxLen <= 3 {
+		return string(runes[len(runes)-maxLen:])
+	}
+	return "..." + string(runes[len(runes)-(maxLen-3):])
+}
+
 // DerefStr dereferences a pointer to a string and
 // returns the value or a fallback if the pointer is nil.
 func DerefStr(s *string, fallback string) string {

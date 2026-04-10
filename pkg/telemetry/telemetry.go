@@ -111,6 +111,10 @@ func Init(ctx context.Context, cfg config.TelemetryConfig) (func(), error) {
 
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
+		logger.WarnCF("telemetry", "OpenTelemetry export error", map[string]any{"error": err.Error()})
+	}))
+
 	shutdown := func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

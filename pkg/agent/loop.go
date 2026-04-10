@@ -2132,10 +2132,22 @@ turnLoop:
 			return ts.agent.Provider.Chat(providerCtx, messagesForCall, toolDefsForCall, llmModel, llmOpts)
 		}
 
+		var promptTail string
+		if n := len(callMessages); n > 0 {
+			promptTail = utils.TruncateTail(callMessages[n-1].Content, 512)
+		}
+		var providerName string
+		if len(activeCandidates) > 0 {
+			providerName = activeCandidates[0].Provider
+		}
 		llmCallCtx, llmSpan := telemetry.GetTracer().Start(turnCtx, "LLMCall",
 			trace.WithAttributes(
 				attribute.Int("iteration", iteration),
+				attribute.String("provider", providerName),
 				attribute.String("model", llmModel),
+				attribute.Int("messages.count", len(callMessages)),
+				attribute.Int("tools.count", len(providerToolDefs)),
+				attribute.String("prompt.tail", promptTail),
 			),
 		)
 
@@ -2263,6 +2275,21 @@ turnLoop:
 
 		if err != nil {
 			llmSpan.RecordError(err)
+		} else if response != nil {
+			attrs := []attribute.KeyValue{
+				attribute.String("finish_reason", response.FinishReason),
+				attribute.Int("tool_calls.count", len(response.ToolCalls)),
+				attribute.Bool("has_reasoning", response.Reasoning != "" || response.ReasoningContent != ""),
+				attribute.String("response.snippet", utils.Truncate(response.Content, 512)),
+			}
+			if response.Usage != nil {
+				attrs = append(attrs,
+					attribute.Int("usage.prompt_tokens", response.Usage.PromptTokens),
+					attribute.Int("usage.completion_tokens", response.Usage.CompletionTokens),
+					attribute.Int("usage.total_tokens", response.Usage.TotalTokens),
+				)
+			}
+			llmSpan.SetAttributes(attrs...)
 		}
 		llmSpan.End()
 
@@ -3005,6 +3032,32 @@ func (al *AgentLoop) maybeSummarize(ctx context.Context, agent *AgentInstance, s
 	threshold := agent.ContextWindow * agent.SummarizeTokenPercent / 100
 	messageThresholdExceeded := len(newHistory) > agent.SummarizeMessageThreshold
 	tokenThresholdExceeded := tokenEstimate > threshold
+
+	var decision string
+	switch {
+	case messageThresholdExceeded && tokenThresholdExceeded:
+		decision = "compact:both_thresholds"
+	case messageThresholdExceeded:
+		decision = "compact:message_threshold"
+	case tokenThresholdExceeded:
+		decision = "compact:token_threshold"
+	default:
+		decision = "skip"
+	}
+
+	span.SetAttributes(
+		attribute.String("decision", decision),
+		attribute.Int("history.count", len(newHistory)),
+		attribute.Int("history.token_estimate", tokenEstimate),
+		attribute.Int("history.existing_summary_chars", len(snapshot.Summary)),
+		attribute.Int("threshold.messages", agent.SummarizeMessageThreshold),
+		attribute.Int("threshold.tokens", threshold),
+		attribute.Int("threshold.token_percent", agent.SummarizeTokenPercent),
+		attribute.Int("config.context_window", agent.ContextWindow),
+		attribute.Int("config.keep_messages", agent.SummarizeKeepMessages),
+		attribute.Bool("exceeded.messages", messageThresholdExceeded),
+		attribute.Bool("exceeded.tokens", tokenThresholdExceeded),
+	)
 
 	if messageThresholdExceeded || tokenThresholdExceeded {
 		summarizeKey := agent.ID + ":" + sessionKey
