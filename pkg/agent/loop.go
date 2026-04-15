@@ -2475,6 +2475,10 @@ turnLoop:
 				turnStatus = TurnEndStatusAborted
 				return al.abortTurn(ts)
 			}
+			if err := turnCtx.Err(); err != nil {
+				turnStatus = TurnEndStatusAborted
+				return turnResult{}, fmt.Errorf("turn context expired before tool execution: %w", err)
+			}
 
 			toolName := tc.Name
 			toolArgs := cloneStringAnyMap(tc.Arguments)
