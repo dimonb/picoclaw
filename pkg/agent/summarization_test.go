@@ -353,6 +353,51 @@ func TestThreadAwareKeepCount_ThreadRootInKeepWindow(t *testing.T) {
 	}
 }
 
+func TestSummarizationCountMessages_ExcludeToolTrafficFromMessageThreshold(t *testing.T) {
+	t.Parallel()
+
+	history := []providers.Message{
+		{Role: "user", Content: "Need diagnostics"},
+		{
+			Role:    "assistant",
+			Content: "",
+			ToolCalls: []providers.ToolCall{
+				{
+					ID:   "call_1",
+					Type: "function",
+					Function: &providers.FunctionCall{
+						Name:      "shell",
+						Arguments: `{"cmd":"very long tool payload that should not count toward compaction thresholds"}`,
+					},
+				},
+			},
+		},
+		{Role: "tool", Content: strings.Repeat("tool output ", 200), ToolCallID: "call_1"},
+		{Role: "assistant", Content: "Found the bug in the session replay logic."},
+	}
+
+	filtered := summarizationCountMessages(history)
+	if len(filtered) != 2 {
+		t.Fatalf("len(filtered) = %d, want 2", len(filtered))
+	}
+
+	if filtered[0].Role != "user" || filtered[1].Role != "assistant" {
+		t.Fatalf("unexpected filtered roles: %q, %q", filtered[0].Role, filtered[1].Role)
+	}
+	if len(filtered[0].ToolCalls) != 0 {
+		t.Fatal("user message should not gain tool calls")
+	}
+
+	plainDialogueTokens := estimateMessageTokens(filtered[0]) + estimateMessageTokens(filtered[1])
+	rawHistoryTokens := 0
+	for _, msg := range history {
+		rawHistoryTokens += estimateMessageTokens(msg)
+	}
+	if rawHistoryTokens <= plainDialogueTokens {
+		t.Fatalf("expected raw history token estimate (%d) to exceed filtered dialogue estimate (%d)", rawHistoryTokens, plainDialogueTokens)
+	}
+}
+
 func TestFindNearestUserMessage_ClampsOutOfRangeIndex(t *testing.T) {
 	t.Parallel()
 

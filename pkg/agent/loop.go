@@ -3058,9 +3058,10 @@ func (al *AgentLoop) maybeSummarize(ctx context.Context, agent *AgentInstance, s
 
 	snapshot := agent.Sessions.GetContextSnapshot(sessionKey)
 	newHistory := snapshot.History
+	triggerHistory := summarizationCountMessages(newHistory)
 	tokenEstimate := al.estimateTokens(newHistory)
 	threshold := agent.ContextWindow * agent.SummarizeTokenPercent / 100
-	messageThresholdExceeded := len(newHistory) > agent.SummarizeMessageThreshold
+	messageThresholdExceeded := len(triggerHistory) > agent.SummarizeMessageThreshold
 	tokenThresholdExceeded := tokenEstimate > threshold
 
 	var decision string
@@ -3078,6 +3079,7 @@ func (al *AgentLoop) maybeSummarize(ctx context.Context, agent *AgentInstance, s
 	span.SetAttributes(
 		attribute.String("decision", decision),
 		attribute.Int("history.count", len(newHistory)),
+		attribute.Int("history.trigger_count", len(triggerHistory)),
 		attribute.Int("history.token_estimate", tokenEstimate),
 		attribute.Int("history.existing_summary_chars", len(snapshot.Summary)),
 		attribute.Int("threshold.messages", agent.SummarizeMessageThreshold),
@@ -3094,6 +3096,7 @@ func (al *AgentLoop) maybeSummarize(ctx context.Context, agent *AgentInstance, s
 		fields := map[string]any{
 			"session_key":                sessionKey,
 			"history_count":              len(newHistory),
+			"trigger_history_count":      len(triggerHistory),
 			"message_threshold":          agent.SummarizeMessageThreshold,
 			"message_threshold_exceeded": messageThresholdExceeded,
 			"token_estimate":             tokenEstimate,
@@ -3121,6 +3124,23 @@ func (al *AgentLoop) maybeSummarize(ctx context.Context, agent *AgentInstance, s
 			logger.DebugCFCtx(ctx, "agent", "Summarization already in progress", fields)
 		}
 	}
+}
+
+func summarizationCountMessages(history []providers.Message) []providers.Message {
+	filtered := make([]providers.Message, 0, len(history))
+	for _, msg := range history {
+		if msg.Role != "user" && msg.Role != "assistant" {
+			continue
+		}
+		if strings.TrimSpace(msg.Content) == "" &&
+			strings.TrimSpace(msg.ReasoningContent) == "" &&
+			len(msg.Media) == 0 {
+			continue
+		}
+
+		filtered = append(filtered, msg)
+	}
+	return filtered
 }
 
 type compressionResult struct {
