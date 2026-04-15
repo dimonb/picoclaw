@@ -3504,6 +3504,13 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 			"error":       err.Error(),
 		})
 	}
+	if activeTurn := al.getActiveTurnState(sessionKey); activeTurn != nil {
+		activeTurn.refreshRestorePointFromSession(agent)
+		logger.DebugCFCtx(ctx, "agent", "Summarization refreshed active turn restore point", map[string]any{
+			"session_key": sessionKey,
+			"turn_id":     activeTurn.turnID,
+		})
+	}
 	logger.InfoCFCtx(ctx, "agent", "Summarization applied", map[string]any{
 		"session_key":                sessionKey,
 		"history_snapshot_count":     len(history),
@@ -3581,6 +3588,15 @@ func (al *AgentLoop) summarizeSession(ctx context.Context, agent *AgentInstance,
 // findNearestUserMessage finds the nearest user message to the given index.
 // It searches backward first, then forward if no user message is found.
 func (al *AgentLoop) findNearestUserMessage(messages []providers.Message, mid int) int {
+	if len(messages) == 0 {
+		return 0
+	}
+	if mid < 0 {
+		mid = 0
+	} else if mid >= len(messages) {
+		mid = len(messages) - 1
+	}
+
 	originalMid := mid
 
 	for mid > 0 && messages[mid].Role != "user" {

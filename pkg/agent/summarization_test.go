@@ -120,7 +120,7 @@ func TestSummarizeSessionWritesDetailedCompactionFile(t *testing.T) {
 		agent.Sessions.AddFullMessage(sessionKey, msg)
 	}
 
-	al.summarizeSession(agent, sessionKey, al.newTurnEventScope(agent.ID, sessionKey))
+	al.summarizeSession(context.Background(), agent, sessionKey, al.newTurnEventScope(agent.ID, sessionKey))
 
 	summary := agent.Sessions.GetSummary(sessionKey)
 	if !strings.Contains(summary, "## Key Context") {
@@ -209,7 +209,7 @@ func TestSummarizeSession_UsesConfiguredKeepMessages(t *testing.T) {
 		agent.Sessions.AddFullMessage(sessionKey, msg)
 	}
 
-	al.summarizeSession(agent, sessionKey, al.newTurnEventScope(agent.ID, sessionKey))
+	al.summarizeSession(context.Background(), agent, sessionKey, al.newTurnEventScope(agent.ID, sessionKey))
 
 	finalHistory := agent.Sessions.GetHistory(sessionKey)
 	if len(finalHistory) != 6 {
@@ -321,7 +321,7 @@ func TestSummarizeSession_ThreadRootOlderThanHalfStillSummarizes(t *testing.T) {
 		agent.Sessions.AddFullMessage(sessionKey, msg)
 	}
 
-	al.summarizeSession(agent, sessionKey, al.newTurnEventScope(agent.ID, sessionKey))
+	al.summarizeSession(context.Background(), agent, sessionKey, al.newTurnEventScope(agent.ID, sessionKey))
 
 	summary := agent.Sessions.GetSummary(sessionKey)
 	if !strings.Contains(summary, "## Key Context") {
@@ -350,6 +350,98 @@ func TestThreadAwareKeepCount_ThreadRootInKeepWindow(t *testing.T) {
 	// Parent #5 is already kept — no extension needed.
 	if got := threadAwareKeepCount(history, 4); got != 4 {
 		t.Fatalf("expected 4, got %d", got)
+	}
+}
+
+func TestFindNearestUserMessage_ClampsOutOfRangeIndex(t *testing.T) {
+	t.Parallel()
+
+	al := &AgentLoop{}
+	messages := []providers.Message{
+		{Role: "assistant", Content: "a"},
+		{Role: "assistant", Content: "b"},
+		{Role: "user", Content: "c"},
+	}
+
+	if got := al.findNearestUserMessage(messages, 99); got != 2 {
+		t.Fatalf("findNearestUserMessage(..., 99) = %d, want 2", got)
+	}
+	if got := al.findNearestUserMessage(messages, -5); got != 2 {
+		t.Fatalf("findNearestUserMessage(..., -5) = %d, want 2", got)
+	}
+}
+
+func TestSummarizeSessionRefreshesActiveTurnRestorePoint(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:             workspace,
+				ModelName:             "test-model",
+				MaxTokens:             4096,
+				MaxToolIterations:     10,
+				SummarizeKeepMessages: 4,
+			},
+		},
+	}
+
+	provider := &compactionSummaryMockProvider{}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+	agent := al.registry.GetDefaultAgent()
+	if agent == nil {
+		t.Fatal("expected default agent")
+	}
+
+	sessionKey := "session-active-turn-refresh"
+	for i := 0; i < 12; i++ {
+		role := "assistant"
+		if i%2 == 0 {
+			role = "user"
+		}
+		agent.Sessions.AddFullMessage(sessionKey, providers.Message{
+			Role:    role,
+			Content: role + "-" + string(rune('a'+i)),
+		})
+	}
+
+	scope := al.newTurnEventScope(agent.ID, sessionKey)
+	ts := newTurnState(agent, processOptions{
+		SessionKey:  sessionKey,
+		Channel:     "test",
+		ChatID:      "chat-1",
+		UserMessage: "current turn",
+	}, scope)
+	ts.captureRestorePoint(agent.Sessions.GetHistory(sessionKey), agent.Sessions.GetSummary(sessionKey))
+
+	currentTurnMsg := providers.Message{Role: "user", Content: "current turn"}
+	agent.Sessions.AddFullMessage(sessionKey, currentTurnMsg)
+	ts.recordPersistedMessage(currentTurnMsg)
+
+	al.registerActiveTurn(ts)
+	defer al.clearActiveTurn(ts)
+
+	al.summarizeSession(context.Background(), agent, sessionKey, scope)
+
+	finalHistory := agent.Sessions.GetHistory(sessionKey)
+	if len(finalHistory) != 4 {
+		t.Fatalf("len(finalHistory) = %d, want 4", len(finalHistory))
+	}
+
+	ts.mu.RLock()
+	restoreHistory := append([]providers.Message(nil), ts.restorePointHistory...)
+	restoreSummary := ts.restorePointSummary
+	ts.mu.RUnlock()
+
+	if len(restoreHistory) != 3 {
+		t.Fatalf("len(restoreHistory) = %d, want 3", len(restoreHistory))
+	}
+	if restoreHistory[len(restoreHistory)-1].Content != finalHistory[len(finalHistory)-2].Content {
+		t.Fatalf("restore tail = %q, want %q", restoreHistory[len(restoreHistory)-1].Content, finalHistory[len(finalHistory)-2].Content)
+	}
+	if restoreSummary == "" {
+		t.Fatal("expected refreshed restore summary to be populated")
 	}
 }
 

@@ -625,6 +625,12 @@ func (p *CodexWSProvider) chatStream(
 			return wsUsage{}, fmt.Errorf("codex ws reconnect after compaction: %w", err)
 		}
 	}
+	if normalizedSentCount, reset := normalizeCodexWSReplayCursor(sess.sentMsgCount, len(convMsgs)); reset {
+		logger.WarnCF("provider.codex_ws", "Replay cursor exceeded history after reconnect, resetting session replay state",
+			map[string]any{"session_key": sessionKey, "sent_count": sess.sentMsgCount, "history_len": len(convMsgs)})
+		sess.sentMsgCount = normalizedSentCount
+		sess.previousResponseID = ""
+	}
 
 	// Build the initial request with only NEW messages since the last turn.
 	newMsgs := convMsgs[sess.sentMsgCount:]
@@ -691,6 +697,13 @@ func (p *CodexWSProvider) chatStream(
 	}
 	sess.previousResponseID = respID
 	return usage, nil
+}
+
+func normalizeCodexWSReplayCursor(sentMsgCount, historyLen int) (int, bool) {
+	if sentMsgCount < 0 || sentMsgCount > historyLen {
+		return 0, true
+	}
+	return sentMsgCount, false
 }
 
 // buildWSInput converts picoclaw Messages to wsInputItems.
