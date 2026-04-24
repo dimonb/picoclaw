@@ -46,6 +46,13 @@ func (al *AgentLoop) publishAgentResponseIfNeeded(
 		})
 }
 
+func shouldPublishAgentResponse(response agentResponse) bool {
+	return response.Content != "" ||
+		response.EditMessageID != "" ||
+		response.SkipFinalSend ||
+		response.Reaction != nil
+}
+
 func resolveDeliveryTarget(response agentResponse, defaultChannel, defaultChatID string) (string, string) {
 	channel := response.Channel
 	if channel == "" {

@@ -103,6 +103,10 @@ func (d *deliveryTestChannel) SetMessageReaction(ctx context.Context, chatID, me
 	return nil
 }
 
+func (d *deliveryTestChannel) RemoveMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	return nil
+}
+
 func (d *deliveryTestChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
 	return channels.ReactionSupport{Allowed: []string{"✅"}}
 }
@@ -1985,6 +1989,55 @@ func TestPublishAgentResponseIfNeeded_SuppressesFinalSendWhenMetaRequestsIt(t *t
 	}
 	if len(ch.reactions) != 1 {
 		t.Fatalf("expected one reaction, got %d", len(ch.reactions))
+	}
+}
+
+func TestProcessDispatchedInbound_PublishesMetaReactionWhenFinalSendSuppressed(t *testing.T) {
+	tmpDir := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         tmpDir,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+	}
+
+	msgBus := bus.NewMessageBus()
+	provider := &simpleMockProvider{
+		response: `<meta>{"reaction":{"message_id":"1718","emoji":"✅"},"send_final":false}</meta>`,
+	}
+	al := NewAgentLoop(cfg, msgBus, provider)
+
+	ch := &deliveryTestChannel{}
+	manager, err := channels.NewManager(cfg, msgBus, nil)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	manager.RegisterChannel("telegram", ch)
+	al.SetChannelManager(manager)
+
+	al.processDispatchedInbound(context.Background(), bus.InboundMessage{
+		Channel:   "telegram",
+		ChatID:    "chat1",
+		SenderID:  "user1",
+		MessageID: "1718",
+		Content:   "react via meta",
+	})
+
+	if len(ch.reactions) != 1 {
+		t.Fatalf("expected one reaction, got %d", len(ch.reactions))
+	}
+	if ch.reactions[0].chatID != "chat1" || ch.reactions[0].messageID != "1718" || ch.reactions[0].emoji != "✅" {
+		t.Fatalf("unexpected reaction call: %+v", ch.reactions[0])
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	if outbound, ok := msgBus.SubscribeOutbound(ctx); ok {
+		t.Fatalf("did not expect outbound message when send_final=false, got %+v", outbound)
 	}
 }
 

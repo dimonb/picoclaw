@@ -515,13 +515,13 @@ func (al *AgentLoop) processDispatchedInbound(ctx context.Context, msg bus.Inbou
 	}
 	if target == nil {
 		cancelDrain()
-		if response.Content != "" {
+		if shouldPublishAgentResponse(response) {
 			al.publishAgentResponseIfNeeded(ctx, response, msg.Channel, msg.ChatID)
 		}
 		return
 	}
 
-	if response.Content != "" {
+	if shouldPublishAgentResponse(response) {
 		al.publishAgentResponseIfNeeded(ctx, response, target.Channel, target.ChatID)
 	}
 
@@ -540,7 +540,7 @@ func (al *AgentLoop) processDispatchedInbound(ctx context.Context, msg bus.Inbou
 				map[string]any{"channel": target.Channel, "chat_id": target.ChatID, "error": continueErr.Error()})
 			return
 		}
-		if continued.Content == "" {
+		if !shouldPublishAgentResponse(continued) {
 			return
 		}
 		al.publishAgentResponseIfNeeded(ctx, continued, target.Channel, target.ChatID)
@@ -563,7 +563,7 @@ func (al *AgentLoop) processDispatchedInbound(ctx context.Context, msg bus.Inbou
 				map[string]any{"channel": target.Channel, "chat_id": target.ChatID, "error": continueErr.Error()})
 			return
 		}
-		if continued.Content == "" {
+		if !shouldPublishAgentResponse(continued) {
 			break
 		}
 		al.publishAgentResponseIfNeeded(ctx, continued, target.Channel, target.ChatID)
@@ -2136,7 +2136,7 @@ turnLoop:
 					return nil, fbErr
 				}
 				if fbResult.Provider != "" && len(fbResult.Attempts) > 0 {
-					logger.InfoCFCtx(ctx, 
+					logger.InfoCFCtx(ctx,
 						"agent",
 						fmt.Sprintf("Fallback: succeeded with %s/%s after %d attempts",
 							fbResult.Provider, fbResult.Model, len(fbResult.Attempts)+1),
@@ -2244,7 +2244,7 @@ turnLoop:
 						Error:      err.Error(),
 					},
 				)
-				logger.WarnCFCtx(turnCtx, 
+				logger.WarnCFCtx(turnCtx,
 					"agent",
 					"Context window error detected, attempting compression",
 					map[string]any{
