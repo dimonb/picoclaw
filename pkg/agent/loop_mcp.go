@@ -125,7 +125,8 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 						continue
 					}
 
-					mcpTool := tools.NewMCPTool(mcpManager, serverName, tool)
+					mcpTool := tools.NewMCPTool(mcpManager, serverName, tool).
+						WithLargeTextThreshold(al.cfg.Tools.MCP.LargeOutputThreshold)
 
 					if registerAsHidden {
 						agent.Tools.RegisterHidden(mcpTool)

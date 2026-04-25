@@ -14,6 +14,8 @@ import (
 	"github.com/sipeed/picoclaw/pkg/media"
 )
 
+const mcpLargeTextThreshold = 8 * 1024 // 8 KB
+
 // MCPManager defines the interface for MCP manager operations
 // This allows for easier testing with mock implementations
 type MCPManager interface {
@@ -26,23 +28,32 @@ type MCPManager interface {
 
 // MCPTool wraps an MCP tool to implement the Tool interface
 type MCPTool struct {
-	manager    MCPManager
-	serverName string
-	tool       *mcp.Tool
-	mediaStore media.MediaStore
+	manager            MCPManager
+	serverName         string
+	tool               *mcp.Tool
+	mediaStore         media.MediaStore
+	largeTextThreshold int
 }
 
 // NewMCPTool creates a new MCP tool wrapper
 func NewMCPTool(manager MCPManager, serverName string, tool *mcp.Tool) *MCPTool {
 	return &MCPTool{
-		manager:    manager,
-		serverName: serverName,
-		tool:       tool,
+		manager:            manager,
+		serverName:         serverName,
+		tool:               tool,
+		largeTextThreshold: mcpLargeTextThreshold,
 	}
 }
 
 func (t *MCPTool) SetMediaStore(store media.MediaStore) {
 	t.mediaStore = store
+}
+
+// WithLargeTextThreshold sets the byte size above which MCP text output is offloaded
+// to a file. Set to 0 to disable. Returns the tool for chaining.
+func (t *MCPTool) WithLargeTextThreshold(threshold int) *MCPTool {
+	t.largeTextThreshold = threshold
+	return t
 }
 
 // sanitizeIdentifierComponent normalizes a string so it can be safely used
@@ -262,7 +273,11 @@ func (t *MCPTool) normalizeResultContent(ctx context.Context, content []mcp.Cont
 		case *mcp.TextContent:
 			text := strings.TrimSpace(sanitizeToolLLMContent(v.Text))
 			if text != "" {
-				llmParts = append(llmParts, text)
+				if t.largeTextThreshold > 0 && len(text) > t.largeTextThreshold {
+					llmParts = append(llmParts, t.storeLargeTextContent(ctx, text))
+				} else {
+					llmParts = append(llmParts, text)
+				}
 			}
 		case *mcp.ImageContent:
 			ref, note := t.storeBinaryContent(
@@ -335,6 +350,77 @@ func (t *MCPTool) storeEmbeddedResource(ctx context.Context, content *mcp.Embedd
 	}
 
 	return "", summarizeEmbeddedResource(content)
+}
+
+func (t *MCPTool) storeLargeTextContent(ctx context.Context, text string) string {
+	dir := media.TempDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Sprintf(
+			"[MCP returned large text output (%d bytes) that could not be saved to disk.]",
+			len(text),
+		)
+	}
+
+	tmpFile, err := os.CreateTemp(dir, "mcp-text-*.txt")
+	if err != nil {
+		return fmt.Sprintf(
+			"[MCP returned large text output (%d bytes) that could not be saved to disk.]",
+			len(text),
+		)
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := tmpFile.WriteString(text); err != nil {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Sprintf(
+			"[MCP returned large text output (%d bytes) that could not be saved to disk.]",
+			len(text),
+		)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Sprintf(
+			"[MCP returned large text output (%d bytes) that could not be saved to disk.]",
+			len(text),
+		)
+	}
+
+	storedPath := tmpPath
+	if t.mediaStore != nil {
+		channel := ToolChannel(ctx)
+		chatID := ToolChatID(ctx)
+		if channel != "" && chatID != "" {
+			scope := fmt.Sprintf(
+				"tool:mcp-text:%s:%s:%s:%d",
+				sanitizeIdentifierComponent(t.serverName),
+				channel,
+				chatID,
+				time.Now().UnixNano(),
+			)
+			filename := fmt.Sprintf(
+				"%s_%s.txt",
+				sanitizeIdentifierComponent(t.serverName),
+				sanitizeIdentifierComponent(t.tool.Name),
+			)
+			if ref, storeErr := t.mediaStore.Store(tmpPath, media.MediaMeta{
+				Filename:    filename,
+				ContentType: "text/plain",
+				Source: fmt.Sprintf(
+					"tool:mcp:%s:%s",
+					sanitizeIdentifierComponent(t.serverName),
+					sanitizeIdentifierComponent(t.tool.Name),
+				),
+			}, scope); storeErr == nil {
+				storedPath = ref
+			}
+		}
+	}
+
+	return fmt.Sprintf(
+		"[MCP returned large text output (%d bytes); saved to %s — use read_file or bash to read the full content]",
+		len(text),
+		storedPath,
+	)
 }
 
 func (t *MCPTool) storeBinaryContent(

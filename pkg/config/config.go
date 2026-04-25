@@ -1282,6 +1282,10 @@ type MCPConfig struct {
 	Discovery  ToolDiscoveryConfig `                                json:"discovery"`
 	// Servers is a map of server name to server configuration
 	Servers map[string]MCPServerConfig `json:"servers,omitempty"`
+	// LargeOutputThreshold is the byte size above which MCP text output is offloaded
+	// to a file instead of being included inline in the model context.
+	// Set to 0 to disable offloading. Default: 8192 (8 KB).
+	LargeOutputThreshold int `json:"large_output_threshold,omitempty"`
 }
 
 func LoadConfig(path string) (*Config, error) {

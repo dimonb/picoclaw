@@ -456,6 +456,7 @@ func DefaultConfig() *Config {
 				ToolConfig: ToolConfig{
 					Enabled: false,
 				},
+				LargeOutputThreshold: 8 * 1024,
 				Discovery: ToolDiscoveryConfig{
 					Enabled:          false,
 					TTL:              5,
