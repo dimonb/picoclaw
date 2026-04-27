@@ -245,6 +245,62 @@ func TestCronService_ComputeNextRun(t *testing.T) {
 	}
 }
 
+func TestCronService_ComputeNextRun_Timezone(t *testing.T) {
+	cs, path := setupService(nil)
+	defer os.Remove(path)
+
+	jerusalem, err := time.LoadLocation("Asia/Jerusalem")
+	if err != nil {
+		t.Fatalf("LoadLocation failed: %v", err)
+	}
+
+	// Pick a moment that is "yesterday 23:00" in Jerusalem so the next "0 4 * * *"
+	// firing is the same calendar day at 04:00 Jerusalem. Use a winter date so
+	// the offset is +02:00 (no DST ambiguity).
+	now := time.Date(2026, 1, 14, 23, 0, 0, 0, jerusalem)
+	got := cs.computeNextRun(
+		&CronSchedule{Kind: "cron", Expr: "0 4 * * *", TZ: "Asia/Jerusalem"},
+		now.UnixMilli(),
+	)
+	if got == nil {
+		t.Fatal("expected non-nil next run for cron expr with tz")
+	}
+
+	want := time.Date(2026, 1, 15, 4, 0, 0, 0, jerusalem)
+	if *got != want.UnixMilli() {
+		t.Errorf(
+			"next run = %s, want %s",
+			time.UnixMilli(*got).In(jerusalem).Format(time.RFC3339),
+			want.Format(time.RFC3339),
+		)
+	}
+
+	// Without TZ the schedule must still resolve, in the host's local time
+	// (preserving the pre-existing behavior). It should match local 04:00
+	// after `now`.
+	gotLocal := cs.computeNextRun(
+		&CronSchedule{Kind: "cron", Expr: "0 4 * * *"},
+		now.UnixMilli(),
+	)
+	if gotLocal == nil {
+		t.Fatal("expected non-nil next run for cron expr without tz")
+	}
+	gotLocalT := time.UnixMilli(*gotLocal).In(time.Local)
+	if gotLocalT.Hour() != 4 || gotLocalT.Minute() != 0 || !gotLocalT.After(now) {
+		t.Errorf("local-zone next run = %s, want first 04:00 local after %s",
+			gotLocalT.Format(time.RFC3339), now.Format(time.RFC3339))
+	}
+
+	// Invalid timezone should yield nil (logged) rather than silently
+	// falling back to UTC.
+	if bad := cs.computeNextRun(
+		&CronSchedule{Kind: "cron", Expr: "0 4 * * *", TZ: "Not/AReal_Zone"},
+		now.UnixMilli(),
+	); bad != nil {
+		t.Errorf("expected nil for invalid tz, got %v", *bad)
+	}
+}
+
 // 3. Test Execution Flow
 func TestCronService_ExecutionFlow(t *testing.T) {
 	var mu sync.Mutex
