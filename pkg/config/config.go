@@ -386,6 +386,7 @@ type ChannelsConfig struct {
 	Pico       PicoConfig       `json:"pico"`
 	PicoClient PicoClientConfig `json:"pico_client"`
 	IRC        IRCConfig        `json:"irc"`
+	Webhook    WebhookConfig    `json:"webhook"`
 }
 
 // GroupTriggerConfig controls when the bot responds in group chats.
@@ -681,6 +682,28 @@ func (c *LINEConfig) ChannelAccessToken() string {
 // SetChannelAccessToken sets the LINE channel access token
 func (c *LINEConfig) SetChannelAccessToken(token string) {
 	c.channelAccessToken = token
+	c.secDirty = true
+}
+
+type WebhookConfig struct {
+	Enabled               bool                `json:"enabled"                          env:"PICOCLAW_CHANNELS_WEBHOOK_ENABLED"`
+	sharedSecret          string
+	AllowFrom             FlexibleStringSlice `json:"allow_from,omitempty"             env:"PICOCLAW_CHANNELS_WEBHOOK_ALLOW_FROM"`
+	RequestTimeoutSeconds int                 `json:"request_timeout_seconds,omitempty" env:"PICOCLAW_CHANNELS_WEBHOOK_REQUEST_TIMEOUT_SECONDS"`
+	ResultTTLSeconds      int                 `json:"result_ttl_seconds,omitempty"      env:"PICOCLAW_CHANNELS_WEBHOOK_RESULT_TTL_SECONDS"`
+	ReasoningChannelID    string              `json:"reasoning_channel_id,omitempty"   env:"PICOCLAW_CHANNELS_WEBHOOK_REASONING_CHANNEL_ID"`
+	secDirty              bool
+}
+
+// SharedSecret returns the webhook shared secret used for Bearer auth.
+// Empty string means authorization is disabled.
+func (c *WebhookConfig) SharedSecret() string {
+	return c.sharedSecret
+}
+
+// SetSharedSecret sets the webhook shared secret.
+func (c *WebhookConfig) SetSharedSecret(secret string) {
+	c.sharedSecret = secret
 	c.secDirty = true
 }
 
@@ -1567,6 +1590,11 @@ func applySecurityConfig(cfg *Config, sec *SecurityConfig) error {
 			}
 		}
 
+		// Handle Webhook shared secret
+		if sec.Channels.Webhook != nil && sec.Channels.Webhook.SharedSecret != "" {
+			cfg.Channels.Webhook.sharedSecret = sec.Channels.Webhook.SharedSecret
+		}
+
 		// Handle OneBot access token
 		if sec.Channels.OneBot != nil && sec.Channels.OneBot.AccessToken != "" {
 			cfg.Channels.OneBot.accessToken = sec.Channels.OneBot.AccessToken
@@ -1812,6 +1840,12 @@ func SaveConfig(path string, cfg *Config) error {
 			ChannelAccessToken: cfg.Channels.LINE.ChannelAccessToken(),
 		}
 		cfg.Channels.LINE.secDirty = false
+	}
+	if cfg.Channels.Webhook.secDirty {
+		cfg.security.Channels.Webhook = &WebhookSecurity{
+			SharedSecret: cfg.Channels.Webhook.SharedSecret(),
+		}
+		cfg.Channels.Webhook.secDirty = false
 	}
 	if cfg.Channels.OneBot.secDirty {
 		cfg.security.Channels.OneBot = &OneBotSecurity{

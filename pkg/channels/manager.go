@@ -444,6 +444,10 @@ func (m *Manager) initChannels(channels *config.ChannelsConfig) error {
 		m.initChannel("irc", "IRC")
 	}
 
+	if channels.Webhook.Enabled {
+		m.initChannel("webhook", "Webhook")
+	}
+
 	logger.InfoCF("channels", "Channel initialization completed", map[string]any{
 		"enabled_channels": len(m.channels),
 	})

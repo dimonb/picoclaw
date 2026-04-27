@@ -82,6 +82,7 @@ type ChannelsSecurity struct {
 	WeCom    *WeComSecurity    `yaml:"wecom,omitempty"`
 	Pico     *PicoSecurity     `yaml:"pico,omitempty"`
 	IRC      *IRCSecurity      `yaml:"irc,omitempty"`
+	Webhook  *WebhookSecurity  `yaml:"webhook,omitempty"`
 }
 
 type TelegramSecurity struct {
@@ -140,6 +141,10 @@ type IRCSecurity struct {
 	Password         string `yaml:"password,omitempty"          env:"PICOCLAW_CHANNELS_IRC_PASSWORD"`
 	NickServPassword string `yaml:"nickserv_password,omitempty" env:"PICOCLAW_CHANNELS_IRC_NICKSERV_PASSWORD"`
 	SASLPassword     string `yaml:"sasl_password,omitempty"     env:"PICOCLAW_CHANNELS_IRC_SASL_PASSWORD"`
+}
+
+type WebhookSecurity struct {
+	SharedSecret string `yaml:"shared_secret,omitempty" env:"PICOCLAW_CHANNELS_WEBHOOK_SHARED_SECRET"`
 }
 
 type WebToolsSecurity struct {
@@ -327,6 +332,9 @@ func mergeChannelsSecurity(dst, src *ChannelsSecurity) {
 	}
 	if src.IRC != nil && (src.IRC.Password != "" || src.IRC.NickServPassword != "" || src.IRC.SASLPassword != "") {
 		dst.IRC = src.IRC
+	}
+	if src.Webhook != nil && src.Webhook.SharedSecret != "" {
+		dst.Webhook = src.Webhook
 	}
 }
 

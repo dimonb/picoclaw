@@ -166,4 +166,7 @@ func updateKeys(newcfg, old *config.ChannelsConfig) {
 		newcfg.Feishu.SetEncryptKey(old.Feishu.EncryptKey())
 		newcfg.Feishu.SetVerificationToken(old.Feishu.VerificationToken())
 	}
+	if newcfg.Webhook.Enabled {
+		newcfg.Webhook.SetSharedSecret(old.Webhook.SharedSecret())
+	}
 }
