@@ -52,6 +52,7 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 	retrieval := mgr.engine.GetRetrieval()
 	al.RegisterTool(seahorse.NewGrepTool(retrieval))
 	al.RegisterTool(seahorse.NewExpandTool(retrieval))
+	al.RegisterTool(seahorse.NewFetchMessageTool(retrieval))
 
 	// Bootstrap all existing sessions at startup
 	if agent.Sessions != nil {
@@ -144,14 +145,29 @@ func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactReques
 
 // Ingest records a message into seahorse SQLite.
 // All existing sessions are bootstrapped at startup, so this only ingests new messages.
-func (m *seahorseContextManager) Ingest(ctx context.Context, req *IngestRequest) error {
+func (m *seahorseContextManager) Ingest(ctx context.Context, req *IngestRequest) (*IngestResponse, error) {
 	if req == nil {
-		return nil
+		return &IngestResponse{}, nil
 	}
 
 	msg := providerToSeahorseMessage(req.Message)
-	_, err := m.engine.Ingest(ctx, req.SessionKey, []seahorse.Message{msg})
-	return err
+	result, err := m.engine.Ingest(ctx, req.SessionKey, []seahorse.Message{msg})
+	if err != nil {
+		return nil, err
+	}
+	if result == nil {
+		return &IngestResponse{}, nil
+	}
+	return &IngestResponse{MessageIDs: append([]int64(nil), result.MessageIDs...)}, nil
+}
+
+// UpdateChannelMessageID stamps a delivered channel-native ref onto a
+// previously ingested message in seahorse SQLite.
+func (m *seahorseContextManager) UpdateChannelMessageID(ctx context.Context, sessionKey string, messageID int64, channelMessageID string) error {
+	if m.engine == nil {
+		return nil
+	}
+	return m.engine.UpdateMessageChannelMessageID(ctx, sessionKey, messageID, channelMessageID)
 }
 
 // Clear removes all stored context for a session (seahorse DB + JSONL).
@@ -198,6 +214,8 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 		Role:             msg.Role,
 		Content:          msg.Content,
 		ReasoningContent: msg.ReasoningContent,
+		ChannelMessageID: msg.MessageID,
+		Metadata:         msg.Metadata,
 		TokenCount:       tokenizer.EstimateMessageTokens(msg),
 	}
 
@@ -244,6 +262,7 @@ func seahorseToProviderMessages(result *seahorse.AssembleResult) []protocoltypes
 			Role:             msg.Role,
 			Content:          msg.Content,
 			ReasoningContent: msg.ReasoningContent,
+			MessageID:        msg.ChannelMessageID,
 		}
 
 		// Reconstruct ToolCalls from parts

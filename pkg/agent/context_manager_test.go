@@ -513,7 +513,7 @@ func TestLegacyIngest_NoOp(t *testing.T) {
 	cfg := testConfig(t)
 	al := newCMTestAgentLoop(cfg)
 
-	err := al.contextManager.Ingest(context.Background(), &IngestRequest{
+	_, err := al.contextManager.Ingest(context.Background(), &IngestRequest{
 		SessionKey: "session-ingest",
 		Message:    providers.Message{Role: "user", Content: "test"},
 	})
@@ -580,7 +580,7 @@ func TestAgentLoop_UsesCustomContextManager(t *testing.T) {
 		t.Fatalf("expected 1 compact call, got %d", mock.compactCalls.Load())
 	}
 
-	err = mock.Ingest(context.Background(), &IngestRequest{
+	_, err = mock.Ingest(context.Background(), &IngestRequest{
 		SessionKey: "s1",
 		Message:    providers.Message{Role: "user", Content: "test"},
 	})
@@ -689,8 +689,13 @@ func (m *noopContextManager) Assemble(_ context.Context, req *AssembleRequest) (
 	return &AssembleResponse{}, nil
 }
 func (m *noopContextManager) Compact(_ context.Context, _ *CompactRequest) error { return nil }
-func (m *noopContextManager) Ingest(_ context.Context, _ *IngestRequest) error   { return nil }
-func (m *noopContextManager) Clear(_ context.Context, _ string) error            { return nil }
+func (m *noopContextManager) Ingest(_ context.Context, _ *IngestRequest) (*IngestResponse, error) {
+	return &IngestResponse{}, nil
+}
+func (m *noopContextManager) UpdateChannelMessageID(_ context.Context, _ string, _ int64, _ string) error {
+	return nil
+}
+func (m *noopContextManager) Clear(_ context.Context, _ string) error { return nil }
 
 // trackingContextManager tracks call counts for each method.
 type trackingContextManager struct {
@@ -719,11 +724,15 @@ func (m *trackingContextManager) Compact(_ context.Context, req *CompactRequest)
 	return nil
 }
 
-func (m *trackingContextManager) Ingest(_ context.Context, req *IngestRequest) error {
+func (m *trackingContextManager) Ingest(_ context.Context, req *IngestRequest) (*IngestResponse, error) {
 	m.ingestCalls.Add(1)
 	m.mu.Lock()
 	m.lastIngest = req
 	m.mu.Unlock()
+	return &IngestResponse{}, nil
+}
+
+func (m *trackingContextManager) UpdateChannelMessageID(_ context.Context, _ string, _ int64, _ string) error {
 	return nil
 }
 

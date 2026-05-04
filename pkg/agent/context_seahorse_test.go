@@ -419,11 +419,11 @@ func TestSeahorseAdapterAssembleSubtractsMaxTokens(t *testing.T) {
 			"This is message number %d. It contains enough text to represent a meaningful conversation turn with the user asking about various topics in software engineering and system design principles that require careful consideration.",
 			i,
 		)
-		_ = mgr.Ingest(ctx, &IngestRequest{
+		_, _ = mgr.Ingest(ctx, &IngestRequest{
 			SessionKey: "budget-sub",
 			Message:    protocoltypes.Message{Role: "user", Content: content},
 		})
-		_ = mgr.Ingest(ctx, &IngestRequest{
+		_, _ = mgr.Ingest(ctx, &IngestRequest{
 			SessionKey: "budget-sub",
 			Message:    protocoltypes.Message{Role: "assistant", Content: "Response"},
 		})
@@ -482,11 +482,11 @@ func TestSeahorseCompactRetryUsesCompactUntilUnder(t *testing.T) {
 			"message %d with enough text to have meaningful token count that fills up the budget nicely",
 			i,
 		)
-		_ = mgr.Ingest(ctx, &IngestRequest{
+		_, _ = mgr.Ingest(ctx, &IngestRequest{
 			SessionKey: "compact-test",
 			Message:    protocoltypes.Message{Role: "user", Content: content},
 		})
-		_ = mgr.Ingest(ctx, &IngestRequest{
+		_, _ = mgr.Ingest(ctx, &IngestRequest{
 			SessionKey: "compact-test",
 			Message:    protocoltypes.Message{Role: "assistant", Content: "ok"},
 		})
@@ -630,7 +630,7 @@ func TestSeahorseAssembleReturnsAllSummaries(t *testing.T) {
 
 	// Create some messages first
 	for i := 0; i < 20; i++ {
-		_ = mgr.Ingest(ctx, &IngestRequest{
+		_, _ = mgr.Ingest(ctx, &IngestRequest{
 			SessionKey: sessionKey,
 			Message:    protocoltypes.Message{Role: "user", Content: fmt.Sprintf("Message %d", i)},
 		})
@@ -816,7 +816,7 @@ func TestSeahorseAssembleSummaryNotInMessages(t *testing.T) {
 
 	// Ingest some messages first
 	for i := 0; i < 10; i++ {
-		_ = mgr.Ingest(ctx, &IngestRequest{
+		_, _ = mgr.Ingest(ctx, &IngestRequest{
 			SessionKey: sessionKey,
 			Message:    protocoltypes.Message{Role: "user", Content: fmt.Sprintf("Message %d", i)},
 		})
@@ -1082,5 +1082,274 @@ func TestSeahorseSummarizeSkipsCondensedWhenBelowThreshold(t *testing.T) {
 
 	if tokensBefore < threshold && condensedCount > 0 {
 		t.Errorf("BUG: condensed created when tokens (%d) < threshold (%d)", tokensBefore, threshold)
+	}
+}
+
+// TestUserPromptMessageStampsMessageID guards the pipeline_setup link:
+// userPromptMessage(Dispatch.MessageID()) must stamp the channel-native ID
+// onto providers.Message.MessageID; otherwise providerToSeahorseMessage stores
+// an empty ChannelMessageID.
+func TestUserPromptMessageStampsMessageID(t *testing.T) {
+	const wantID = "telegram:chat-1:99"
+	msg := userPromptMessage("hi", nil, wantID, nil)
+	if msg.MessageID != wantID {
+		t.Fatalf("userPromptMessage.MessageID = %q, want %q", msg.MessageID, wantID)
+	}
+	converted := providerToSeahorseMessage(msg)
+	if converted.ChannelMessageID != wantID {
+		t.Fatalf("providerToSeahorseMessage.ChannelMessageID = %q, want %q",
+			converted.ChannelMessageID, wantID)
+	}
+}
+
+// TestInboundMetadataRoundTrip pins the persistence + annotation path for the
+// new MessageMetadata bag: provider message → seahorse store → assembled
+// <msg id sender reply_to> → fetch_message payload.
+func TestInboundMetadataRoundTrip(t *testing.T) {
+	engine, err := seahorse.NewEngine(seahorse.Config{
+		DBPath: t.TempDir() + "/test.db",
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+	mgr := &seahorseContextManager{engine: engine}
+
+	const sessionKey = "agent:metadata-roundtrip"
+	const msgID = "telegram:chat-1:200"
+	const replyID = "telegram:chat-1:199"
+	md := &protocoltypes.MessageMetadata{
+		SenderID:          "telegram:42",
+		SenderDisplayName: "Alice",
+		ReplyToMessageID:  replyID,
+	}
+
+	if _, err := mgr.Ingest(ctx, &IngestRequest{
+		SessionKey: sessionKey,
+		Message: protocoltypes.Message{
+			Role:      "user",
+			Content:   "follow-up question",
+			MessageID: msgID,
+			Metadata:  md,
+		},
+	}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	store := engine.GetRetrieval().Store()
+	got, err := store.GetMessageByChannelMessageID(ctx, msgID)
+	if err != nil {
+		t.Fatalf("GetMessageByChannelMessageID: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("message not found by channel_message_id %q", msgID)
+	}
+	if got.Metadata == nil {
+		t.Fatalf("metadata not persisted; want %+v", md)
+	}
+	if got.Metadata.SenderID != md.SenderID ||
+		got.Metadata.SenderDisplayName != md.SenderDisplayName ||
+		got.Metadata.ReplyToMessageID != md.ReplyToMessageID {
+		t.Errorf("metadata round-trip mismatch: got %+v want %+v", got.Metadata, md)
+	}
+
+	resp, err := mgr.Assemble(ctx, &AssembleRequest{SessionKey: sessionKey, Budget: 4096})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("Assemble returned nil")
+	}
+	wantAttrs := []string{
+		fmt.Sprintf(`id="%s"`, msgID),
+		`sender="Alice"`,
+		fmt.Sprintf(`reply_to="%s"`, replyID),
+	}
+	found := false
+	for _, h := range resp.History {
+		hit := true
+		for _, attr := range wantAttrs {
+			if !strings.Contains(h.Content, attr) {
+				hit = false
+				break
+			}
+		}
+		if hit {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Assemble history missing one of %v in any message; got %+v", wantAttrs, resp.History)
+	}
+
+	fetchRes := seahorse.NewFetchMessageTool(engine.GetRetrieval()).
+		Execute(ctx, map[string]any{"message_id": msgID})
+	if fetchRes == nil || fetchRes.IsError {
+		t.Fatalf("fetch_message error: %+v", fetchRes)
+	}
+	for _, want := range []string{"Sender: Alice", "Sender ID: telegram:42", "Reply To: " + replyID} {
+		if !strings.Contains(fetchRes.ForLLM, want) {
+			t.Errorf("fetch_message ForLLM missing %q: %q", want, fetchRes.ForLLM)
+		}
+	}
+}
+
+// TestAssistantDeliveredRefStamp pins the outbound assistant ingest path:
+// Pipeline.Finalize persists an assistant message without a channel ref,
+// agent.go later stamps the delivered ref via
+// ContextManager.UpdateChannelMessageID, and the row becomes fetchable by
+// that ref via fetch_message.
+func TestAssistantDeliveredRefStamp(t *testing.T) {
+	engine, err := seahorse.NewEngine(seahorse.Config{
+		DBPath: t.TempDir() + "/test.db",
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+	mgr := &seahorseContextManager{engine: engine}
+
+	const sessionKey = "agent:assistant-delivered-ref"
+	const assistantContent = "delivered assistant content"
+	const deliveredRef = "telegram:chat-1:777"
+
+	resp, err := mgr.Ingest(ctx, &IngestRequest{
+		SessionKey: sessionKey,
+		Message: protocoltypes.Message{
+			Role:    "assistant",
+			Content: assistantContent,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+	if resp == nil || len(resp.MessageIDs) == 0 {
+		t.Fatalf("Ingest response missing MessageIDs: %+v", resp)
+	}
+	rowID := resp.MessageIDs[0]
+
+	store := engine.GetRetrieval().Store()
+	if before, err := store.GetMessageByChannelMessageID(ctx, deliveredRef); err != nil {
+		t.Fatalf("pre-stamp lookup: %v", err)
+	} else if before != nil {
+		t.Fatalf("pre-stamp: row already addressable by %q", deliveredRef)
+	}
+
+	if err := mgr.UpdateChannelMessageID(ctx, sessionKey, rowID, deliveredRef); err != nil {
+		t.Fatalf("UpdateChannelMessageID: %v", err)
+	}
+
+	got, err := store.GetMessageByChannelMessageID(ctx, deliveredRef)
+	if err != nil {
+		t.Fatalf("post-stamp lookup: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("assistant row not addressable by delivered ref %q", deliveredRef)
+	}
+	if got.ID != rowID {
+		t.Errorf("post-stamp row ID = %d, want %d", got.ID, rowID)
+	}
+	if got.Role != "assistant" || got.Content != assistantContent {
+		t.Errorf("post-stamp row mismatch: role=%q content=%q", got.Role, got.Content)
+	}
+
+	fetchRes := seahorse.NewFetchMessageTool(engine.GetRetrieval()).
+		Execute(ctx, map[string]any{"message_id": deliveredRef})
+	if fetchRes == nil || fetchRes.IsError {
+		t.Fatalf("fetch_message error: %+v", fetchRes)
+	}
+	for _, want := range []string{
+		"Message ID: " + deliveredRef,
+		"Role: assistant",
+		assistantContent,
+	} {
+		if !strings.Contains(fetchRes.ForLLM, want) {
+			t.Errorf("fetch_message ForLLM missing %q: %q", want, fetchRes.ForLLM)
+		}
+	}
+}
+
+// TestDispatchMessageIDPersists verifies the full path:
+// providers.Message.MessageID (set from Dispatch.MessageID()) flows through
+// providerToSeahorseMessage → store as channel_message_id, is recovered by
+// GetMessageByChannelMessageID (used by fetch_message), and is rendered as
+// <msg id="..."> by the assembler.
+func TestDispatchMessageIDPersists(t *testing.T) {
+	engine, err := seahorse.NewEngine(seahorse.Config{
+		DBPath: t.TempDir() + "/test.db",
+	}, nil)
+	if err != nil {
+		t.Fatalf("NewEngine: %v", err)
+	}
+	defer engine.Close()
+
+	ctx := context.Background()
+	mgr := &seahorseContextManager{engine: engine}
+
+	const sessionKey = "agent:dispatch-msgid"
+	const wantMsgID = "telegram:chat-1:42"
+	const wantContent = "user content with channel id"
+
+	// userPromptMessage stamps Dispatch.MessageID() onto providers.Message.MessageID.
+	// Simulate that by ingesting the same shape Pipeline.SetupTurn would produce.
+	if _, err := mgr.Ingest(ctx, &IngestRequest{
+		SessionKey: sessionKey,
+		Message: protocoltypes.Message{
+			Role:      "user",
+			Content:   wantContent,
+			MessageID: wantMsgID,
+		},
+	}); err != nil {
+		t.Fatalf("Ingest: %v", err)
+	}
+
+	store := engine.GetRetrieval().Store()
+
+	got, err := store.GetMessageByChannelMessageID(ctx, wantMsgID)
+	if err != nil {
+		t.Fatalf("GetMessageByChannelMessageID: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("message not found by channel_message_id %q", wantMsgID)
+	}
+	if got.ChannelMessageID != wantMsgID {
+		t.Errorf("ChannelMessageID = %q, want %q", got.ChannelMessageID, wantMsgID)
+	}
+	if got.Content != wantContent {
+		t.Errorf("Content = %q, want %q", got.Content, wantContent)
+	}
+
+	resp, err := mgr.Assemble(ctx, &AssembleRequest{SessionKey: sessionKey, Budget: 4096})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if resp == nil {
+		t.Fatal("Assemble returned nil")
+	}
+
+	wantTag := fmt.Sprintf(`<msg id="%s">`, wantMsgID)
+	found := false
+	for _, h := range resp.History {
+		if strings.Contains(h.Content, wantTag) && strings.Contains(h.Content, wantContent) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("Assemble history missing %q wrapping %q; got %+v", wantTag, wantContent, resp.History)
+	}
+
+	fetchRes := seahorse.NewFetchMessageTool(engine.GetRetrieval()).
+		Execute(ctx, map[string]any{"message_id": wantMsgID})
+	if fetchRes == nil || fetchRes.IsError {
+		t.Fatalf("fetch_message error: %+v", fetchRes)
+	}
+	if !strings.Contains(fetchRes.ForLLM, wantMsgID) || !strings.Contains(fetchRes.ForLLM, wantContent) {
+		t.Errorf("fetch_message ForLLM missing id %q or content %q: %q", wantMsgID, wantContent, fetchRes.ForLLM)
 	}
 }

@@ -23,6 +23,8 @@ func promptBuildRequestForTurn(
 		ChatID:            ts.chatID,
 		SenderID:          ts.opts.Dispatch.SenderID(),
 		SenderDisplayName: ts.opts.SenderDisplayName,
+		MessageID:         ts.opts.Dispatch.MessageID(),
+		ReplyToMessageID:  ts.opts.Dispatch.ReplyToMessageID(),
 		ActiveSkills:      activeSkillNames(ts.agent, ts.opts),
 		Overlays:          promptOverlaysForOptions(ts.opts),
 	}
@@ -95,10 +97,31 @@ func promptMessageWithDefaultMetadata(
 	return promptMessageWithMetadata(msg, layer, slot, source)
 }
 
-func userPromptMessage(content string, media []string) providers.Message {
+// inboundMessageMetadata builds the per-message metadata bag from the
+// dispatch context. Returns nil when no useful fields are populated.
+func inboundMessageMetadata(opts processOptions) *providers.MessageMetadata {
+	md := &providers.MessageMetadata{
+		SenderID:          opts.Dispatch.SenderID(),
+		SenderDisplayName: opts.SenderDisplayName,
+		ReplyToMessageID:  opts.Dispatch.ReplyToMessageID(),
+	}
+	if md.IsEmpty() {
+		return nil
+	}
+	return md
+}
+
+func userPromptMessage(
+	content string,
+	media []string,
+	messageID string,
+	metadata *providers.MessageMetadata,
+) providers.Message {
 	msg := providers.Message{
-		Role:    "user",
-		Content: content,
+		Role:      "user",
+		Content:   content,
+		MessageID: messageID,
+		Metadata:  metadata,
 	}
 	if len(media) > 0 {
 		msg.Media = append([]string(nil), media...)

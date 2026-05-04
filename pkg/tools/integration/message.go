@@ -3,10 +3,11 @@ package integrationtools
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 )
 
-type SendCallbackWithContext func(ctx context.Context, channel, chatID, content, replyToMessageID string) error
+type SendCallbackWithContext func(ctx context.Context, channel, chatID, content, replyToMessageID string) ([]string, error)
 
 // sentTarget records the channel+chatID that the message tool sent to.
 type sentTarget struct {
@@ -54,7 +55,11 @@ func (t *MessageTool) Parameters() map[string]any {
 			},
 			"reply_to_message_id": map[string]any{
 				"type":        "string",
-				"description": "Optional: reply target message ID for channels that support threaded replies",
+				"description": "Optional: opaque channel-native message ID to reply to. Use a value from a previous <msg id=\"...\"> tag or from a wait_delivery=true response. Format depends on channel — Telegram: \"chat_id:msg_id\" or \"chat_id:topic_id:msg_id\"; Matrix: \"room_id event_id\".",
+			},
+			"wait_delivery": map[string]any{
+				"type":        "boolean",
+				"description": "Optional: if true, waits for delivery and returns the resulting message_id(s) (e.g., \"chat_id:msg_id\" for Telegram). Use this when you need to know the ID for subsequent edits/reactions.",
 			},
 		},
 		"required": []string{"content"},
@@ -106,6 +111,7 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 	channel, _ := args["channel"].(string)
 	chatID, _ := args["chat_id"].(string)
 	replyToMessageID, _ := args["reply_to_message_id"].(string)
+	waitDelivery, _ := args["wait_delivery"].(bool)
 
 	if channel == "" {
 		channel = ToolChannel(ctx)
@@ -122,7 +128,11 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		return &ToolResult{ForLLM: "Message sending not configured", IsError: true}
 	}
 
-	if err := t.sendCallback(ctx, channel, chatID, content, replyToMessageID); err != nil {
+	// Pass wait_delivery via context for the callback to handle
+	cbCtx := context.WithValue(ctx, "wait_delivery", waitDelivery)
+
+	deliveredIDs, err := t.sendCallback(cbCtx, channel, chatID, content, replyToMessageID)
+	if err != nil {
 		return &ToolResult{
 			ForLLM:  fmt.Sprintf("sending message: %v", err),
 			IsError: true,
@@ -135,9 +145,14 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 	t.sentTargets[sessionKey] = append(t.sentTargets[sessionKey], sentTarget{Channel: channel, ChatID: chatID})
 	t.mu.Unlock()
 
-	// Silent: user already received the message directly
+	res := fmt.Sprintf("Message sent to %s:%s", channel, chatID)
+	if len(deliveredIDs) > 0 {
+		res = fmt.Sprintf("Message sent. message_id: %s", strings.Join(deliveredIDs, ", "))
+	}
+
+	// Silent by default unless wait_delivery is requested
 	return &ToolResult{
-		ForLLM: fmt.Sprintf("Message sent to %s:%s", channel, chatID),
-		Silent: true,
+		ForLLM: res,
+		Silent: !waitDelivery,
 	}
 }

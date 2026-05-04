@@ -138,23 +138,53 @@ func registerSharedTools(
 			messageTool.SetSendCallback(func(
 				ctx context.Context,
 				channel, chatID, content, replyToMessageID string,
-			) error {
-				pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			) ([]string, error) {
+				pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)
 				defer pubCancel()
+
+				waitDelivery := false
+				if wd, ok := ctx.Value("wait_delivery").(bool); ok {
+					waitDelivery = wd
+				}
+
+				var feedback chan []string
+				if waitDelivery {
+					feedback = make(chan []string, 1)
+				}
+
 				outboundCtx := bus.NewOutboundContext(channel, chatID, replyToMessageID)
 				outboundAgentID, outboundSessionKey, outboundScope := outboundTurnMetadata(
 					tools.ToolAgentID(ctx),
 					tools.ToolSessionKey(ctx),
 					tools.ToolSessionScope(ctx),
 				)
-				return msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+
+				err := msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
 					Context:          outboundCtx,
 					AgentID:          outboundAgentID,
 					SessionKey:       outboundSessionKey,
 					Scope:            outboundScope,
 					Content:          content,
 					ReplyToMessageID: replyToMessageID,
+					Feedback:         feedback,
 				})
+				if err != nil {
+					return nil, err
+				}
+
+				if waitDelivery {
+					select {
+					case ids, ok := <-feedback:
+						if !ok {
+							return nil, fmt.Errorf("delivery failed")
+						}
+						return ids, nil
+					case <-pubCtx.Done():
+						return nil, fmt.Errorf("delivery timeout")
+					}
+				}
+
+				return nil, nil
 			})
 			agent.Tools.Register(messageTool)
 		}

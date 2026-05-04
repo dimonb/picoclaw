@@ -29,7 +29,7 @@ func (t *ReactionTool) Parameters() map[string]any {
 		"properties": map[string]any{
 			"message_id": map[string]any{
 				"type":        "string",
-				"description": "Optional: target message ID; defaults to the current inbound message",
+				"description": "Optional: opaque channel-native target message ID; defaults to the current inbound message. Format depends on channel — Telegram: \"chat_id:msg_id\" or \"chat_id:topic_id:msg_id\"; Matrix: \"room_id event_id\". Use a value from a previous <msg id=\"...\"> tag or from message wait_delivery=true response.",
 			},
 			"channel": map[string]any{
 				"type":        "string",

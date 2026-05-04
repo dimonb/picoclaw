@@ -3,6 +3,7 @@ package integrationtools
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/sipeed/picoclaw/pkg/session"
@@ -12,7 +13,7 @@ func TestMessageTool_Execute_Success(t *testing.T) {
 	tool := NewMessageTool()
 
 	var sentChannel, sentChatID, sentContent string
-	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) error {
+	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) ([]string, error) {
 		sentChannel = channel
 		sentChatID = chatID
 		sentContent = content
@@ -20,7 +21,7 @@ func TestMessageTool_Execute_Success(t *testing.T) {
 			t.Fatalf("expected empty turn metadata in basic context, got agent=%q session=%q scope=%+v",
 				ToolAgentID(ctx), ToolSessionKey(ctx), ToolSessionScope(ctx))
 		}
-		return nil
+		return nil, nil
 	})
 
 	ctx := WithToolContext(context.Background(), "test-channel", "test-chat-id")
@@ -67,10 +68,10 @@ func TestMessageTool_Execute_WithCustomChannel(t *testing.T) {
 	tool := NewMessageTool()
 
 	var sentChannel, sentChatID string
-	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) error {
+	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) ([]string, error) {
 		sentChannel = channel
 		sentChatID = chatID
-		return nil
+		return nil, nil
 	})
 
 	ctx := WithToolContext(context.Background(), "default-channel", "default-chat-id")
@@ -102,8 +103,8 @@ func TestMessageTool_Execute_SendFailure(t *testing.T) {
 	tool := NewMessageTool()
 
 	sendErr := errors.New("network error")
-	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) error {
-		return sendErr
+	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) ([]string, error) {
+		return nil, sendErr
 	})
 
 	ctx := WithToolContext(context.Background(), "test-channel", "test-chat-id")
@@ -155,8 +156,8 @@ func TestMessageTool_Execute_NoTargetChannel(t *testing.T) {
 	tool := NewMessageTool()
 	// No WithToolContext — channel/chatID are empty
 
-	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) error {
-		return nil
+	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) ([]string, error) {
+		return nil, nil
 	})
 
 	ctx := context.Background()
@@ -266,15 +267,30 @@ func TestMessageTool_Parameters(t *testing.T) {
 	if replyToProp["type"] != "string" {
 		t.Error("Expected reply_to_message_id type to be 'string'")
 	}
+	replyToDesc, _ := replyToProp["description"].(string)
+	for _, want := range []string{"chat_id:msg_id", "chat_id:topic_id:msg_id", "room_id event_id"} {
+		if !strings.Contains(replyToDesc, want) {
+			t.Errorf("reply_to_message_id description missing %q: %q", want, replyToDesc)
+		}
+	}
+
+	waitDeliveryProp, ok := props["wait_delivery"].(map[string]any)
+	if !ok {
+		t.Fatal("Expected 'wait_delivery' property")
+	}
+	waitDeliveryDesc, _ := waitDeliveryProp["description"].(string)
+	if !strings.Contains(waitDeliveryDesc, "chat_id:msg_id") {
+		t.Errorf("wait_delivery description missing Telegram example: %q", waitDeliveryDesc)
+	}
 }
 
 func TestMessageTool_Execute_WithReplyToMessageID(t *testing.T) {
 	tool := NewMessageTool()
 
 	var sentReplyTo string
-	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) error {
+	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) ([]string, error) {
 		sentReplyTo = replyToMessageID
-		return nil
+		return nil, nil
 	})
 
 	ctx := WithToolContext(context.Background(), "test-channel", "test-chat-id")
@@ -292,16 +308,45 @@ func TestMessageTool_Execute_WithReplyToMessageID(t *testing.T) {
 	}
 }
 
+func TestMessageTool_Execute_WaitDeliveryReturnsDeliveredRefs(t *testing.T) {
+	tool := NewMessageTool()
+
+	const deliveredRef = "12345:9:67"
+	var gotWaitDelivery bool
+	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) ([]string, error) {
+		gotWaitDelivery, _ = ctx.Value("wait_delivery").(bool)
+		return []string{deliveredRef}, nil
+	})
+
+	ctx := WithToolContext(context.Background(), "telegram", "12345")
+	result := tool.Execute(ctx, map[string]any{
+		"content":       "hello",
+		"wait_delivery": true,
+	})
+	if result.IsError {
+		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	}
+	if !gotWaitDelivery {
+		t.Fatal("send callback did not receive wait_delivery=true")
+	}
+	if result.Silent {
+		t.Fatal("wait_delivery result should be visible to the LLM")
+	}
+	if !strings.Contains(result.ForLLM, "message_id: "+deliveredRef) {
+		t.Fatalf("result missing delivered ref %q: %q", deliveredRef, result.ForLLM)
+	}
+}
+
 func TestMessageTool_Execute_PropagatesTurnSessionMetadata(t *testing.T) {
 	tool := NewMessageTool()
 
 	var gotAgentID, gotSessionKey string
 	var gotScope *session.SessionScope
-	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) error {
+	tool.SetSendCallback(func(ctx context.Context, channel, chatID, content, replyToMessageID string) ([]string, error) {
 		gotAgentID = ToolAgentID(ctx)
 		gotSessionKey = ToolSessionKey(ctx)
 		gotScope = ToolSessionScope(ctx)
-		return nil
+		return nil, nil
 	})
 
 	ctx := WithToolContext(context.Background(), "test-channel", "test-chat-id")

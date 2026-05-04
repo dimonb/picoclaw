@@ -34,8 +34,9 @@ type CompleteOptions struct {
 
 // IngestResult is the result of message ingestion.
 type IngestResult struct {
-	MessageCount int `json:"messageCount"`
-	TokenCount   int `json:"tokenCount"`
+	MessageCount int     `json:"messageCount"`
+	TokenCount   int     `json:"tokenCount"`
+	MessageIDs   []int64 `json:"messageIds,omitempty"`
 }
 
 // AssembleInput controls context assembly.
@@ -259,6 +260,8 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 				msg.Role,
 				msg.Parts,
 				msg.ReasoningContent,
+				msg.ChannelMessageID,
+				msg.Metadata,
 				msg.TokenCount,
 			)
 		} else {
@@ -268,6 +271,8 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 				msg.Role,
 				msg.Content,
 				msg.ReasoningContent,
+				msg.ChannelMessageID,
+				msg.Metadata,
 				msg.TokenCount,
 			)
 		}
@@ -291,7 +296,24 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 	return &IngestResult{
 		MessageCount: len(messages),
 		TokenCount:   totalTokens,
+		MessageIDs:   msgIDs,
 	}, nil
+}
+
+// UpdateMessageChannelMessageID stamps an opaque channel-native ref onto a
+// previously ingested message. Used by the agent loop after delivery so the
+// persisted assistant row becomes addressable by its delivered ref.
+func (e *Engine) UpdateMessageChannelMessageID(ctx context.Context, sessionKey string, messageID int64, channelMessageID string) error {
+	if e.shouldIgnoreSession(sessionKey) {
+		return nil
+	}
+	if e.isStatelessSession(sessionKey) {
+		return nil
+	}
+	mu := e.getSessionMutex(sessionKey)
+	mu.Lock()
+	defer mu.Unlock()
+	return e.store.UpdateMessageChannelMessageID(ctx, messageID, channelMessageID)
 }
 
 // Close releases resources.

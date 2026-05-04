@@ -88,11 +88,37 @@ type Message struct {
 	ToolCalls        []ToolCall     `json:"tool_calls,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
 
+	// MessageID is an opaque channel-native message reference.
+	// Internal to agent runtime, not sent to LLM providers.
+	MessageID string `json:"message_id,omitempty"`
+
+	// Metadata carries channel-derived inbound facts that are stored alongside
+	// the message but not sent to LLM providers. Used by seahorse for the
+	// <msg sender=… reply_to=…> annotation and the fetch_message tool.
+	Metadata *MessageMetadata `json:"metadata,omitempty"`
+
 	// Prompt metadata is internal to the agent runtime. It records where a
 	// message or system part came from without changing provider/session JSON.
 	PromptLayer  string `json:"-"`
 	PromptSlot   string `json:"-"`
 	PromptSource string `json:"-"`
+}
+
+// MessageMetadata is a typed bag of inbound facts captured at ingest time.
+// All fields are optional; a metadata with no useful fields is treated as nil
+// and is not stored.
+type MessageMetadata struct {
+	SenderID          string `json:"sender_id,omitempty"`
+	SenderDisplayName string `json:"sender_display_name,omitempty"`
+	ReplyToMessageID  string `json:"reply_to_message_id,omitempty"`
+}
+
+// IsEmpty reports whether the metadata carries no useful fields.
+func (m *MessageMetadata) IsEmpty() bool {
+	if m == nil {
+		return true
+	}
+	return m.SenderID == "" && m.SenderDisplayName == "" && m.ReplyToMessageID == ""
 }
 
 type ToolDefinition struct {

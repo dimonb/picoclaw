@@ -360,7 +360,11 @@ func (c *TelegramChannel) sendChunk(
 		}
 	}
 
-	return strconv.Itoa(pMsg.MessageID), nil
+	msgID := strconv.Itoa(pMsg.MessageID)
+	if params.threadID != 0 {
+		return fmt.Sprintf("%d:%d:%s", params.chatID, params.threadID, msgID), nil
+	}
+	return fmt.Sprintf("%d:%s", params.chatID, msgID), nil
 }
 
 // maxTypingDuration limits how long the typing indicator can run.
@@ -411,14 +415,21 @@ func (c *TelegramChannel) StartTyping(ctx context.Context, chatID string) (func(
 // EditMessage implements channels.MessageEditor.
 func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messageID string, content string) error {
 	useMarkdownV2 := c.tgCfg.UseMarkdownV2
-	cid, _, err := parseTelegramChatID(chatID)
+
+	// Try parsing messageID as opaque reference chat_id:msg_id or chat_id:thread_id:msg_id
+	cid, _, mid, err := parseTelegramOpaqueID(messageID)
 	if err != nil {
-		return err
+		// Fallback to legacy behavior: parse chatID and treat messageID as raw
+		cid, _, err = parseTelegramChatID(chatID)
+		if err != nil {
+			return err
+		}
+		mid, err = strconv.Atoi(messageID)
+		if err != nil {
+			return err
+		}
 	}
-	mid, err := strconv.Atoi(messageID)
-	if err != nil {
-		return err
-	}
+
 	parsedContent := parseContent(content, useMarkdownV2)
 	editMsg := tu.EditMessageText(tu.ID(cid), mid, parsedContent)
 	if useMarkdownV2 {
@@ -479,6 +490,51 @@ func (c *TelegramChannel) DeleteMessage(ctx context.Context, chatID string, mess
 		ChatID:    tu.ID(cid),
 		MessageID: mid,
 	})
+}
+
+// ReactToMessage implements channels.ReactionCapable.
+func (c *TelegramChannel) ReactToMessage(ctx context.Context, chatID, messageID string) (undo func(), err error) {
+	// Try parsing messageID as opaque reference
+	cid, _, mid, err := parseTelegramOpaqueID(messageID)
+	if err != nil {
+		// Fallback to chatID and raw messageID
+		cid, _, err = parseTelegramChatID(chatID)
+		if err != nil {
+			return nil, err
+		}
+		mid, err = strconv.Atoi(messageID)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	reactionParams := &telego.SetMessageReactionParams{
+		ChatID:    tu.ID(cid),
+		MessageID: mid,
+		Reaction: []telego.ReactionType{
+			&telego.ReactionTypeEmoji{
+				Type:  "emoji",
+				Emoji: "👀",
+			},
+		},
+	}
+
+	err = c.bot.SetMessageReaction(ctx, reactionParams)
+	if err != nil {
+		return nil, fmt.Errorf("telegram reaction: %w", err)
+	}
+
+	undo = func() {
+		// Use a background context for undo as the original may be canceled
+		uCtx := context.Background()
+		_ = c.bot.SetMessageReaction(uCtx, &telego.SetMessageReactionParams{
+			ChatID:    tu.ID(cid),
+			MessageID: mid,
+			Reaction:  []telego.ReactionType{}, // empty list removes reaction
+		})
+	}
+
+	return undo, nil
 }
 
 func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
@@ -895,15 +951,20 @@ func (c *TelegramChannel) handleMessage(ctx context.Context, message *telego.Mes
 		ChatID:    fmt.Sprintf("%d", chatID),
 		ChatType:  peerKind,
 		SenderID:  platformID,
-		MessageID: messageID,
+		MessageID: fmt.Sprintf("%d:%s", chatID, messageID),
 		Mentioned: isMentioned,
 		Raw:       metadata,
 	}
 	if message.Chat.IsForum && threadID != 0 {
 		inboundCtx.TopicID = fmt.Sprintf("%d", threadID)
+		inboundCtx.MessageID = fmt.Sprintf("%d:%d:%s", chatID, threadID, messageID)
 	}
 	if message.ReplyToMessage != nil {
-		inboundCtx.ReplyToMessageID = fmt.Sprintf("%d", message.ReplyToMessage.MessageID)
+		replyID := fmt.Sprintf("%d", message.ReplyToMessage.MessageID)
+		inboundCtx.ReplyToMessageID = fmt.Sprintf("%d:%s", chatID, replyID)
+		if message.Chat.IsForum && message.ReplyToMessage.MessageThreadID != 0 {
+			inboundCtx.ReplyToMessageID = fmt.Sprintf("%d:%d:%s", chatID, message.ReplyToMessage.MessageThreadID, replyID)
+		}
 	}
 
 	c.HandleMessageWithContext(
@@ -1151,6 +1212,38 @@ func parseTelegramChatID(chatID string) (int64, int, error) {
 		return 0, 0, fmt.Errorf("invalid thread ID in chat ID %q: %w", chatID, err)
 	}
 	return cid, tid, nil
+}
+
+// parseTelegramOpaqueID splits "chat_id:message_id" or "chat_id:thread_id:message_id"
+// into its components.
+func parseTelegramOpaqueID(opaqueID string) (chatID int64, threadID int, messageID int, err error) {
+	parts := strings.Split(opaqueID, ":")
+	if len(parts) < 2 || len(parts) > 3 {
+		return 0, 0, 0, fmt.Errorf("invalid opaque Telegram ID format: %q", opaqueID)
+	}
+
+	chatID, err = strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("invalid chat ID in opaque ID %q: %w", opaqueID, err)
+	}
+
+	if len(parts) == 3 {
+		threadID, err = strconv.Atoi(parts[1])
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("invalid thread ID in opaque ID %q: %w", opaqueID, err)
+		}
+		messageID, err = strconv.Atoi(parts[2])
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("invalid message ID in opaque ID %q: %w", opaqueID, err)
+		}
+	} else {
+		messageID, err = strconv.Atoi(parts[1])
+		if err != nil {
+			return 0, 0, 0, fmt.Errorf("invalid message ID in opaque ID %q: %w", opaqueID, err)
+		}
+	}
+
+	return chatID, threadID, messageID, nil
 }
 
 func resolveTelegramOutboundTarget(chatID string, outboundCtx *bus.InboundContext) (int64, int, error) {
