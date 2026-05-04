@@ -29,22 +29,22 @@ const (
 // ---------- request structs ----------
 
 type wsRequest struct {
-	Type               string          `json:"type"`
-	Model              string          `json:"model"`
-	Instructions       string          `json:"instructions,omitempty"`
-	PreviousResponseID string          `json:"previous_response_id,omitempty"`
-	Input              []wsInputItem   `json:"input"`
-	Tools              []wsToolDef     `json:"tools,omitempty"`
-	ToolChoice         string          `json:"tool_choice"`
-	ParallelToolCalls  bool            `json:"parallel_tool_calls"`
-	Reasoning          *wsReasoning    `json:"reasoning,omitempty"`
-	Store              bool            `json:"store"`
-	Stream             bool            `json:"stream"`
-	Include            []string        `json:"include,omitempty"`
-	PromptCacheKey     string          `json:"prompt_cache_key,omitempty"`
-	Text               *wsText         `json:"text,omitempty"`
-	Generate           *bool           `json:"generate,omitempty"`
-	ClientMetadata     map[string]any  `json:"client_metadata,omitempty"`
+	Type               string         `json:"type"`
+	Model              string         `json:"model"`
+	Instructions       string         `json:"instructions,omitempty"`
+	PreviousResponseID string         `json:"previous_response_id,omitempty"`
+	Input              []wsInputItem  `json:"input"`
+	Tools              []wsToolDef    `json:"tools,omitempty"`
+	ToolChoice         string         `json:"tool_choice"`
+	ParallelToolCalls  bool           `json:"parallel_tool_calls"`
+	Reasoning          *wsReasoning   `json:"reasoning,omitempty"`
+	Store              bool           `json:"store"`
+	Stream             bool           `json:"stream"`
+	Include            []string       `json:"include,omitempty"`
+	PromptCacheKey     string         `json:"prompt_cache_key,omitempty"`
+	Text               *wsText        `json:"text,omitempty"`
+	Generate           *bool          `json:"generate,omitempty"`
+	ClientMetadata     map[string]any `json:"client_metadata,omitempty"`
 }
 
 type wsReasoning struct {
@@ -121,20 +121,20 @@ type wsEvent struct {
 }
 
 type wsResponseObj struct {
-	ID     string        `json:"id"`
-	Status string        `json:"status"`
+	ID     string         `json:"id"`
+	Status string         `json:"status"`
 	Output []wsOutputItem `json:"output"`
-	Usage  wsUsage       `json:"usage"`
+	Usage  wsUsage        `json:"usage"`
 }
 
 type wsOutputItem struct {
-	ID        string            `json:"id"`
-	Type      string            `json:"type"`
-	Role      string            `json:"role,omitempty"`
-	Content   []wsContentPart   `json:"content,omitempty"`
-	Name      string            `json:"name,omitempty"`
-	CallID    string            `json:"call_id,omitempty"`
-	Arguments string            `json:"arguments,omitempty"`
+	ID        string          `json:"id"`
+	Type      string          `json:"type"`
+	Role      string          `json:"role,omitempty"`
+	Content   []wsContentPart `json:"content,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	CallID    string          `json:"call_id,omitempty"`
+	Arguments string          `json:"arguments,omitempty"`
 }
 
 type wsContentPart struct {
@@ -171,7 +171,7 @@ type wsSessionState struct {
 // own WebSocket connection to avoid cross-session state contamination.
 // Concurrent sessions run in parallel — the global mu only guards the map.
 type CodexWSProvider struct {
-	tokenSource     func() (string, string, error)
+	tokenSource func() (string, string, error)
 	// accountID is written by concurrent connectSession calls (each under their
 	// own sess.mu), so use atomic to avoid data races.
 	accountID       atomic.Pointer[string]
@@ -716,7 +716,11 @@ func buildWSInput(msgs []Message) []wsInputItem {
 				items = append(items, wsFunctionCallOutputItem(msg.ToolCallID, msg.Content))
 			} else if len(msg.Media) > 0 {
 				parts := buildWSContentParts(msg)
-				items = append(items, wsMessageItemWithParts("user", parts))
+				if len(parts) == 0 {
+					items = append(items, wsMessageItem("user", msg.Content))
+				} else {
+					items = append(items, wsMessageItemWithParts("user", parts))
+				}
 			} else {
 				items = append(items, wsMessageItem("user", msg.Content))
 			}
@@ -748,7 +752,7 @@ func buildWSContentParts(msg Message) []map[string]any {
 		parts = append(parts, map[string]any{"type": "input_text", "text": msg.Content})
 	}
 	for _, mediaURL := range msg.Media {
-		if strings.HasPrefix(mediaURL, "data:image/") {
+		if isSupportedCodexImageDataURL(mediaURL) {
 			parts = append(parts, map[string]any{
 				"type":      "input_image",
 				"image_url": mediaURL,
@@ -757,6 +761,23 @@ func buildWSContentParts(msg Message) []map[string]any {
 		}
 	}
 	return parts
+}
+
+func isSupportedCodexImageDataURL(mediaURL string) bool {
+	lower := strings.ToLower(strings.TrimSpace(mediaURL))
+	if !strings.HasPrefix(lower, "data:") {
+		return false
+	}
+	mediaType := strings.TrimPrefix(lower, "data:")
+	if idx := strings.IndexAny(mediaType, ";,"); idx >= 0 {
+		mediaType = mediaType[:idx]
+	}
+	switch mediaType {
+	case "image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif":
+		return true
+	default:
+		return false
+	}
 }
 
 func translateToolsForWS(tools []ToolDefinition, enableWebSearch bool) []wsToolDef {

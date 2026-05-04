@@ -30,3 +30,34 @@ func TestNormalizeCodexWSReplayCursor(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildWSContentPartsSkipsSVG(t *testing.T) {
+	t.Parallel()
+
+	svgURL := "data:" + "image/svg+xml;base64,PHN2Zz48L3N2Zz4="
+	parts := buildWSContentParts(Message{
+		Content: "what is this?",
+		Media:   []string{svgURL},
+	})
+
+	if len(parts) != 1 {
+		t.Fatalf("len(parts) = %d, want 1 text part", len(parts))
+	}
+	if got := parts[0]["type"]; got != "input_text" {
+		t.Fatalf("parts[0].type = %v, want input_text", got)
+	}
+}
+
+func TestSupportedCodexImageDataURL(t *testing.T) {
+	t.Parallel()
+
+	pngURL := "data:" + "image/png;base64,abc"
+	if !isSupportedCodexImageDataURL(pngURL) {
+		t.Fatal("png should be supported")
+	}
+
+	svgURL := "data:" + "image/svg+xml;base64,abc"
+	if isSupportedCodexImageDataURL(svgURL) {
+		t.Fatal("svg should not be sent as input_image")
+	}
+}

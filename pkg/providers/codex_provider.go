@@ -438,7 +438,7 @@ func buildCodexMessageContent(msg Message) responses.EasyInputMessageContentUnio
 		})
 	}
 	for _, mediaURL := range msg.Media {
-		if !strings.HasPrefix(mediaURL, "data:image/") {
+		if !isSupportedCodexImageDataURL(mediaURL) {
 			continue
 		}
 		parts = append(parts, responses.ResponseInputContentUnionParam{
