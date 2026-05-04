@@ -87,6 +87,11 @@ type turnResult struct {
 	modelName    string
 	status       TurnEndStatus
 	followUps    []bus.InboundMessage
+	// assistantMessageID is the ContextManager-internal row ID of the
+	// just-persisted assistant message in this turn (0 if no assistant
+	// message was persisted). Surfaced so the caller can stamp the
+	// delivered channel ref onto the row after PublishOutbound completes.
+	assistantMessageID int64
 }
 
 // =============================================================================
@@ -675,20 +680,28 @@ func (ts *turnState) refreshRestorePointFromSession(agent *AgentInstance) {
 }
 
 // ingestMessage calls the ContextManager's Ingest method for a persisted message.
-// Errors are logged but never block the turn.
-func (ts *turnState) ingestMessage(ctx context.Context, al *AgentLoop, msg providers.Message) {
+// Errors are logged but never block the turn. Returns the first inserted
+// ContextManager-internal message ID, or 0 when unavailable (no manager,
+// stateless session, legacy manager, error).
+func (ts *turnState) ingestMessage(ctx context.Context, al *AgentLoop, msg providers.Message) int64 {
 	if al.contextManager == nil {
-		return
+		return 0
 	}
-	if err := al.contextManager.Ingest(ctx, &IngestRequest{
+	resp, err := al.contextManager.Ingest(ctx, &IngestRequest{
 		SessionKey: ts.sessionKey,
 		Message:    msg,
-	}); err != nil {
+	})
+	if err != nil {
 		logger.WarnCF("agent", "Context manager ingest failed", map[string]any{
 			"session_key": ts.sessionKey,
 			"error":       err.Error(),
 		})
+		return 0
 	}
+	if resp == nil || len(resp.MessageIDs) == 0 {
+		return 0
+	}
+	return resp.MessageIDs[0]
 }
 
 func (ts *turnState) restoreSession(agent *AgentInstance) error {

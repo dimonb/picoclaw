@@ -407,8 +407,8 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 		ctx context.Context,
 		channel, chatID, content, replyToMessageID string,
 		mediaParts []bus.MediaPart,
-	) error {
-		return nil
+	) ([]string, error) {
+		return nil, nil
 	})
 	defaultAgent.Tools.Register(mt)
 

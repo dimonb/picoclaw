@@ -26,7 +26,7 @@ func TestMatchingTurnMessageTail_IgnoresInternalRuntimeFields(t *testing.T) {
 	}
 
 	persisted := []providers.Message{
-		userPromptMessage("question", nil),
+		userPromptMessage("question", nil, "", nil),
 		{
 			Role: "assistant",
 			ToolCalls: []providers.ToolCall{
@@ -60,7 +60,7 @@ func TestSplitHistoryForActiveTurn_ProtectsPersistedTail(t *testing.T) {
 	}
 
 	persisted := []providers.Message{
-		userPromptMessage("current question", nil),
+		userPromptMessage("current question", nil, "", nil),
 		{Role: "tool", Content: "tool output", ToolCallID: "call_1"},
 	}
 
@@ -85,7 +85,7 @@ func TestTrimHistoryToFitContextWindow_WithProtectedTurnTailKeepsActiveTurn(t *t
 	}
 
 	stable, protected := splitHistoryForActiveTurn(history, []providers.Message{
-		userPromptMessage(current, nil),
+		userPromptMessage(current, nil, "", nil),
 	})
 	trimmedStable, messages, fit := trimHistoryToFitContextWindow(
 		stable,

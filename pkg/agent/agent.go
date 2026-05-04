@@ -589,6 +589,10 @@ func (al *AgentLoop) runAgentLoop(
 			opts.Dispatch.SessionKey,
 			opts.Dispatch.SessionScope,
 		)
+		var feedback chan []string
+		if result.assistantMessageID != 0 && al.contextManager != nil {
+			feedback = make(chan []string, 1)
+		}
 		msg := bus.OutboundMessage{
 			Context: outboundContextFromInbound(
 				opts.Dispatch.InboundContext,
@@ -601,6 +605,7 @@ func (al *AgentLoop) runAgentLoop(
 			Scope:        scope,
 			Content:      result.finalContent,
 			ContextUsage: computeContextUsage(agent, opts.Dispatch.SessionKey),
+			Feedback:     feedback,
 		}
 		if modelName := strings.TrimSpace(result.modelName); modelName != "" {
 			if msg.Context.Raw == nil {
@@ -610,6 +615,13 @@ func (al *AgentLoop) runAgentLoop(
 		}
 		markFinalOutbound(&msg)
 		al.bus.PublishOutbound(ctx, msg)
+		if feedback != nil {
+			go al.stampAssistantDeliveredRef(
+				sessionKey,
+				result.assistantMessageID,
+				feedback,
+			)
+		}
 	}
 
 	if result.finalContent != "" {
@@ -624,6 +636,56 @@ func (al *AgentLoop) runAgentLoop(
 	}
 
 	return result.finalContent, nil
+}
+
+// stampAssistantDeliveredRef waits on the outbound feedback channel and
+// stamps the first delivered ref onto the persisted assistant message in
+// the active ContextManager. Closed (nil) feedback signals delivery
+// failure — nothing to stamp. Runs in its own goroutine because callers
+// fire-and-forget the outbound publish.
+func (al *AgentLoop) stampAssistantDeliveredRef(
+	sessionKey string,
+	messageID int64,
+	feedback <-chan []string,
+) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.WarnCF("agent", "stampAssistantDeliveredRef panic recovered", map[string]any{
+				"session_key": sessionKey,
+				"panic":       r,
+			})
+		}
+	}()
+
+	const deliveryTimeout = 30 * time.Second
+	var refs []string
+	select {
+	case got, ok := <-feedback:
+		if !ok {
+			return
+		}
+		refs = got
+	case <-time.After(deliveryTimeout):
+		logger.WarnCF("agent", "outbound delivery feedback timeout", map[string]any{
+			"session_key": sessionKey,
+			"message_id":  messageID,
+		})
+		return
+	}
+	if len(refs) == 0 || refs[0] == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := al.contextManager.UpdateChannelMessageID(ctx, sessionKey, messageID, refs[0]); err != nil {
+		logger.WarnCF("agent", "stamp assistant delivered ref failed", map[string]any{
+			"session_key":        sessionKey,
+			"message_id":         messageID,
+			"channel_message_id": refs[0],
+			"error":              err.Error(),
+		})
+	}
 }
 
 // selectCandidates returns the model candidates and resolved model name to use

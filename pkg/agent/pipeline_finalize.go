@@ -41,6 +41,7 @@ func (p *Pipeline) Finalize(
 
 	ts.setPhase(TurnPhaseFinalizing)
 	ts.setFinalContent(finalContent)
+	var assistantMessageID int64
 	if !ts.opts.NoHistory {
 		finalMsg := providers.Message{
 			Role:             "assistant",
@@ -50,7 +51,7 @@ func (p *Pipeline) Finalize(
 		}
 		ts.agent.Sessions.AddFullMessage(ts.sessionKey, finalMsg)
 		ts.recordPersistedMessage(finalMsg)
-		ts.ingestMessage(turnCtx, al, finalMsg)
+		assistantMessageID = ts.ingestMessage(turnCtx, al, finalMsg)
 		if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {
 			al.emitEvent(
 				runtimeevents.KindAgentError,
@@ -99,9 +100,10 @@ func (p *Pipeline) Finalize(
 	}
 	ts.setPhase(TurnPhaseCompleted)
 	return turnResult{
-		finalContent: finalContent,
-		modelName:    exec.llmModelName,
-		status:       turnStatus,
-		followUps:    append([]bus.InboundMessage(nil), ts.followUps...),
+		finalContent:       finalContent,
+		modelName:          exec.llmModelName,
+		status:             turnStatus,
+		followUps:          append([]bus.InboundMessage(nil), ts.followUps...),
+		assistantMessageID: assistantMessageID,
 	}, nil
 }

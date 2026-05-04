@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
 // helper: open a test engine with in-memory DB
@@ -520,6 +522,9 @@ func TestBootstrapRepairsIncorrectNonEmptyModelName(t *testing.T) {
 		"world",
 		"wrong-model",
 		"",
+		"",
+		nil,
+		nil,
 		3,
 		time.Time{},
 	)
@@ -1981,6 +1986,117 @@ func TestSelectShallowestCondensationWithNonConsecutiveDepths(t *testing.T) {
 			if c.Depth != expectedDepth {
 				t.Errorf("candidates have mixed depths: %d vs %d", expectedDepth, c.Depth)
 			}
+		}
+	}
+}
+
+// --- Bootstrap backfill ---
+
+// TestBootstrapBackfillsMissingFields simulates upgrading from an older
+// database where channel_message_id, metadata and attachments were not
+// captured during ingest. A subsequent Bootstrap with the canonical JSONL
+// history must populate the missing fields in place without rebuilding,
+// so future Assemble / fetch_message calls see the correct provenance.
+func TestBootstrapBackfillsMissingFields(t *testing.T) {
+	eng := newTestEngine(t)
+	ctx := context.Background()
+	sessionKey := "agent:backfill"
+
+	// Seed the DB as if an older ingest had stored only role+content.
+	conv, err := eng.store.GetOrCreateConversation(ctx, sessionKey)
+	if err != nil {
+		t.Fatalf("GetOrCreateConversation: %v", err)
+	}
+	stored, err := eng.store.AddMessageWithReasoning(
+		ctx, conv.ConversationID, "user", "hello", "", "", "", nil, nil, 3, time.Time{},
+	)
+	if err != nil {
+		t.Fatalf("seed AddMessageWithReasoning: %v", err)
+	}
+	if err := eng.store.AppendContextMessage(ctx, conv.ConversationID, stored.ID); err != nil {
+		t.Fatalf("AppendContextMessage: %v", err)
+	}
+
+	wantChannelID := "telegram:9001"
+	wantMeta := &protocoltypes.MessageMetadata{
+		SenderID:          "telegram:42",
+		SenderDisplayName: "Alice",
+	}
+	wantAtts := []protocoltypes.Attachment{
+		{Type: "file", Ref: "tg://doc/1", Filename: "notes.txt", ContentType: "text/plain"},
+	}
+
+	canonical := []Message{
+		{
+			Role:             "user",
+			Content:          "hello",
+			ChannelMessageID: wantChannelID,
+			Metadata:         wantMeta,
+			Attachments:      wantAtts,
+			TokenCount:       3,
+		},
+	}
+
+	if err := eng.Bootstrap(ctx, sessionKey, canonical); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	got, err := eng.store.GetMessageByID(ctx, stored.ID)
+	if err != nil {
+		t.Fatalf("GetMessageByID: %v", err)
+	}
+	if got.ChannelMessageID != wantChannelID {
+		t.Errorf("ChannelMessageID = %q, want %q", got.ChannelMessageID, wantChannelID)
+	}
+	if got.Metadata == nil || got.Metadata.SenderID != wantMeta.SenderID || got.Metadata.SenderDisplayName != wantMeta.SenderDisplayName {
+		t.Errorf("Metadata = %+v, want %+v", got.Metadata, wantMeta)
+	}
+	if len(got.Attachments) != 1 || got.Attachments[0] != wantAtts[0] {
+		t.Errorf("Attachments = %+v, want %+v", got.Attachments, wantAtts)
+	}
+
+	// The row ID must be unchanged: backfill must not rebuild the message.
+	if got.ID != stored.ID {
+		t.Errorf("message ID changed: %d -> %d (rebuild instead of backfill)", stored.ID, got.ID)
+	}
+}
+
+// TestBootstrapRoundTripsAttachments verifies attachments survive a fresh
+// Bootstrap into an empty DB and come back through GetMessages identically.
+func TestBootstrapRoundTripsAttachments(t *testing.T) {
+	eng := newTestEngine(t)
+	ctx := context.Background()
+	sessionKey := "agent:attach-rt"
+
+	wantAtts := []protocoltypes.Attachment{
+		{Type: "image", URL: "https://example.com/a.png", Filename: "a.png", ContentType: "image/png"},
+		{Type: "file", Ref: "blob:42", Filename: "b.bin", ContentType: "application/octet-stream"},
+	}
+	canonical := []Message{
+		{Role: "user", Content: "see attached", Attachments: wantAtts, TokenCount: 4},
+	}
+
+	if err := eng.Bootstrap(ctx, sessionKey, canonical); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	conv, err := eng.store.GetConversationBySessionKey(ctx, sessionKey)
+	if err != nil || conv == nil {
+		t.Fatalf("GetConversation: %v conv=%v", err, conv)
+	}
+	stored, err := eng.store.GetMessages(ctx, conv.ConversationID, 10, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(stored) != 1 {
+		t.Fatalf("expected 1 stored message, got %d", len(stored))
+	}
+	if len(stored[0].Attachments) != len(wantAtts) {
+		t.Fatalf("Attachments len = %d, want %d", len(stored[0].Attachments), len(wantAtts))
+	}
+	for i, a := range wantAtts {
+		if stored[0].Attachments[i] != a {
+			t.Errorf("Attachments[%d] = %+v, want %+v", i, stored[0].Attachments[i], a)
 		}
 	}
 }

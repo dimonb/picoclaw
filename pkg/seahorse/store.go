@@ -3,12 +3,73 @@ package seahorse
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
 const sqliteTimeLayout = "2006-01-02 15:04:05"
+
+// encodeMetadata returns the JSON form of metadata, or NULL when empty.
+func encodeMetadata(m *protocoltypes.MessageMetadata) any {
+	if m.IsEmpty() {
+		return nil
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	return string(b)
+}
+
+// decodeMetadata parses JSON metadata from a nullable column. Returns nil when
+// the column is NULL or empty. Decode errors are logged-out as nil to avoid
+// breaking reads on legacy or corrupt rows.
+func decodeMetadata(raw sql.NullString) *protocoltypes.MessageMetadata {
+	if !raw.Valid || raw.String == "" {
+		return nil
+	}
+	var md protocoltypes.MessageMetadata
+	if err := json.Unmarshal([]byte(raw.String), &md); err != nil {
+		return nil
+	}
+	if md.IsEmpty() {
+		return nil
+	}
+	return &md
+}
+
+// encodeAttachments returns the JSON form of attachments, or NULL when empty.
+func encodeAttachments(atts []protocoltypes.Attachment) any {
+	if len(atts) == 0 {
+		return nil
+	}
+	b, err := json.Marshal(atts)
+	if err != nil {
+		return nil
+	}
+	return string(b)
+}
+
+// decodeAttachments parses JSON attachments from a nullable column. Returns nil
+// when the column is NULL or empty. Decode errors are swallowed (return nil) so
+// legacy or corrupt rows do not break reads.
+func decodeAttachments(raw sql.NullString) []protocoltypes.Attachment {
+	if !raw.Valid || raw.String == "" {
+		return nil
+	}
+	var atts []protocoltypes.Attachment
+	if err := json.Unmarshal([]byte(raw.String), &atts); err != nil {
+		return nil
+	}
+	if len(atts) == 0 {
+		return nil
+	}
+	return atts
+}
 
 // Store provides SQLite storage for seahorse.
 type Store struct {
@@ -167,7 +228,7 @@ func (s *Store) getMessageTimeRange(ctx context.Context, convID int64) (time.Tim
 
 // AddMessage appends a message to a conversation.
 func (s *Store) AddMessage(ctx context.Context, convID int64, role, content string, tokenCount int) (*Message, error) {
-	return s.AddMessageWithReasoning(ctx, convID, role, content, "", "", tokenCount, time.Time{})
+	return s.AddMessageWithReasoning(ctx, convID, role, content, "", "", "", nil, nil, tokenCount, time.Time{})
 }
 
 // AddMessageWithReasoning appends a message with reasoning content to a conversation.
@@ -175,6 +236,9 @@ func (s *Store) AddMessageWithReasoning(
 	ctx context.Context,
 	convID int64,
 	role, content, modelName, reasoningContent string,
+	channelMessageID string,
+	metadata *protocoltypes.MessageMetadata,
+	attachments []protocoltypes.Attachment,
 	tokenCount int,
 	createdAt time.Time,
 ) (*Message, error) {
@@ -184,12 +248,15 @@ func (s *Store) AddMessageWithReasoning(
 	}
 	result, err := s.db.ExecContext(
 		ctx,
-		"INSERT INTO messages (conversation_id, role, content, model_name, reasoning_content, token_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO messages (conversation_id, role, content, model_name, reasoning_content, channel_message_id, metadata, attachments, token_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		convID,
 		role,
 		content,
 		modelName,
 		reasoningContent,
+		channelMessageID,
+		encodeMetadata(metadata),
+		encodeAttachments(attachments),
 		tokenCount,
 		formatSQLiteTime(storedCreatedAt),
 	)
@@ -200,16 +267,24 @@ func (s *Store) AddMessageWithReasoning(
 	if err != nil {
 		return nil, fmt.Errorf("get last insert id: %w", err)
 	}
-	return &Message{
+	stored := &Message{
 		ID:               id,
 		ConversationID:   convID,
 		Role:             role,
 		Content:          content,
 		ModelName:        modelName,
 		ReasoningContent: reasoningContent,
+		ChannelMessageID: channelMessageID,
 		TokenCount:       tokenCount,
 		CreatedAt:        storedCreatedAt,
-	}, nil
+	}
+	if !metadata.IsEmpty() {
+		stored.Metadata = metadata
+	}
+	if len(attachments) > 0 {
+		stored.Attachments = append([]protocoltypes.Attachment(nil), attachments...)
+	}
+	return stored, nil
 }
 
 // partsToReadableContent derives a readable text summary from message parts.
@@ -238,6 +313,37 @@ func partsToReadableContent(parts []MessagePart) string {
 	return b.String()
 }
 
+// GetMessageByChannelMessageID retrieves a message by its opaque channel-native reference.
+func (s *Store) GetMessageByChannelMessageID(ctx context.Context, channelMessageID string) (*Message, error) {
+	var m Message
+	var createdAt string
+	var metadataRaw sql.NullString
+	var attachmentsRaw sql.NullString
+	err := s.db.QueryRowContext(
+		ctx,
+		"SELECT message_id, conversation_id, role, content, reasoning_content, channel_message_id, metadata, attachments, token_count, created_at FROM messages WHERE channel_message_id = ?",
+		channelMessageID,
+	).Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.ReasoningContent, &m.ChannelMessageID, &metadataRaw, &attachmentsRaw, &m.TokenCount, &createdAt)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	m.CreatedAt, _ = time.Parse("2006-01-02 15:04:05", createdAt)
+	m.Metadata = decodeMetadata(metadataRaw)
+	m.Attachments = decodeAttachments(attachmentsRaw)
+
+	// Load parts
+	parts, err := s.loadMessageParts(ctx, m.ID)
+	if err != nil {
+		return nil, err
+	}
+	m.Parts = parts
+
+	return &m, nil
+}
+
 // AddMessageWithParts adds a message with structured parts.
 func (s *Store) AddMessageWithParts(
 	ctx context.Context,
@@ -246,7 +352,7 @@ func (s *Store) AddMessageWithParts(
 	parts []MessagePart,
 	tokenCount int,
 ) (*Message, error) {
-	return s.AddMessageWithPartsAndReasoning(ctx, convID, role, parts, "", "", tokenCount, time.Time{})
+	return s.AddMessageWithPartsAndReasoning(ctx, convID, role, parts, "", "", "", nil, nil, tokenCount, time.Time{})
 }
 
 // AddMessageWithPartsAndReasoning adds a message with structured parts and reasoning content.
@@ -257,6 +363,9 @@ func (s *Store) AddMessageWithPartsAndReasoning(
 	parts []MessagePart,
 	modelName string,
 	reasoningContent string,
+	channelMessageID string,
+	metadata *protocoltypes.MessageMetadata,
+	attachments []protocoltypes.Attachment,
 	tokenCount int,
 	createdAt time.Time,
 ) (*Message, error) {
@@ -276,12 +385,15 @@ func (s *Store) AddMessageWithPartsAndReasoning(
 
 	result, err := tx.ExecContext(
 		ctx,
-		"INSERT INTO messages (conversation_id, role, content, model_name, reasoning_content, token_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+		"INSERT INTO messages (conversation_id, role, content, model_name, reasoning_content, channel_message_id, metadata, attachments, token_count, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
 		convID,
 		role,
 		readableContent,
 		modelName,
 		reasoningContent,
+		channelMessageID,
+		encodeMetadata(metadata),
+		encodeAttachments(attachments),
 		tokenCount,
 		formatSQLiteTime(storedCreatedAt),
 	)
@@ -323,9 +435,16 @@ func (s *Store) AddMessageWithPartsAndReasoning(
 		Role:             role,
 		ModelName:        modelName,
 		ReasoningContent: reasoningContent,
+		ChannelMessageID: channelMessageID,
 		TokenCount:       tokenCount,
 		CreatedAt:        storedCreatedAt,
 		Parts:            make([]MessagePart, len(parts)),
+	}
+	if !metadata.IsEmpty() {
+		msg.Metadata = metadata
+	}
+	if len(attachments) > 0 {
+		msg.Attachments = append([]protocoltypes.Attachment(nil), attachments...)
 	}
 	for i, p := range parts {
 		p.MessageID = msgID
@@ -336,7 +455,7 @@ func (s *Store) AddMessageWithPartsAndReasoning(
 
 // GetMessages retrieves messages for a conversation.
 func (s *Store) GetMessages(ctx context.Context, convID int64, limit int, beforeID int64) ([]Message, error) {
-	query := "SELECT message_id, conversation_id, role, content, model_name, reasoning_content, token_count, created_at FROM messages WHERE conversation_id = ?"
+	query := "SELECT message_id, conversation_id, role, content, model_name, reasoning_content, channel_message_id, metadata, attachments, token_count, created_at FROM messages WHERE conversation_id = ?"
 	args := []any{convID}
 	if beforeID > 0 {
 		query += " AND message_id < ?"
@@ -358,6 +477,8 @@ func (s *Store) GetMessages(ctx context.Context, convID int64, limit int, before
 	for rows.Next() {
 		var msg Message
 		var createdAt string
+		var metadataRaw sql.NullString
+		var attachmentsRaw sql.NullString
 		if err := rows.Scan(
 			&msg.ID,
 			&msg.ConversationID,
@@ -365,12 +486,17 @@ func (s *Store) GetMessages(ctx context.Context, convID int64, limit int, before
 			&msg.Content,
 			&msg.ModelName,
 			&msg.ReasoningContent,
+			&msg.ChannelMessageID,
+			&metadataRaw,
+			&attachmentsRaw,
 			&msg.TokenCount,
 			&createdAt,
 		); err != nil {
 			return nil, err
 		}
 		msg.CreatedAt = parseSQLiteTime(createdAt)
+		msg.Metadata = decodeMetadata(metadataRaw)
+		msg.Attachments = decodeAttachments(attachmentsRaw)
 		msgs = append(msgs, msg)
 	}
 	if err := rows.Err(); err != nil {
@@ -402,11 +528,13 @@ func (s *Store) GetMessageCount(ctx context.Context, convID int64) (int, error) 
 func (s *Store) GetMessageByID(ctx context.Context, messageID int64) (*Message, error) {
 	var msg Message
 	var createdAt string
+	var metadataRaw sql.NullString
+	var attachmentsRaw sql.NullString
 	err := s.db.QueryRowContext(
 		ctx,
-		"SELECT message_id, conversation_id, role, content, model_name, reasoning_content, token_count, created_at FROM messages WHERE message_id = ?",
+		"SELECT message_id, conversation_id, role, content, model_name, reasoning_content, channel_message_id, metadata, attachments, token_count, created_at FROM messages WHERE message_id = ?",
 		messageID,
-	).Scan(&msg.ID, &msg.ConversationID, &msg.Role, &msg.Content, &msg.ModelName, &msg.ReasoningContent, &msg.TokenCount, &createdAt)
+	).Scan(&msg.ID, &msg.ConversationID, &msg.Role, &msg.Content, &msg.ModelName, &msg.ReasoningContent, &msg.ChannelMessageID, &metadataRaw, &attachmentsRaw, &msg.TokenCount, &createdAt)
 	if err == sql.ErrNoRows {
 		return nil, fmt.Errorf("message %d not found", messageID)
 	}
@@ -414,8 +542,80 @@ func (s *Store) GetMessageByID(ctx context.Context, messageID int64) (*Message, 
 		return nil, err
 	}
 	msg.CreatedAt = parseSQLiteTime(createdAt)
+	msg.Metadata = decodeMetadata(metadataRaw)
+	msg.Attachments = decodeAttachments(attachmentsRaw)
 	msg.Parts, _ = s.loadMessageParts(ctx, msg.ID)
 	return &msg, nil
+}
+
+// UpdateMessageChannelMessageID stamps an opaque channel-native ref onto an
+// existing message row. Used by the agent loop after an outbound assistant
+// message is delivered, so the persisted row becomes fetchable / editable
+// by its delivered ref.
+func (s *Store) UpdateMessageChannelMessageID(ctx context.Context, messageID int64, channelMessageID string) error {
+	result, err := s.db.ExecContext(
+		ctx,
+		"UPDATE messages SET channel_message_id = ? WHERE message_id = ?",
+		channelMessageID,
+		messageID,
+	)
+	if err != nil {
+		return fmt.Errorf("update message channel_message_id: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update message channel_message_id rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("message %d not found", messageID)
+	}
+	return nil
+}
+
+// UpdateMessageMetadata updates the metadata column for an existing message.
+func (s *Store) UpdateMessageMetadata(
+	ctx context.Context, messageID int64, metadata *protocoltypes.MessageMetadata,
+) error {
+	result, err := s.db.ExecContext(
+		ctx,
+		"UPDATE messages SET metadata = ? WHERE message_id = ?",
+		encodeMetadata(metadata),
+		messageID,
+	)
+	if err != nil {
+		return fmt.Errorf("update message metadata: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update message metadata rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("message %d not found", messageID)
+	}
+	return nil
+}
+
+// UpdateMessageAttachments updates the attachments column for an existing message.
+func (s *Store) UpdateMessageAttachments(
+	ctx context.Context, messageID int64, attachments []protocoltypes.Attachment,
+) error {
+	result, err := s.db.ExecContext(
+		ctx,
+		"UPDATE messages SET attachments = ? WHERE message_id = ?",
+		encodeAttachments(attachments),
+		messageID,
+	)
+	if err != nil {
+		return fmt.Errorf("update message attachments: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("update message attachments rows affected: %w", err)
+	}
+	if rowsAffected == 0 {
+		return fmt.Errorf("message %d not found", messageID)
+	}
+	return nil
 }
 
 // UpdateMessageReasoningContent updates reasoning_content for an existing message.
@@ -672,7 +872,7 @@ func (s *Store) LinkSummaryToMessages(ctx context.Context, summaryID string, mes
 func (s *Store) GetSummarySourceMessages(ctx context.Context, summaryID string) ([]Message, error) {
 	rows, err := s.db.QueryContext(
 		ctx,
-		`SELECT m.message_id, m.conversation_id, m.role, m.content, m.model_name, m.reasoning_content, m.token_count, m.created_at
+		`SELECT m.message_id, m.conversation_id, m.role, m.content, m.model_name, m.reasoning_content, m.channel_message_id, m.metadata, m.attachments, m.token_count, m.created_at
 		 FROM summary_messages sm
 		 JOIN messages m ON m.message_id = sm.message_id
 		 WHERE sm.summary_id = ?
@@ -688,6 +888,8 @@ func (s *Store) GetSummarySourceMessages(ctx context.Context, summaryID string) 
 	for rows.Next() {
 		var msg Message
 		var createdAt string
+		var metadataRaw sql.NullString
+		var attachmentsRaw sql.NullString
 		if err := rows.Scan(
 			&msg.ID,
 			&msg.ConversationID,
@@ -695,12 +897,17 @@ func (s *Store) GetSummarySourceMessages(ctx context.Context, summaryID string) 
 			&msg.Content,
 			&msg.ModelName,
 			&msg.ReasoningContent,
+			&msg.ChannelMessageID,
+			&metadataRaw,
+			&attachmentsRaw,
 			&msg.TokenCount,
 			&createdAt,
 		); err != nil {
 			return nil, err
 		}
 		msg.CreatedAt = parseSQLiteTime(createdAt)
+		msg.Metadata = decodeMetadata(metadataRaw)
+		msg.Attachments = decodeAttachments(attachmentsRaw)
 		msgs = append(msgs, msg)
 	}
 	if err := rows.Err(); err != nil {

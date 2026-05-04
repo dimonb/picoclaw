@@ -24,10 +24,15 @@ type InboundContext struct {
 	SpaceType string `json:"space_type,omitempty"` // guild / team / workspace / tenant
 
 	SenderID  string `json:"sender_id"`
+
+	// MessageID is an opaque channel-native message reference.
+	// For Telegram: "chat_id:message_id" or "chat_id:topic_id:message_id"
+	// For Matrix: "room_id:event_id"
 	MessageID string `json:"message_id,omitempty"`
 
 	Mentioned bool `json:"mentioned,omitempty"`
 
+	// ReplyToMessageID is the opaque channel-native reference for the reply target.
 	ReplyToMessageID string `json:"reply_to_message_id,omitempty"`
 	ReplyToSenderID  string `json:"reply_to_sender_id,omitempty"`
 
@@ -82,6 +87,10 @@ type OutboundMessage struct {
 	Content          string         `json:"content"`
 	ReplyToMessageID string         `json:"reply_to_message_id,omitempty"`
 	ContextUsage     *ContextUsage  `json:"context_usage,omitempty"`
+
+	// Feedback is an optional channel for receiving delivered message IDs.
+	// Typically used by messaging tools with wait_delivery=true.
+	Feedback chan []string `json:"-"`
 }
 
 // MediaPart describes a single media attachment to send.

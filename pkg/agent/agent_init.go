@@ -175,7 +175,20 @@ func registerSharedTools(
 				ctx context.Context,
 				channel, chatID, content, replyToMessageID string,
 				mediaParts []bus.MediaPart,
-			) error {
+			) ([]string, error) {
+				pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer pubCancel()
+
+				waitDelivery := false
+				if wd, ok := ctx.Value("wait_delivery").(bool); ok {
+					waitDelivery = wd
+				}
+
+				var feedback chan []string
+				if waitDelivery {
+					feedback = make(chan []string, 1)
+				}
+
 				outboundCtx := bus.NewOutboundContext(channel, chatID, replyToMessageID)
 				outboundAgentID, outboundSessionKey, outboundScope := outboundTurnMetadata(
 					tools.ToolAgentID(ctx),
@@ -183,7 +196,7 @@ func registerSharedTools(
 					tools.ToolSessionScope(ctx),
 				)
 				if len(mediaParts) > 0 {
-					outboundMedia := bus.OutboundMediaMessage{
+					if err := msgBus.PublishOutboundMedia(pubCtx, bus.OutboundMediaMessage{
 						Channel:    channel,
 						ChatID:     chatID,
 						Context:    outboundCtx,
@@ -191,15 +204,13 @@ func registerSharedTools(
 						SessionKey: outboundSessionKey,
 						Scope:      outboundScope,
 						Parts:      mediaParts,
+					}); err != nil {
+						return nil, err
 					}
-					if al.channelManager != nil && channel != "" {
-						return al.channelManager.SendMedia(ctx, outboundMedia)
-					}
-					pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-					defer pubCancel()
-					return msgBus.PublishOutboundMedia(pubCtx, outboundMedia)
+					return nil, nil
 				}
-				outboundMessage := bus.OutboundMessage{
+
+				err := msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
 					Channel:          channel,
 					ChatID:           chatID,
 					Context:          outboundCtx,
@@ -208,13 +219,25 @@ func registerSharedTools(
 					Scope:            outboundScope,
 					Content:          content,
 					ReplyToMessageID: replyToMessageID,
+					Feedback:         feedback,
+				})
+				if err != nil {
+					return nil, err
 				}
-				if al.channelManager != nil && channel != "" {
-					return al.channelManager.SendMessage(ctx, outboundMessage)
+
+				if waitDelivery {
+					select {
+					case ids, ok := <-feedback:
+						if !ok {
+							return nil, fmt.Errorf("delivery failed")
+						}
+						return ids, nil
+					case <-pubCtx.Done():
+						return nil, fmt.Errorf("delivery timeout")
+					}
 				}
-				pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer pubCancel()
-				return msgBus.PublishOutbound(pubCtx, outboundMessage)
+
+				return nil, nil
 			})
 			agent.Tools.Register(messageTool)
 		}

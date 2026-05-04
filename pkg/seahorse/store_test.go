@@ -212,6 +212,9 @@ func TestStoreAddAndGetMessagesWithReasoningContent(t *testing.T) {
 		"hello world",
 		"gpt-5.4-mini",
 		"let me think",
+		"",
+		nil,
+		nil,
 		5,
 		time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC),
 	)
@@ -257,6 +260,61 @@ func TestStoreAddAndGetMessagesWithReasoningContent(t *testing.T) {
 	}
 	if !found.CreatedAt.Equal(time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)) {
 		t.Errorf("GetMessageByID CreatedAt = %v, want 2026-01-02 03:04:05 UTC", found.CreatedAt)
+	}
+}
+
+func TestStoreGetMessageByChannelMessageID(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	conv, _ := s.GetOrCreateConversation(ctx, "agent:channel-message-id")
+
+	empty, err := s.GetMessageByChannelMessageID(ctx, "")
+	if err != nil {
+		t.Fatalf("empty GetMessageByChannelMessageID: %v", err)
+	}
+	if empty != nil {
+		t.Fatalf("empty channel_message_id returned %+v, want nil", empty)
+	}
+
+	missing, err := s.GetMessageByChannelMessageID(ctx, "missing:ref")
+	if err != nil {
+		t.Fatalf("missing GetMessageByChannelMessageID: %v", err)
+	}
+	if missing != nil {
+		t.Fatalf("missing channel_message_id returned %+v, want nil", missing)
+	}
+
+	const duplicateRef = "12345:9:67"
+	first, err := s.AddMessageWithReasoning(ctx, conv.ConversationID, "user", "first duplicate ref", "", "", duplicateRef, nil, nil, 1, time.Time{})
+	if err != nil {
+		t.Fatalf("add first duplicate ref: %v", err)
+	}
+	second, err := s.AddMessageWithReasoning(ctx, conv.ConversationID, "assistant", "second duplicate ref", "", "", duplicateRef, nil, nil, 1, time.Time{})
+	if err != nil {
+		t.Fatalf("add second duplicate ref: %v", err)
+	}
+
+	got, err := s.GetMessageByChannelMessageID(ctx, duplicateRef)
+	if err != nil {
+		t.Fatalf("duplicate GetMessageByChannelMessageID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("duplicate channel_message_id returned nil")
+	}
+	if got.ID != first.ID && got.ID != second.ID {
+		t.Fatalf("duplicate lookup returned unexpected row id=%d, want one of %d/%d", got.ID, first.ID, second.ID)
+	}
+
+	var count int
+	if err := s.db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM messages WHERE channel_message_id = ?",
+		duplicateRef,
+	).Scan(&count); err != nil {
+		t.Fatalf("count duplicate refs: %v", err)
+	}
+	if count != 2 {
+		t.Fatalf("channel_message_id should be non-unique, count=%d want 2", count)
 	}
 }
 
@@ -310,6 +368,9 @@ func TestStoreAddMessageWithPartsAndReasoningContent(t *testing.T) {
 		parts,
 		"gpt-5.4",
 		"need to inspect the file first",
+		"",
+		nil,
+		nil,
 		10,
 		time.Date(2026, 2, 3, 4, 5, 6, 0, time.UTC),
 	)

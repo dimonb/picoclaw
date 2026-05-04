@@ -434,7 +434,7 @@ func (c *MatrixChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]st
 	if err != nil {
 		return nil, fmt.Errorf("matrix send: %w", channels.ErrTemporary)
 	}
-	msgID := resp.EventID.String()
+	msgID := fmt.Sprintf("%s %s", roomID, resp.EventID.String())
 	if isToolFeedback {
 		c.RecordToolFeedbackMessage(msg.ChatID, msgID, msg.Content)
 	} else if hasTrackedMsg {
@@ -565,7 +565,7 @@ func (c *MatrixChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMess
 			return nil, fmt.Errorf("matrix send media: %w", channels.ErrTemporary)
 		}
 		if sendResp != nil {
-			eventIDs = append(eventIDs, sendResp.EventID.String())
+			eventIDs = append(eventIDs, fmt.Sprintf("%s %s", roomID, sendResp.EventID.String()))
 		}
 	}
 
@@ -636,38 +636,60 @@ func (c *MatrixChannel) SendPlaceholder(ctx context.Context, chatID string) (str
 		return "", err
 	}
 
-	return resp.EventID.String(), nil
+	return fmt.Sprintf("%s %s", roomID, resp.EventID.String()), nil
 }
 
 // EditMessage implements channels.MessageEditor.
 func (c *MatrixChannel) EditMessage(ctx context.Context, chatID string, messageID string, content string) error {
-	roomID := id.RoomID(strings.TrimSpace(chatID))
+	// Try parsing messageID as opaque reference room_id event_id
+	roomID, eventID, err := parseMatrixOpaqueID(messageID)
+	if err != nil {
+		// Fallback to legacy behavior: use chatID and treat messageID as raw eventID
+		roomID = id.RoomID(strings.TrimSpace(chatID))
+		eventID = id.EventID(strings.TrimSpace(messageID))
+	}
+
 	if roomID == "" {
 		return fmt.Errorf("matrix room ID is empty")
 	}
-	if strings.TrimSpace(messageID) == "" {
-		return fmt.Errorf("matrix message ID is empty")
-	}
-
-	editContent := c.messageContent(content)
-	editContent.SetEdit(id.EventID(messageID))
-
-	_, err := c.client.SendMessageEvent(ctx, roomID, event.EventMessage, editContent)
-	return err
-}
-
-// DeleteMessage implements channels.MessageDeleter.
-func (c *MatrixChannel) DeleteMessage(ctx context.Context, chatID string, messageID string) error {
-	roomID := id.RoomID(strings.TrimSpace(chatID))
-	if roomID == "" {
-		return fmt.Errorf("matrix room ID is empty")
-	}
-	eventID := id.EventID(strings.TrimSpace(messageID))
 	if eventID == "" {
 		return fmt.Errorf("matrix message ID is empty")
 	}
 
-	_, err := c.client.RedactEvent(ctx, roomID, eventID)
+	editContent := c.messageContent(content)
+	editContent.SetEdit(eventID)
+
+	_, err = c.client.SendMessageEvent(ctx, roomID, event.EventMessage, editContent)
+	return err
+}
+
+// parseMatrixOpaqueID splits "room_id event_id" into its components.
+func parseMatrixOpaqueID(opaqueID string) (id.RoomID, id.EventID, error) {
+	parts := strings.Split(opaqueID, " ")
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid opaque Matrix ID format: %q", opaqueID)
+	}
+	return id.RoomID(parts[0]), id.EventID(parts[1]), nil
+}
+
+// DeleteMessage implements channels.MessageDeleter.
+func (c *MatrixChannel) DeleteMessage(ctx context.Context, chatID string, messageID string) error {
+	// Try parsing messageID as opaque reference room_id event_id
+	roomID, eventID, err := parseMatrixOpaqueID(messageID)
+	if err != nil {
+		// Fallback to legacy behavior: use chatID and treat messageID as raw eventID
+		roomID = id.RoomID(strings.TrimSpace(chatID))
+		eventID = id.EventID(strings.TrimSpace(messageID))
+	}
+
+	if roomID == "" {
+		return fmt.Errorf("matrix room ID is empty")
+	}
+	if eventID == "" {
+		return fmt.Errorf("matrix message ID is empty")
+	}
+
+	_, err = c.client.RedactEvent(ctx, roomID, eventID)
 	return err
 }
 
@@ -885,11 +907,11 @@ func (c *MatrixChannel) handleMessageEvent(ctx context.Context, evt *event.Event
 		ChatID:    roomID,
 		ChatType:  peerKind,
 		SenderID:  senderID,
-		MessageID: evt.ID.String(),
+		MessageID: fmt.Sprintf("%s %s", roomID, evt.ID.String()),
 		Raw:       metadata,
 	}
 	if replyTo := msgEvt.GetRelatesTo().GetReplyTo(); replyTo != "" {
-		inboundCtx.ReplyToMessageID = replyTo.String()
+		inboundCtx.ReplyToMessageID = fmt.Sprintf("%s %s", roomID, replyTo.String())
 	}
 
 	c.HandleInboundContext(c.baseContext(), roomID, content, mediaPaths, inboundCtx, sender)

@@ -23,7 +23,19 @@ type ContextManager interface {
 
 	// Ingest records a message into the ContextManager's own storage.
 	// Called after each message is persisted to session JSONL.
-	Ingest(ctx context.Context, req *IngestRequest) error
+	// The returned response carries inserted message IDs so callers can
+	// later stamp delivered channel refs onto the persisted row via
+	// UpdateChannelMessageID. Implementations that do not persist
+	// messages (e.g. legacy) return an empty response.
+	Ingest(ctx context.Context, req *IngestRequest) (*IngestResponse, error)
+
+	// UpdateChannelMessageID stamps the opaque channel-native ref onto a
+	// previously ingested message. Called by the agent loop after an
+	// outbound assistant message is delivered, so subsequent fetch / edit
+	// / react tool calls can target the assistant message by its
+	// delivered ref. Implementations that do not persist messages
+	// return nil without error.
+	UpdateChannelMessageID(ctx context.Context, sessionKey string, messageID int64, channelMessageID string) error
 
 	// Clear removes all stored context for a session (messages, summaries, etc.).
 	// Called when the user issues /clear or /reset.
@@ -54,6 +66,14 @@ type CompactRequest struct {
 type IngestRequest struct {
 	SessionKey string            // session identifier
 	Message    providers.Message // the message just persisted
+}
+
+// IngestResponse is the result of Ingest. Carries the ContextManager-internal
+// IDs of the just-inserted messages so callers can later stamp delivered
+// refs onto them via UpdateChannelMessageID. Empty for managers that do not
+// persist messages.
+type IngestResponse struct {
+	MessageIDs []int64
 }
 
 // ContextManagerFactory constructs a ContextManager from config.

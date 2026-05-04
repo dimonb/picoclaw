@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -639,7 +639,7 @@ func TestSend_ToolFeedbackTrackingIsTopicScoped(t *testing.T) {
 
 	msgID, ok := ch.currentToolFeedbackMessage("-1001234567890/42")
 	require.True(t, ok, "topic chat should track tool feedback")
-	assert.Equal(t, "1", msgID)
+	assert.Equal(t, "-1001234567890:42:1", msgID)
 }
 
 func TestSend_TopicReplyDoesNotFinalizeDifferentTopicToolFeedback(t *testing.T) {
@@ -677,7 +677,7 @@ func TestSend_TopicReplyDoesNotFinalizeDifferentTopicToolFeedback(t *testing.T) 
 	})
 	require.NoError(t, err)
 	require.Len(t, caller.calls, 2)
-	assert.Equal(t, []string{"2"}, ids)
+	assert.Equal(t, []string{"-1001234567890:43:2"}, ids)
 	assert.Contains(t, caller.calls[1].URL, "sendMessage")
 	assert.NotContains(t, caller.calls[1].URL, "editMessageText")
 
@@ -1370,7 +1370,7 @@ func assertHandleMessageQuotedUserReply(
 
 	inbound, ok := <-messageBus.InboundChan()
 	require.True(t, ok)
-	assert.Equal(t, strconv.Itoa(replyMessageID), inbound.Context.ReplyToMessageID)
+	assert.Equal(t, fmt.Sprintf("%d:%d", chatID, replyMessageID), inbound.Context.ReplyToMessageID)
 	assert.Equal(t, expectedContent, inbound.Content)
 }
 
@@ -1456,7 +1456,7 @@ func TestHandleMessage_ReplyToOwnBotMessage_UsesAssistantRole(t *testing.T) {
 
 	inbound, ok := <-messageBus.InboundChan()
 	require.True(t, ok)
-	assert.Equal(t, "101", inbound.Context.ReplyToMessageID)
+	assert.Equal(t, "999:101", inbound.Context.ReplyToMessageID)
 	assert.Equal(
 		t,
 		"[quoted assistant message from afjcjsbx_picoclaw_bot]: Fatto! Ho creato il file notizie_2026_03_28.md\n\nti ricordi questo file?",

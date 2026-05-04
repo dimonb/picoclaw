@@ -3,7 +3,10 @@ package integrationtools
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
 )
 
 func TestReactionTool_Execute_UsesContextMessageIDByDefault(t *testing.T) {
@@ -43,6 +46,46 @@ func TestReactionTool_Execute_AllowsExplicitMessageIDOverride(t *testing.T) {
 	}
 	if gotMessageID != "msg-explicit" {
 		t.Fatalf("expected explicit message id, got %q", gotMessageID)
+	}
+}
+
+func TestReactionTool_Execute_TargetsDeliveredRefFromMessageTool(t *testing.T) {
+	const deliveredRef = "12345:9:67"
+
+	messageTool := NewMessageTool()
+	messageTool.SetSendCallback(func(
+		ctx context.Context,
+		channel, chatID, content, replyToMessageID string,
+		mediaParts []bus.MediaPart,
+	) ([]string, error) {
+		return []string{deliveredRef}, nil
+	})
+	messageResult := messageTool.Execute(
+		WithToolContext(context.Background(), "telegram", "12345"),
+		map[string]any{"content": "hello", "wait_delivery": true},
+	)
+	if messageResult.IsError {
+		t.Fatalf("message tool failed: %s", messageResult.ForLLM)
+	}
+	if !strings.Contains(messageResult.ForLLM, deliveredRef) {
+		t.Fatalf("message tool result did not expose delivered ref %q: %q", deliveredRef, messageResult.ForLLM)
+	}
+
+	reactionTool := NewReactionTool()
+	var gotMessageID string
+	reactionTool.SetReactionCallback(func(ctx context.Context, channel, chatID, messageID string) error {
+		gotMessageID = messageID
+		return nil
+	})
+	reactionResult := reactionTool.Execute(
+		WithToolContext(context.Background(), "telegram", "12345"),
+		map[string]any{"message_id": deliveredRef},
+	)
+	if reactionResult.IsError {
+		t.Fatalf("reaction tool failed: %s", reactionResult.ForLLM)
+	}
+	if gotMessageID != deliveredRef {
+		t.Fatalf("reaction targeted %q, want delivered ref %q", gotMessageID, deliveredRef)
 	}
 }
 
@@ -86,6 +129,13 @@ func TestReactionTool_Parameters(t *testing.T) {
 	}
 	if _, ok := props["message_id"]; !ok {
 		t.Fatal("expected message_id parameter")
+	}
+	messageIDProp := props["message_id"].(map[string]any)
+	messageIDDesc, _ := messageIDProp["description"].(string)
+	for _, want := range []string{"chat_id:msg_id", "chat_id:topic_id:msg_id", "room_id event_id"} {
+		if !strings.Contains(messageIDDesc, want) {
+			t.Errorf("message_id description missing %q: %q", want, messageIDDesc)
+		}
 	}
 	if _, ok := props["channel"]; !ok {
 		t.Fatal("expected channel parameter")

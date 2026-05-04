@@ -1467,10 +1467,29 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 			}
 
 			// Step 3: Send all chunks
+			var allMsgIDs []string
+			anyFailed := false
 			for _, chunk := range chunks {
 				chunkMsg := msg
 				chunkMsg.Content = chunk
-				m.sendWithRetry(ctx, name, w, chunkMsg)
+				msgIDs, ok := m.sendWithRetry(ctx, name, w, chunkMsg)
+				allMsgIDs = append(allMsgIDs, msgIDs...)
+				if !ok {
+					anyFailed = true
+				}
+			}
+
+			if msg.Feedback != nil {
+				if anyFailed {
+					// Closing without sending signals delivery failure to the receiver.
+					close(msg.Feedback)
+				} else {
+					select {
+					case msg.Feedback <- allMsgIDs:
+					default:
+						// non-blocking if receiver is not waiting
+					}
+				}
 			}
 		case <-ctx.Done():
 			return

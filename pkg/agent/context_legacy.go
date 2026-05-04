@@ -57,8 +57,13 @@ func (m *legacyContextManager) Compact(_ context.Context, req *CompactRequest) e
 	return nil
 }
 
-func (m *legacyContextManager) Ingest(_ context.Context, _ *IngestRequest) error {
+func (m *legacyContextManager) Ingest(_ context.Context, _ *IngestRequest) (*IngestResponse, error) {
 	// Legacy: no-op. Messages are persisted by Sessions JSONL.
+	return &IngestResponse{}, nil
+}
+
+func (m *legacyContextManager) UpdateChannelMessageID(_ context.Context, _ string, _ int64, _ string) error {
+	// Legacy: no SQLite storage to update.
 	return nil
 }
 

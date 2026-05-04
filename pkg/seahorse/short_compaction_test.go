@@ -165,6 +165,51 @@ func TestCompactLeaf(t *testing.T) {
 	}
 }
 
+func TestCompactLeafPreservesChannelMessageRefLookup(t *testing.T) {
+	ce, s, convID := newTestCompactionEngine(t)
+	ctx := context.Background()
+
+	const ref = "12345:9:67"
+	var refRowID int64
+	for i := 0; i < 40; i++ {
+		channelID := ""
+		content := fmt.Sprintf("message content for compaction ref test %d", i)
+		if i == 3 {
+			channelID = ref
+			content = "message carrying channel ref before compaction"
+		}
+		m, err := s.AddMessageWithReasoning(ctx, convID, "user", content, "", "", channelID, nil, nil, 100, time.Time{})
+		if err != nil {
+			t.Fatalf("AddMessageWithReasoning %d: %v", i, err)
+		}
+		if channelID != "" {
+			refRowID = m.ID
+		}
+		if err := s.AppendContextMessage(ctx, convID, m.ID); err != nil {
+			t.Fatalf("AppendContextMessage %d: %v", i, err)
+		}
+	}
+
+	result, err := ce.Compact(ctx, convID, CompactInput{})
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if result.LeafSummaries == 0 {
+		t.Fatal("expected leaf compaction")
+	}
+
+	got, err := s.GetMessageByChannelMessageID(ctx, ref)
+	if err != nil {
+		t.Fatalf("GetMessageByChannelMessageID after compaction: %v", err)
+	}
+	if got == nil {
+		t.Fatalf("message ref %q was not lookupable after compaction", ref)
+	}
+	if got.ID != refRowID {
+		t.Fatalf("lookup returned row id=%d, want %d", got.ID, refRowID)
+	}
+}
+
 func TestCompactLeafNoCandidate(t *testing.T) {
 	ce, _, convID := newTestCompactionEngine(t)
 	ctx := context.Background()

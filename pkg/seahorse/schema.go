@@ -48,6 +48,9 @@ func runSchema(db *sql.DB) error {
 			content         TEXT NOT NULL DEFAULT '',
 			model_name      TEXT NOT NULL DEFAULT '',
 			reasoning_content TEXT NOT NULL DEFAULT '',
+			channel_message_id TEXT,
+			metadata        TEXT,
+			attachments     TEXT,
 			token_count     INTEGER NOT NULL DEFAULT 0,
 			created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
@@ -166,6 +169,29 @@ func runSchema(db *sql.DB) error {
 	if err := ensureMessagesModelNameColumn(db); err != nil {
 		return err
 	}
+	if err := ensureMessagesChannelIDColumn(db); err != nil {
+		return err
+	}
+	if err := ensureMessagesMetadataColumn(db); err != nil {
+		return err
+	}
+	if err := ensureMessagesAttachmentsColumn(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureMessagesAttachmentsColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "messages", "attachments")
+	if err != nil {
+		return fmt.Errorf("check messages.attachments: %w", err)
+	}
+	if hasColumn {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN attachments TEXT`); err != nil {
+		return fmt.Errorf("add messages.attachments: %w", err)
+	}
 	return nil
 }
 
@@ -195,6 +221,37 @@ func ensureMessagesModelNameColumn(db *sql.DB) error {
 
 	if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN model_name TEXT NOT NULL DEFAULT ''`); err != nil {
 		return fmt.Errorf("add messages.model_name: %w", err)
+	}
+	return nil
+}
+
+func ensureMessagesMetadataColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "messages", "metadata")
+	if err != nil {
+		return fmt.Errorf("check messages.metadata: %w", err)
+	}
+	if hasColumn {
+		return nil
+	}
+
+	if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN metadata TEXT`); err != nil {
+		return fmt.Errorf("add messages.metadata: %w", err)
+	}
+	return nil
+}
+
+func ensureMessagesChannelIDColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "messages", "channel_message_id")
+	if err != nil {
+		return fmt.Errorf("check messages.channel_message_id: %w", err)
+	}
+	if !hasColumn {
+		if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN channel_message_id TEXT`); err != nil {
+			return fmt.Errorf("add messages.channel_message_id: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages(channel_message_id)`); err != nil {
+		return fmt.Errorf("create index idx_messages_channel_id: %w", err)
 	}
 	return nil
 }
