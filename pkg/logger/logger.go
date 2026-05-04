@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -29,8 +30,17 @@ var (
 	logger       zerolog.Logger
 	fileLogger   zerolog.Logger
 	currentLevel LogLevel = zerolog.InfoLevel
+	logFile      *os.File
 	mu           sync.Mutex
 )
+
+var logLevelNames = map[LogLevel]string{
+	DEBUG: "DEBUG",
+	INFO:  "INFO",
+	WARN:  "WARN",
+	ERROR: "ERROR",
+	FATAL: "FATAL",
+}
 
 func init() {
 	// Default console logger
@@ -41,22 +51,47 @@ func init() {
 func SetLevel(level LogLevel) {
 	mu.Lock()
 	defer mu.Unlock()
+	setLevelLocked(level)
+}
+
+func setLevelLocked(level LogLevel) {
 	currentLevel = level
 	logger = logger.Level(level)
+	if fileLogger.GetLevel() != zerolog.NoLevel {
+		fileLogger = fileLogger.Level(level)
+	}
+}
+
+func GetLevel() LogLevel {
+	mu.Lock()
+	defer mu.Unlock()
+	return currentLevel
+}
+
+func SetConsoleLevel(level LogLevel) {
+	SetLevel(level)
 }
 
 func SetLevelFromString(level string) {
-	switch strings.ToUpper(level) {
+	if parsed, ok := ParseLevel(level); ok {
+		SetLevel(parsed)
+	}
+}
+
+func ParseLevel(level string) (LogLevel, bool) {
+	switch strings.ToUpper(strings.TrimSpace(level)) {
 	case "DEBUG":
-		SetLevel(DEBUG)
+		return DEBUG, true
 	case "INFO":
-		SetLevel(INFO)
-	case "WARN":
-		SetLevel(WARN)
+		return INFO, true
+	case "WARN", "WARNING":
+		return WARN, true
 	case "ERROR":
-		SetLevel(ERROR)
+		return ERROR, true
 	case "FATAL":
-		SetLevel(FATAL)
+		return FATAL, true
+	default:
+		return INFO, false
 	}
 }
 
@@ -74,6 +109,10 @@ func EnableFileLogging(path string) error {
 		return err
 	}
 
+	if logFile != nil {
+		_ = logFile.Close()
+	}
+	logFile = f
 	fileLogger = zerolog.New(f).With().Timestamp().Logger().Level(currentLevel)
 	return nil
 }
@@ -81,22 +120,59 @@ func EnableFileLogging(path string) error {
 func DisableFileLogging() {
 	mu.Lock()
 	defer mu.Unlock()
+	if logFile != nil {
+		_ = logFile.Close()
+		logFile = nil
+	}
 	fileLogger = zerolog.New(nil).Level(zerolog.NoLevel)
 }
 
-func ConfigureFromEnv() {
+func DisableConsole() {
 	mu.Lock()
 	defer mu.Unlock()
+	logger = zerolog.New(nil).Level(zerolog.NoLevel)
+}
 
+func ConfigureFromEnv() {
 	level := os.Getenv("LOG_LEVEL")
 	if level != "" {
 		SetLevelFromString(level)
 	}
 
-	logPath := os.Getenv("LOG_FILE")
+	logPath := os.Getenv("PICOCLAW_LOG_FILE")
+	if logPath == "" {
+		logPath = os.Getenv("LOG_FILE")
+	}
+	if strings.HasPrefix(logPath, "~/") {
+		if home, err := os.UserHomeDir(); err == nil {
+			logPath = filepath.Join(home, strings.TrimPrefix(logPath, "~/"))
+		}
+	}
 	if logPath != "" {
 		_ = EnableFileLogging(logPath)
 	}
+}
+
+func formatFieldValue(v any) string {
+	if b, ok := v.([]byte); ok {
+		v = string(b)
+	}
+	s := fmt.Sprintf("%v", v)
+	if unquoted, err := strconv.Unquote(s); err == nil {
+		s = unquoted
+	}
+	if strings.Contains(s, "\n") {
+		return "\n" + s
+	}
+	trimmed := strings.TrimSpace(s)
+	if (strings.HasPrefix(trimmed, "{") && strings.HasSuffix(trimmed, "}")) ||
+		(strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]")) {
+		return s
+	}
+	if strings.ContainsAny(s, " \t") {
+		return strconv.Quote(s)
+	}
+	return s
 }
 
 // Public functions
