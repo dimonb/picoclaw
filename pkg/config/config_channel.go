@@ -33,11 +33,13 @@ const (
 	ChannelWhatsApp       = "whatsapp"
 	ChannelWhatsAppNative = "whatsapp_native"
 	ChannelTeamsWebHook   = "teams_webhook"
+	ChannelWebhook        = "webhook"
 )
 
 func initChannel() {
 	registerSingletonChannel(ChannelPico)
 	registerSingletonChannel(ChannelPicoClient)
+	registerSingletonChannel(ChannelWebhook)
 }
 
 // singletonRegistry stores which channel types are singletons (only allow one instance).
@@ -640,6 +642,7 @@ var channelSettingsFactory = map[string]any{
 	ChannelWhatsApp:       (WhatsAppSettings{}),
 	ChannelWhatsAppNative: (WhatsAppSettings{}),
 	ChannelTeamsWebHook:   (TeamsWebhookSettings{}),
+	ChannelWebhook:        (WebhookSettings{}),
 }
 
 // newChannelSettings creates a fresh zero-value pointer for the given channel type.

@@ -181,6 +181,26 @@ settings:
 	assert.Equal(t, "", cfg.BaseURL)
 }
 
+func TestChannel_WebhookSettingsDecode(t *testing.T) {
+	ch := Channel{
+		Enabled: true,
+		Type:    ChannelWebhook,
+		name:    ChannelWebhook,
+		Settings: mustParseRawNode(
+			`{"shared_secret":"secret","request_timeout_seconds":3,"result_ttl_seconds":7}`,
+		),
+	}
+
+	require.NoError(t, InitChannelList(ChannelsConfig{ChannelWebhook: &ch}))
+
+	decoded, err := ch.GetDecoded()
+	require.NoError(t, err)
+	settings := decoded.(*WebhookSettings)
+	assert.Equal(t, "secret", settings.SharedSecret.String())
+	assert.Equal(t, 3, settings.RequestTimeoutSeconds)
+	assert.Equal(t, 7, settings.ResultTTLSeconds)
+}
+
 // ═══════════════════════════════════════════════════
 //  YAML marshal: only secure fields
 // ═══════════════════════════════════════════════════

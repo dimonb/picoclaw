@@ -526,16 +526,28 @@ func TestDefaultConfig_Channels(t *testing.T) {
 }
 
 func TestValidateSingletonChannels_RejectsMultipleInstances(t *testing.T) {
-	channels := ChannelsConfig{
-		"pico1": &Channel{Enabled: true, Type: ChannelPico},
-		"pico2": &Channel{Enabled: true, Type: ChannelPico},
+	cases := []struct {
+		name        string
+		channelType string
+	}{
+		{name: "pico", channelType: ChannelPico},
+		{name: "webhook", channelType: ChannelWebhook},
 	}
-	err := validateSingletonChannels(channels)
-	if err == nil {
-		t.Fatal("expected error for multiple pico channels, got nil")
-	}
-	if !strings.Contains(err.Error(), "singleton") {
-		t.Fatalf("expected singleton error, got: %v", err)
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			channels := ChannelsConfig{
+				tc.name + "1": &Channel{Enabled: true, Type: tc.channelType},
+				tc.name + "2": &Channel{Enabled: true, Type: tc.channelType},
+			}
+			err := validateSingletonChannels(channels)
+			if err == nil {
+				t.Fatalf("expected error for multiple %s channels, got nil", tc.name)
+			}
+			if !strings.Contains(err.Error(), "singleton") {
+				t.Fatalf("expected singleton error, got: %v", err)
+			}
+		})
 	}
 }
 
