@@ -35,7 +35,18 @@ func (al *AgentLoop) publishAgentResponseIfNeeded(
 
 	outbound := response.outboundMessage(channel, chatID)
 	al.attachFinalReaction(ctx, &outbound, response)
-	al.bus.PublishOutbound(ctx, outbound)
+	if err := al.bus.PublishOutbound(ctx, outbound); err != nil {
+		logger.ErrorCF("agent", "Failed to publish outbound response",
+			map[string]any{
+				"channel":             outbound.Channel,
+				"chat_id":             outbound.ChatID,
+				"content_len":         len(response.Content),
+				"reply_to_message_id": outbound.ReplyToMessageID,
+				"edit_message_id":     response.EditMessageID,
+				"error":               err.Error(),
+			})
+		return
+	}
 	logger.InfoCF("agent", "Published outbound response",
 		map[string]any{
 			"channel":             outbound.Channel,

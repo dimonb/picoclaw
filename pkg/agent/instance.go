@@ -181,33 +181,45 @@ func NewAgentInstance(
 
 	// Build a per-candidate provider map so the fallback chain can route each
 	// attempt to the correct provider instance (e.g. anthropic vs openai/codex).
-	// The primary provider is always included; additional candidates get their
-	// own provider created from the model_list config.
+	// The primary provider is always included. Fallback candidates that cannot be
+	// instantiated are removed from the chain; silently replacing them with the
+	// primary provider makes failover retry the same broken provider under a
+	// different label.
 	providerMap := make(map[string]providers.LLMProvider, len(candidates))
-	for _, c := range candidates {
+	resolvedCandidates := make([]providers.FallbackCandidate, 0, len(candidates))
+	for i, c := range candidates {
 		key := providers.ModelKey(c.Provider, c.Model)
+		if i == 0 {
+			providerMap[key] = provider
+			resolvedCandidates = append(resolvedCandidates, c)
+			continue
+		}
+
 		// Look up the full model string for this candidate in the model list so
 		// we can find its ModelConfig and create the right provider.
 		fullModel := c.Provider + "/" + c.Model
 		mc, err := cfg.GetModelConfigByModel(fullModel)
 		if err != nil || mc == nil {
-			// Fallback: use the primary provider for unknown candidates rather
-			// than leaving them absent from the map.
-			providerMap[key] = provider
+			logger.WarnCF("agent", "Skipping fallback candidate without model config", map[string]any{
+				"provider": c.Provider,
+				"model":    c.Model,
+				"error":    fmt.Sprintf("%v", err),
+			})
 			continue
 		}
 		p, _, err := providers.CreateProviderFromConfig(mc)
 		if err != nil {
-			logger.WarnCF("agent", "Failed to create provider for fallback candidate; using primary provider", map[string]any{
+			logger.WarnCF("agent", "Skipping fallback candidate because provider creation failed", map[string]any{
 				"provider": c.Provider,
 				"model":    c.Model,
 				"error":    err.Error(),
 			})
-			providerMap[key] = provider
 			continue
 		}
 		providerMap[key] = p
+		resolvedCandidates = append(resolvedCandidates, c)
 	}
+	candidates = resolvedCandidates
 
 	// Model routing setup: pre-resolve light model candidates at creation time
 	// to avoid repeated model_list lookups on every incoming message.

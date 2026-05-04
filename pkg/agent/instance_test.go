@@ -281,3 +281,34 @@ func TestNewAgentInstance_InvalidExecConfigDoesNotExit(t *testing.T) {
 		t.Fatal("read_file tool should still be registered")
 	}
 }
+
+func TestNewAgentInstance_SkipsFallbackWhenProviderCreationFails(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "primary-model",
+				ModelFallbacks:    []string{"bad-fallback"},
+				MaxTokens:         1234,
+				MaxToolIterations: 5,
+			},
+		},
+		ModelList: []*config.ModelConfig{
+			{ModelName: "primary-model", Model: "openai/primary-model"},
+			{ModelName: "bad-fallback", Model: "not-a-provider/bad-model"},
+		},
+	}
+
+	agent := NewAgentInstance(nil, &cfg.Agents.Defaults, cfg, &mockProvider{})
+
+	if len(agent.Candidates) != 1 {
+		t.Fatalf("len(Candidates) = %d, want only primary candidate", len(agent.Candidates))
+	}
+	if got := agent.Candidates[0].Model; got != "primary-model" {
+		t.Fatalf("primary candidate model = %q, want primary-model", got)
+	}
+	if _, ok := agent.ProviderMap["not-a-provider/bad-model"]; ok {
+		t.Fatal("invalid fallback provider should not be retained in ProviderMap")
+	}
+}
