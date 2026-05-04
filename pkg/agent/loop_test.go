@@ -3464,3 +3464,71 @@ func TestProcessMessage_ContextOverflow_AnthropicStyle(t *testing.T) {
 		t.Fatalf("expected 2 calls for retry, got %d", provider.calls)
 	}
 }
+
+type recoverableMediaErrorProvider struct {
+	calls        int
+	lastMessages []providers.Message
+}
+
+func (p *recoverableMediaErrorProvider) Chat(
+	ctx context.Context,
+	messages []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
+	p.calls++
+	p.lastMessages = append([]providers.Message(nil), messages...)
+	if p.calls == 1 {
+		return nil, fmt.Errorf("unsupported image type: image/svg+xml")
+	}
+	return &providers.LLMResponse{Content: "converted and answered"}, nil
+}
+
+func (p *recoverableMediaErrorProvider) GetDefaultModel() string { return "mock-model" }
+
+func TestProcessMessage_ContinuesAfterRecoverableMediaError(t *testing.T) {
+	workspace := t.TempDir()
+	cfg := &config.Config{
+		Agents: config.AgentsConfig{
+			Defaults: config.AgentDefaults{
+				Workspace:         workspace,
+				ModelName:         "test-model",
+				MaxTokens:         4096,
+				MaxToolIterations: 3,
+			},
+		},
+	}
+
+	provider := &recoverableMediaErrorProvider{}
+	al := NewAgentLoop(cfg, bus.NewMessageBus(), provider)
+
+	response, err := al.processMessage(context.Background(), bus.InboundMessage{
+		Channel:  "telegram",
+		SenderID: "user1",
+		ChatID:   "chat1",
+		Content:  "what is in this file?",
+		Media:    []string{"media://telegram/direct/user1/example.svg"},
+	})
+	if err != nil {
+		t.Fatalf("processMessage() error = %v", err)
+	}
+	if response.Content != "converted and answered" {
+		t.Fatalf("response.Content = %q, want converted and answered", response.Content)
+	}
+	if provider.calls != 2 {
+		t.Fatalf("provider calls = %d, want 2", provider.calls)
+	}
+	if len(provider.lastMessages) == 0 {
+		t.Fatal("expected second call messages to be recorded")
+	}
+	for _, msg := range provider.lastMessages {
+		if len(msg.Media) != 0 {
+			t.Fatalf("second call should not include inline media, got %#v", msg.Media)
+		}
+	}
+	last := provider.lastMessages[len(provider.lastMessages)-1].Content
+	if !strings.Contains(last, "provider rejected") || !strings.Contains(last, "example.svg") {
+		t.Fatalf("recovery message = %q, want provider error and original media ref", last)
+	}
+}

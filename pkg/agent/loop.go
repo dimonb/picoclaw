@@ -1906,7 +1906,6 @@ turnLoop:
 		ts.setIteration(iteration)
 		ts.setPhase(TurnPhaseRunning)
 
-
 		if iteration > 1 {
 			if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
 				pendingMessages = append(pendingMessages, steerMsgs...)
@@ -2313,6 +2312,32 @@ turnLoop:
 		llmSpan.End()
 
 		if err != nil {
+			if isRecoverableLLMMediaError(err) && iteration < ts.agent.MaxIterations {
+				recoveryMsg := buildRecoverableLLMMediaErrorMessage(err, ts.media, buildArtifactTags(al.mediaStore, ts.media))
+				messages = stripMediaFromMessages(messages)
+				messages = append(messages, recoveryMsg)
+				pendingMessages = nil
+				al.emitEvent(
+					EventKindLLMRetry,
+					ts.eventMeta("runTurn", "turn.llm.retry"),
+					LLMRetryPayload{
+						Attempt:    iteration,
+						MaxRetries: ts.agent.MaxIterations,
+						Reason:     "recoverable_media_error",
+						Error:      err.Error(),
+					},
+				)
+				logger.WarnCFCtx(turnCtx, "agent", "Recoverable LLM media error; continuing turn without inline media",
+					map[string]any{
+						"agent_id":    ts.agent.ID,
+						"iteration":   iteration,
+						"model":       llmModel,
+						"media_count": len(ts.media),
+						"error":       err.Error(),
+					})
+				continue
+			}
+
 			turnStatus = TurnEndStatusError
 			al.emitEvent(
 				EventKindError,
@@ -3005,6 +3030,76 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 	case <-timer.C:
 		return nil
 	}
+}
+
+func isRecoverableLLMMediaError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errMsg := strings.ToLower(err.Error())
+	patterns := []string{
+		"unsupported image",
+		"unsupported file",
+		"unsupported media",
+		"unsupported content",
+		"invalid image",
+		"invalid file",
+		"invalid media",
+		"image format",
+		"file format",
+		"media format",
+		"image/svg",
+		"svg+xml",
+		"mime type",
+		"content type",
+	}
+	for _, pattern := range patterns {
+		if strings.Contains(errMsg, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func stripMediaFromMessages(msgs []providers.Message) []providers.Message {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	stripped := make([]providers.Message, len(msgs))
+	copy(stripped, msgs)
+	for i := range stripped {
+		if len(stripped[i].Media) > 0 {
+			stripped[i].Media = nil
+		}
+	}
+	return stripped
+}
+
+func buildRecoverableLLMMediaErrorMessage(err error, media []string, artifactTags []string) providers.Message {
+	var sb strings.Builder
+	sb.WriteString("The previous LLM call failed before producing a response because the provider rejected one or more attached media files. Treat this as an observation, not as a final failure. Continue the turn and use available tools to inspect or convert the original files if needed (for example convert SVG to PNG), then answer the user.\n\nProvider error: ")
+	sb.WriteString(err.Error())
+	if len(media) > 0 {
+		sb.WriteString("\n\nOriginal media references:")
+		for _, ref := range media {
+			if strings.TrimSpace(ref) == "" {
+				continue
+			}
+			sb.WriteString("\n- ")
+			sb.WriteString(ref)
+		}
+	}
+	if len(artifactTags) > 0 {
+		sb.WriteString("\n\nResolved local artifact paths for tools:")
+		for _, tag := range artifactTags {
+			if strings.TrimSpace(tag) == "" {
+				continue
+			}
+			sb.WriteString("\n- ")
+			sb.WriteString(tag)
+		}
+	}
+	return providers.Message{Role: "user", Content: sb.String()}
 }
 
 // selectCandidates returns the model candidates and resolved model name to use
