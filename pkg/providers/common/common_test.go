@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
 	"strings"
 	"testing"
 
@@ -21,25 +20,28 @@ func TestNewHTTPClient_DefaultTimeout(t *testing.T) {
 }
 
 func TestNewHTTPClient_WithProxy(t *testing.T) {
-	client := NewHTTPClient("http://127.0.0.1:8080")
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok || transport == nil {
-		t.Fatalf("expected http.Transport with proxy, got %T", client.Transport)
-	}
-	req := &http.Request{URL: &url.URL{Scheme: "https", Host: "api.example.com"}}
-	gotProxy, err := transport.Proxy(req)
+	proxied := false
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxied = true
+		w.WriteHeader(http.StatusTeapot)
+	}))
+	defer proxy.Close()
+
+	client := NewHTTPClient(proxy.URL)
+	resp, err := client.Get("http://api.example.com/test")
 	if err != nil {
-		t.Fatalf("proxy function error: %v", err)
+		t.Fatalf("client.Get through proxy error: %v", err)
 	}
-	if gotProxy == nil || gotProxy.String() != "http://127.0.0.1:8080" {
-		t.Errorf("proxy = %v, want http://127.0.0.1:8080", gotProxy)
+	defer resp.Body.Close()
+	if !proxied {
+		t.Fatal("expected request to be sent through configured proxy")
 	}
 }
 
 func TestNewHTTPClient_NoProxy(t *testing.T) {
 	client := NewHTTPClient("")
-	if client.Transport != nil {
-		t.Errorf("expected nil transport without proxy, got %T", client.Transport)
+	if client.Transport == nil {
+		t.Fatal("expected instrumented default transport")
 	}
 }
 

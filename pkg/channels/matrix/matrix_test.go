@@ -623,9 +623,8 @@ func TestSendMedia_ReplyToIncludesRelation(t *testing.T) {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	ref, err := store.Store(tmpFile, media.MediaMeta{
-		Filename:      "image.png",
-		ContentType:   "image/png",
-		CleanupPolicy: media.CleanupPolicyForgetOnly,
+		Filename:    "image.png",
+		ContentType: "image/png",
 	}, "matrix:test")
 	if err != nil {
 		t.Fatalf("Store: %v", err)

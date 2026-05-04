@@ -2394,7 +2394,7 @@ turnLoop:
 			reasoningContent = response.ReasoningContent
 		}
 		go al.handleReasoning(
-			turnCtx,
+			context.WithoutCancel(turnCtx),
 			reasoningContent,
 			ts.channel,
 			al.targetReasoningChannelID(ts.channel),
