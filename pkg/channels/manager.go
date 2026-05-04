@@ -1052,7 +1052,7 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 		return bc, true
 	case *config.TeamsWebhookSettings:
 		return bc, true
-	case *config.SlackWebhookSettings:
+	case *config.SlackWebhookSettings, *config.WebhookSettings:
 		return bc, true
 	case *config.DiscordSettings:
 		return bc, settings.Token.String() != ""

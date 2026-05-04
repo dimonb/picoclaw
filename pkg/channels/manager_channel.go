@@ -139,6 +139,10 @@ func hiddenValues(key string, value map[string]any, ch *config.Channel) {
 			}
 			value["webhooks"] = webhooks
 		}
+	case "webhook":
+		if settings, ok := v.(*config.WebhookSettings); ok {
+			value["shared_secret"] = settings.SharedSecret.String()
+		}
 	}
 }
 

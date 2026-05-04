@@ -690,6 +690,17 @@ func (c *VKSettings) SetToken(token string) {
 	c.Token = *NewSecureString(token)
 }
 
+// WebhookSettings configures the generic request/response webhook channel.
+type WebhookSettings struct {
+	SharedSecret          SecureString `json:"shared_secret,omitzero"          yaml:"shared_secret,omitempty" env:"PICOCLAW_CHANNELS_WEBHOOK_SHARED_SECRET"`
+	RequestTimeoutSeconds int          `json:"request_timeout_seconds,omitempty" yaml:"-"                    env:"PICOCLAW_CHANNELS_WEBHOOK_REQUEST_TIMEOUT_SECONDS"`
+	ResultTTLSeconds      int          `json:"result_ttl_seconds,omitempty"     yaml:"-"                    env:"PICOCLAW_CHANNELS_WEBHOOK_RESULT_TTL_SECONDS"`
+}
+
+func (c *WebhookSettings) SetSharedSecret(secret string) {
+	c.SharedSecret = *NewSecureString(secret)
+}
+
 // TeamsWebhookSettings configures the output-only Microsoft Teams webhook channel.
 // Multiple webhook targets can be configured and selected via ChatID at send time.
 type TeamsWebhookSettings struct {
