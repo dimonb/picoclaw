@@ -358,11 +358,12 @@ type WhatsAppSettings struct {
 }
 
 type TelegramSettings struct {
-	Token         SecureString    `json:"token,omitzero"      yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_TELEGRAM_TOKEN"`
-	BaseURL       string          `json:"base_url"            yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_BASE_URL"`
-	Proxy         string          `json:"proxy"               yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_PROXY"`
-	Streaming     StreamingConfig `json:"streaming,omitempty" yaml:"-"`
-	UseMarkdownV2 bool            `json:"use_markdown_v2"     yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_USE_MARKDOWN_V2"`
+	Token         SecureString        `json:"token,omitzero"        yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_TELEGRAM_TOKEN"`
+	BaseURL       string              `json:"base_url"              yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_BASE_URL"`
+	Proxy         string              `json:"proxy"                 yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_PROXY"`
+	AllowChats    FlexibleStringSlice `json:"allow_chats,omitempty" yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOW_CHATS"`
+	Streaming     StreamingConfig     `json:"streaming,omitempty"   yaml:"-"`
+	UseMarkdownV2 bool                `json:"use_markdown_v2"       yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_USE_MARKDOWN_V2"`
 }
 
 type FeishuSettings struct {

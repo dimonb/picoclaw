@@ -14,6 +14,7 @@ The Telegram channel uses long polling via the Telegram Bot API for bot-based co
       "type": "telegram",
       "token": "123456789:ABCdefGHIjklMNOpqrsTUVwxyz",
       "allow_from": ["123456789"],
+      "allow_chats": ["-1001234567890"],
       "proxy": "",
       "use_markdown_v2": false
     }
@@ -26,6 +27,7 @@ The Telegram channel uses long polling via the Telegram Bot API for bot-based co
 | enabled          | bool   | Yes      | Whether to enable the Telegram channel                             |
 | token            | string | Yes      | Telegram Bot API Token                                             |
 | allow_from       | array  | No       | Allowlist of user IDs; empty means all users are allowed           |
+| allow_chats      | array  | No       | Allowlist of Telegram chat IDs; empty means all chats are allowed. For forum topics use `<chatID>/<threadID>` |
 | proxy            | string | No       | Proxy URL for connecting to the Telegram API (e.g. http://127.0.0.1:7890) |
 | use_markdown_v2 | bool   | No       | Enable Telegram MarkdownV2 formatting                              |
 
@@ -36,6 +38,7 @@ The Telegram channel uses long polling via the Telegram Bot API for bot-based co
 3. Obtain the HTTP API Token
 4. Fill in the Token in the configuration file
 5. (Optional) Configure `allow_from` to restrict which user IDs can interact (you can get IDs via `@userinfobot`)
+6. (Optional) Configure `allow_chats` to restrict the bot to specific Telegram chats or groups
 
 ## Built-in Commands
 
