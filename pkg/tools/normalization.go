@@ -249,9 +249,10 @@ func storeInlineDataURL(
 	)
 
 	ref, err = store.Store(tmpPath, media.MediaMeta{
-		Filename:    filename,
-		ContentType: mimeType,
-		Source:      fmt.Sprintf("tool:inline:%s", sanitizeIdentifierComponent(toolName)),
+		Filename:       filename,
+		ContentType:    mimeType,
+		Source:         fmt.Sprintf("tool:inline:%s", sanitizeIdentifierComponent(toolName)),
+		RetentionClass: media.RetentionClassPermanent,
 	}, scope)
 	if err != nil {
 		_ = os.Remove(tmpPath)
