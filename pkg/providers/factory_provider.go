@@ -30,6 +30,18 @@ func createClaudeAuthProvider() (LLMProvider, error) {
 	return NewClaudeProviderWithTokenSource(cred.AccessToken, createClaudeTokenSource()), nil
 }
 
+// createCodexWSAuthProvider creates a WebSocket-based Codex provider using OAuth credentials.
+func createCodexWSAuthProvider() (LLMProvider, error) {
+	cred, err := getCredential("openai")
+	if err != nil {
+		return nil, fmt.Errorf("loading auth credentials: %w", err)
+	}
+	if cred == nil {
+		return nil, fmt.Errorf("no credentials for openai. Run: picoclaw auth login --provider openai")
+	}
+	return NewCodexWSProvider(cred.AccessToken, cred.AccountID), nil
+}
+
 // createCodexAuthProvider creates a Codex provider using OAuth credentials from auth store.
 func createCodexAuthProvider() (LLMProvider, error) {
 	cred, err := getCredential("openai")
@@ -341,7 +353,14 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 		}
 		return finalizeProviderFromConfig(NewClaudeCliProvider(workspace), modelID, cfg)
 
-	case "codex-cli":
+	case "codex-ws", "codexws":
+		provider, err := createCodexWSAuthProvider()
+		if err != nil {
+			return nil, "", err
+		}
+		return provider, modelID, nil
+
+	case "codex-cli", "codexcli":
 		workspace := cfg.Workspace
 		if workspace == "" {
 			workspace = "."
