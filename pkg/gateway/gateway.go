@@ -65,6 +65,8 @@ type services struct {
 	CronService      *cron.CronService
 	HeartbeatService *heartbeat.HeartbeatService
 	MediaStore       media.MediaStore
+	MediaArchive     *media.SQLiteMediaArchive
+	MediaReaper      *media.RetentionReaper
 	ChannelManager   *channels.Manager
 	DeviceService    *devices.Service
 	HealthServer     *health.Server
@@ -375,20 +377,13 @@ func setupAndStartServices(
 	}
 	fmt.Println("✓ Heartbeat service started")
 
-	runningServices.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
-		Enabled:  cfg.Tools.MediaCleanup.Enabled,
-		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
-		Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
-	})
-	if fms, ok := runningServices.MediaStore.(*media.FileMediaStore); ok {
-		fms.Start()
+	if err := initMediaStack(runningServices, cfg); err != nil {
+		return nil, fmt.Errorf("error initializing media stack: %w", err)
 	}
 
 	runningServices.ChannelManager, err = channels.NewManager(cfg, msgBus, runningServices.MediaStore)
 	if err != nil {
-		if fms, ok := runningServices.MediaStore.(*media.FileMediaStore); ok {
-			fms.Stop()
-		}
+		stopMediaStack(runningServices)
 		return nil, fmt.Errorf("error creating channel manager: %w", err)
 	}
 
@@ -480,11 +475,7 @@ func stopAndCleanupServices(runningServices *services, shutdownTimeout time.Dura
 	if runningServices.CronService != nil {
 		runningServices.CronService.Stop()
 	}
-	if runningServices.MediaStore != nil {
-		if fms, ok := runningServices.MediaStore.(*media.FileMediaStore); ok {
-			fms.Stop()
-		}
-	}
+	stopMediaStack(runningServices)
 }
 
 func shutdownGateway(
@@ -611,13 +602,8 @@ func restartServices(
 	}
 	fmt.Println("  ✓ Heartbeat service restarted")
 
-	runningServices.MediaStore = media.NewFileMediaStoreWithCleanup(media.MediaCleanerConfig{
-		Enabled:  cfg.Tools.MediaCleanup.Enabled,
-		MaxAge:   time.Duration(cfg.Tools.MediaCleanup.MaxAge) * time.Minute,
-		Interval: time.Duration(cfg.Tools.MediaCleanup.Interval) * time.Minute,
-	})
-	if fms, ok := runningServices.MediaStore.(*media.FileMediaStore); ok {
-		fms.Start()
+	if err := initMediaStack(runningServices, cfg); err != nil {
+		return fmt.Errorf("error initializing media stack: %w", err)
 	}
 	al.SetMediaStore(runningServices.MediaStore)
 
