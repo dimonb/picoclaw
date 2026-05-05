@@ -51,15 +51,16 @@ const (
 
 type TelegramChannel struct {
 	*channels.BaseChannel
-	bot       *telego.Bot
-	bh        *th.BotHandler
-	bc        *config.Channel
-	chatIDsMu sync.Mutex
-	chatIDs   map[string]int64
-	ctx       context.Context
-	cancel    context.CancelFunc
-	tgCfg     *config.TelegramSettings
-	progress  *channels.ToolFeedbackAnimator
+	bot        *telego.Bot
+	bh         *th.BotHandler
+	bc         *config.Channel
+	chatIDsMu  sync.Mutex
+	chatIDs    map[string]int64
+	ctx        context.Context
+	cancel     context.CancelFunc
+	tgCfg      *config.TelegramSettings
+	allowChats map[string]struct{}
+	progress   *channels.ToolFeedbackAnimator
 
 	registerFunc      func(context.Context, []commands.Definition) error
 	commandRegDelayFn func(int) time.Duration
@@ -129,14 +130,14 @@ func NewTelegramChannel(
 	)
 
 	ch := &TelegramChannel{
-		BaseChannel: base,
-		bot:         bot,
-		bc:          bc,
-		chatIDs:     make(map[string]int64),
-		tgCfg:       telegramCfg,
-
+		BaseChannel:     base,
+		bot:             bot,
+		bc:              bc,
+		chatIDs:         make(map[string]int64),
+		tgCfg:           telegramCfg,
 		mediaGroups:     make(map[string]*telegramMediaGroup),
 		mediaGroupDelay: telegramMediaGroupDelay(telegramCfg),
+		allowChats:      buildAllowedTelegramChats(telegramCfg.AllowChats),
 	}
 	ch.progress = channels.NewToolFeedbackAnimator(ch.EditMessage)
 	return ch, nil
@@ -147,6 +148,37 @@ func telegramMediaGroupDelay(telegramCfg *config.TelegramSettings) time.Duration
 		return time.Duration(telegramCfg.MediaGroupDelayMS) * time.Millisecond
 	}
 	return defaultMediaGroupDelay
+}
+
+func buildAllowedTelegramChats(chats []string) map[string]struct{} {
+	if len(chats) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(chats))
+	for _, chat := range chats {
+		chat = strings.TrimSpace(chat)
+		if chat == "" {
+			continue
+		}
+		allowed[chat] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	return allowed
+}
+
+func (c *TelegramChannel) isAllowedChat(chatID, compositeChatID string) bool {
+	if len(c.allowChats) == 0 {
+		return true
+	}
+	if _, ok := c.allowChats[compositeChatID]; ok {
+		return true
+	}
+	if _, ok := c.allowChats[chatID]; ok {
+		return true
+	}
+	return false
 }
 
 func (c *TelegramChannel) Start(ctx context.Context) error {
@@ -1217,6 +1249,13 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 	threadID := message.MessageThreadID
 	if message.Chat.IsForum && threadID != 0 {
 		compositeChatID = fmt.Sprintf("%d/%d", chatID, threadID)
+	}
+
+	if !c.isAllowedChat(chatIDStr, compositeChatID) {
+		logger.DebugCF("telegram", "Message rejected by chat allowlist", map[string]any{
+			"chat_id": compositeChatID,
+		})
+		return nil
 	}
 
 	logger.DebugCF("telegram", "Received message", map[string]any{

@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -425,7 +426,7 @@ func TestSendMedia_SingleImageLongCaptionSendsTextFirst(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"201", "202"}, ids)
+	assert.Equal(t, []string{"12345:201", "202"}, ids)
 	require.Len(t, caller.calls, 2)
 	assert.Contains(t, caller.calls[0].URL, "sendMessage")
 	assert.Contains(t, caller.calls[1].URL, "sendPhoto")
@@ -477,7 +478,7 @@ func TestSendMedia_MediaGroupLongCaptionSendsTextFirst(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	assert.Equal(t, []string{"301", "302", "303"}, ids)
+	assert.Equal(t, []string{"12345:301", "302", "303"}, ids)
 	require.Len(t, caller.calls, 2)
 	assert.Contains(t, caller.calls[0].URL, "sendMessage")
 	assert.Contains(t, caller.calls[1].URL, "sendMediaGroup")
@@ -539,7 +540,7 @@ func TestSendMedia_MultiGroupLongCaptionSendsTextBeforeGroups(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, []string{
-		"499",
+		"12345:499",
 		"401", "402", "403", "404", "405",
 		"406", "407", "408", "409", "410",
 		"411", "412", "413", "414", "415",
@@ -1557,7 +1558,7 @@ func TestHandleMessage_LocationForwardedAsText(t *testing.T) {
 	select {
 	case inbound := <-messageBus.InboundChan():
 		assert.Equal(t, "[User location: lat=35.197713, lng=136.885705]", inbound.Content)
-		assert.Equal(t, "3049", inbound.Context.MessageID)
+		assert.Equal(t, "456:3049", inbound.Context.MessageID)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for location message")
 	}
@@ -1577,7 +1578,7 @@ func TestHandleMessage_MediaGroupCombinesCaptionMessages(t *testing.T) {
 
 	select {
 	case inbound := <-messageBus.InboundChan():
-		assert.Equal(t, "2", inbound.Context.MessageID)
+		assert.Equal(t, "456:2", inbound.Context.MessageID)
 		assert.Equal(t, "meal caption", inbound.Content)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for combined media group message")
@@ -1606,7 +1607,7 @@ func TestHandleMessage_MediaGroupWaitsForStaggeredMessages(t *testing.T) {
 
 	select {
 	case inbound := <-messageBus.InboundChan():
-		assert.Equal(t, "1", inbound.Context.MessageID)
+		assert.Equal(t, "456:1", inbound.Context.MessageID)
 		assert.Equal(t, "first caption\nsecond caption", inbound.Content)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for staggered media group message")
@@ -1648,7 +1649,7 @@ func TestFlushMediaGroupIgnoresStaleTimerGeneration(t *testing.T) {
 
 	select {
 	case inbound := <-messageBus.InboundChan():
-		assert.Equal(t, "1", inbound.Context.MessageID)
+		assert.Equal(t, "456:1", inbound.Context.MessageID)
 		assert.Equal(t, "first\nsecond", inbound.Content)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for current generation media group flush")
@@ -1668,7 +1669,7 @@ func TestHandleMessage_MediaGroupAfterDelayStartsNewBatch(t *testing.T) {
 	require.NoError(t, ch.handleMessage(context.Background(), &first))
 	select {
 	case inbound := <-messageBus.InboundChan():
-		assert.Equal(t, "1", inbound.Context.MessageID)
+		assert.Equal(t, "456:1", inbound.Context.MessageID)
 		assert.Equal(t, "first", inbound.Content)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for first media group batch")
@@ -1677,7 +1678,7 @@ func TestHandleMessage_MediaGroupAfterDelayStartsNewBatch(t *testing.T) {
 	require.NoError(t, ch.handleMessage(context.Background(), &second))
 	select {
 	case inbound := <-messageBus.InboundChan():
-		assert.Equal(t, "2", inbound.Context.MessageID)
+		assert.Equal(t, "456:2", inbound.Context.MessageID)
 		assert.Equal(t, "second", inbound.Content)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for second media group batch")
@@ -1696,7 +1697,7 @@ func TestStopFlushesPendingMediaGroups(t *testing.T) {
 
 	select {
 	case inbound := <-messageBus.InboundChan():
-		assert.Equal(t, "1", inbound.Context.MessageID)
+		assert.Equal(t, "456:1", inbound.Context.MessageID)
 		assert.Equal(t, "caption before stop", inbound.Content)
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for pending media group flush on stop")
@@ -1747,5 +1748,67 @@ func testMediaGroupMessage(mediaGroupID string) telego.Message {
 			FirstName: "User",
 		},
 		MediaGroupID: mediaGroupID,
+	}
+}
+
+func TestHandleMessage_ChatAllowlist_AllowsMatchingGroup(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		chatIDs:     make(map[string]int64),
+		allowChats:  map[string]struct{}{"-100999": {}},
+		ctx:         context.Background(),
+	}
+
+	msg := &telego.Message{
+		Text:      "allowed group message",
+		MessageID: 31,
+		Chat: telego.Chat{
+			ID:   -100999,
+			Type: "supergroup",
+		},
+		From: &telego.User{
+			ID:        11,
+			FirstName: "Eve",
+		},
+	}
+
+	err := ch.handleMessage(context.Background(), msg)
+	require.NoError(t, err)
+
+	inbound, ok := <-messageBus.InboundChan()
+	require.True(t, ok)
+	assert.Equal(t, "-100999", inbound.ChatID)
+}
+
+func TestHandleMessage_ChatAllowlist_RejectsOtherGroup(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		chatIDs:     make(map[string]int64),
+		allowChats:  map[string]struct{}{"-100999": {}},
+		ctx:         context.Background(),
+	}
+
+	msg := &telego.Message{
+		Text:      "blocked group message",
+		MessageID: 32,
+		Chat: telego.Chat{
+			ID:   -100111,
+			Type: "supergroup",
+		},
+		From: &telego.User{
+			ID:        12,
+			FirstName: "Frank",
+		},
+	}
+
+	err := ch.handleMessage(context.Background(), msg)
+	require.NoError(t, err)
+
+	select {
+	case inbound := <-messageBus.InboundChan():
+		t.Fatalf("unexpected inbound message published for blocked chat: %+v", inbound)
+	default:
 	}
 }
