@@ -48,6 +48,7 @@ type Config struct {
 	Heartbeat HeartbeatConfig `json:"heartbeat"           yaml:"-"`
 	Devices   DevicesConfig   `json:"devices"             yaml:"-"`
 	Voice     VoiceConfig     `json:"voice"               yaml:"-"`
+	Media     MediaConfig     `json:"media,omitempty"     yaml:"-"`
 	// BuildInfo contains build-time version information
 	BuildInfo BuildInfo `json:"build_info,omitempty" yaml:"-"`
 
@@ -1069,6 +1070,29 @@ type MediaCleanupConfig struct {
 	ToolConfig `    envPrefix:"PICOCLAW_MEDIA_CLEANUP_"`
 	MaxAge     int `                                    json:"max_age_minutes"  env:"PICOCLAW_MEDIA_CLEANUP_MAX_AGE"`
 	Interval   int `                                    json:"interval_minutes" env:"PICOCLAW_MEDIA_CLEANUP_INTERVAL"`
+}
+
+// MediaConfig groups durable media settings (archive layout, retention).
+type MediaConfig struct {
+	Archive MediaArchiveConfig `json:"archive,omitempty" yaml:"-"`
+}
+
+// MediaArchiveConfig controls the persistent media archive that backs the
+// in-memory MediaStore. When enabled, files registered with
+// CleanupPolicyDeleteOnCleanup are moved into the archive layout instead of
+// being deleted on scope release.
+//
+// Retention is two-tier:
+//   - Permanent entries (channels inbound, MCP outputs, etc.) are kept
+//     indefinitely.
+//   - Ephemeral entries are evicted by the reaper after EphemeralTTL has
+//     elapsed since they were last resolved.
+type MediaArchiveConfig struct {
+	Enabled            bool   `json:"enabled"                       env:"PICOCLAW_MEDIA_ARCHIVE_ENABLED"`
+	Root               string `json:"root,omitempty"                env:"PICOCLAW_MEDIA_ARCHIVE_ROOT"`
+	EphemeralTTLDays   int    `json:"ephemeral_ttl_days,omitempty"  env:"PICOCLAW_MEDIA_ARCHIVE_EPHEMERAL_TTL_DAYS"`
+	ReaperEnabled      bool   `json:"reaper_enabled"                env:"PICOCLAW_MEDIA_ARCHIVE_REAPER_ENABLED"`
+	ReaperIntervalMins int    `json:"reaper_interval_minutes,omitempty" env:"PICOCLAW_MEDIA_ARCHIVE_REAPER_INTERVAL_MINUTES"`
 }
 
 type ReadFileToolConfig struct {

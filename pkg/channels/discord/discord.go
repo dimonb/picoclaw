@@ -609,10 +609,11 @@ func (c *DiscordChannel) handleMessage(s *discordgo.Session, m *discordgo.Messag
 	storeMedia := func(localPath string, attachment *discordgo.MessageAttachment) string {
 		if store := c.GetMediaStore(); store != nil {
 			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename:      attachment.Filename,
-				ContentType:   attachment.ContentType,
-				Source:        "discord",
-				CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
+				Filename:       attachment.Filename,
+				ContentType:    attachment.ContentType,
+				Source:         "discord",
+				CleanupPolicy:  media.CleanupPolicyDeleteOnCleanup,
+				RetentionClass: media.RetentionClassPermanent,
 			}, scope)
 			if err == nil {
 				return ref

@@ -599,6 +599,7 @@ func (t *MCPTool) storeBinaryContent(
 			sanitizeIdentifierComponent(t.serverName),
 			sanitizeIdentifierComponent(t.tool.Name),
 		),
+		RetentionClass: media.RetentionClassPermanent,
 	}, scope)
 	if err != nil {
 		_ = os.Remove(tmpPath)

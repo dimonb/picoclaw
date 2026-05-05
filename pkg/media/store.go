@@ -26,10 +26,11 @@ const (
 
 // MediaMeta holds metadata about a stored media file.
 type MediaMeta struct {
-	Filename      string
-	ContentType   string
-	Source        string        // "telegram", "discord", "tool:image-gen", etc.
-	CleanupPolicy CleanupPolicy // defaults to CleanupPolicyDeleteOnCleanup
+	Filename       string
+	ContentType    string
+	Source         string         // "telegram", "discord", "tool:image-gen", etc.
+	CleanupPolicy  CleanupPolicy  // defaults to CleanupPolicyDeleteOnCleanup
+	RetentionClass RetentionClass // defaults to RetentionClassEphemeral
 }
 
 // MediaStore manages the lifecycle of media files associated with processing scopes.
@@ -72,6 +73,12 @@ type MediaCleanerConfig struct {
 
 // FileMediaStore is a pure in-memory implementation of MediaStore.
 // Files are expected to already exist on disk (e.g. in /tmp/picoclaw_media/).
+//
+// If an `archive` is attached via SetArchive, store-managed files are moved
+// into the archive layout on Store() and the in-memory entry path becomes the
+// archive path. The store no longer takes responsibility for deleting these
+// files on disk — disk lifecycle is delegated to the archive (via its
+// retention reaper).
 type FileMediaStore struct {
 	mu          sync.RWMutex
 	refs        map[string]mediaEntry
@@ -79,7 +86,9 @@ type FileMediaStore struct {
 	refToScope  map[string]string
 	refToPath   map[string]string
 	pathStates  map[string]pathRefState
+	archived    map[string]bool // ref → true if this ref is backed by archive
 
+	archive    MediaArchive
 	cleanerCfg MediaCleanerConfig
 	stop       chan struct{}
 	startOnce  sync.Once
@@ -95,6 +104,7 @@ func NewFileMediaStore() *FileMediaStore {
 		refToScope:  make(map[string]string),
 		refToPath:   make(map[string]string),
 		pathStates:  make(map[string]pathRefState),
+		archived:    make(map[string]bool),
 		nowFunc:     time.Now,
 	}
 }
@@ -107,13 +117,31 @@ func NewFileMediaStoreWithCleanup(cfg MediaCleanerConfig) *FileMediaStore {
 		refToScope:  make(map[string]string),
 		refToPath:   make(map[string]string),
 		pathStates:  make(map[string]pathRefState),
+		archived:    make(map[string]bool),
 		cleanerCfg:  cfg,
 		stop:        make(chan struct{}),
 		nowFunc:     time.Now,
 	}
 }
 
+// SetArchive attaches a MediaArchive. After this call, any subsequent
+// Store() with CleanupPolicyDeleteOnCleanup will move the file into the
+// archive and the store will defer disk lifecycle to the archive.
+//
+// Setting archive to nil reverts to the original in-memory-only behavior
+// (existing entries are unaffected).
+func (s *FileMediaStore) SetArchive(a MediaArchive) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.archive = a
+}
+
 // Store registers a local file under the given scope. The file must exist.
+//
+// If an archive is attached and CleanupPolicy is DeleteOnCleanup, the file is
+// moved into the archive layout and the in-memory entry path becomes the
+// archive path. The store no longer manages disk lifecycle for that path —
+// archive retention is responsible for eviction.
 func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (string, error) {
 	if _, err := os.Stat(localPath); err != nil {
 		return "", fmt.Errorf("media store: %s: %w", localPath, err)
@@ -123,18 +151,44 @@ func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (
 	meta.CleanupPolicy = normalizeCleanupPolicy(meta.CleanupPolicy)
 
 	s.mu.Lock()
+	archive := s.archive
+	s.mu.Unlock()
+
+	storedPath := localPath
+	archived := false
+	if archive != nil && meta.CleanupPolicy == CleanupPolicyDeleteOnCleanup {
+		archivePath, err := archive.Archive(localPath, ref, meta, scope)
+		if err != nil {
+			logger.WarnCF("media", "archive failed; falling back to in-place storage", map[string]any{
+				"path":  localPath,
+				"error": err.Error(),
+			})
+		} else {
+			storedPath = archivePath
+			archived = true
+		}
+	}
+
+	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.refs[ref] = mediaEntry{path: localPath, meta: meta, storedAt: s.nowFunc()}
+	s.refs[ref] = mediaEntry{path: storedPath, meta: meta, storedAt: s.nowFunc()}
 	if s.scopeToRefs[scope] == nil {
 		s.scopeToRefs[scope] = make(map[string]struct{})
 	}
 	s.scopeToRefs[scope][ref] = struct{}{}
 	s.refToScope[ref] = scope
-	s.refToPath[ref] = localPath
+	s.refToPath[ref] = storedPath
+	if archived {
+		s.archived[ref] = true
+	}
 
-	pathState := s.pathStates[localPath]
-	if pathState.refCount == 0 {
+	pathState := s.pathStates[storedPath]
+	if archived {
+		// Disk lifecycle is the archive's responsibility; the store must not
+		// delete archive files even when its own refcount drops to zero.
+		pathState.deleteEligible = false
+	} else if pathState.refCount == 0 {
 		pathState.deleteEligible = meta.CleanupPolicy == CleanupPolicyDeleteOnCleanup
 	} else if meta.CleanupPolicy == CleanupPolicyForgetOnly {
 		// Be conservative: once a path is borrowed externally, never let this
@@ -142,7 +196,7 @@ func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (
 		pathState.deleteEligible = false
 	}
 	pathState.refCount++
-	s.pathStates[localPath] = pathState
+	s.pathStates[storedPath] = pathState
 
 	return ref, nil
 }
@@ -150,11 +204,16 @@ func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (
 // Resolve returns the local path for the given ref.
 func (s *FileMediaStore) Resolve(ref string) (string, error) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	entry, ok := s.refs[ref]
+	archive := s.archive
+	archived := s.archived[ref]
+	s.mu.RUnlock()
+
 	if !ok {
 		return "", fmt.Errorf("media store: unknown ref: %s", ref)
+	}
+	if archived && archive != nil {
+		archive.MarkResolved(ref)
 	}
 	return entry.path, nil
 }
@@ -162,11 +221,16 @@ func (s *FileMediaStore) Resolve(ref string) (string, error) {
 // ResolveWithMeta returns the local path and metadata for the given ref.
 func (s *FileMediaStore) ResolveWithMeta(ref string) (string, MediaMeta, error) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	entry, ok := s.refs[ref]
+	archive := s.archive
+	archived := s.archived[ref]
+	s.mu.RUnlock()
+
 	if !ok {
 		return "", MediaMeta{}, fmt.Errorf("media store: unknown ref: %s", ref)
+	}
+	if archived && archive != nil {
+		archive.MarkResolved(ref)
 	}
 	return entry.path, entry.meta, nil
 }

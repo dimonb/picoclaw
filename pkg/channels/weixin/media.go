@@ -379,10 +379,11 @@ func (c *WeixinChannel) storeInboundBytes(
 		return "", err
 	}
 	ref, err := store.Store(tmpPath, media.MediaMeta{
-		Filename:      filename,
-		ContentType:   contentType,
-		Source:        "weixin",
-		CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
+		Filename:       filename,
+		ContentType:    contentType,
+		Source:         "weixin",
+		CleanupPolicy:  media.CleanupPolicyDeleteOnCleanup,
+		RetentionClass: media.RetentionClassPermanent,
 	}, basechannels.BuildMediaScope("weixin", chatID, messageID))
 	if err != nil {
 		os.Remove(tmpPath)

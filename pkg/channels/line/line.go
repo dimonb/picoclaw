@@ -205,8 +205,10 @@ func (c *LINEChannel) processEvent(event webhook.EventInterface) {
 	storeMedia := func(localPath, filename, scope string) string {
 		if store := c.GetMediaStore(); store != nil {
 			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename: filename,
-				Source:   "line",
+				Filename:       filename,
+				Source:         "line",
+				CleanupPolicy:  media.CleanupPolicyDeleteOnCleanup,
+				RetentionClass: media.RetentionClassPermanent,
 			}, scope)
 			if err == nil {
 				return ref

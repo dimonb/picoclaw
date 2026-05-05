@@ -988,9 +988,10 @@ func (c *MatrixChannel) extractInboundMedia(
 
 	filename := matrixMediaFilename(label, mediaKind, matrixContentType(msgEvt))
 	ref := c.storeMedia(localPath, media.MediaMeta{
-		Filename:    filename,
-		ContentType: matrixContentType(msgEvt),
-		Source:      "matrix",
+		Filename:       filename,
+		ContentType:    matrixContentType(msgEvt),
+		Source:         "matrix",
+		RetentionClass: media.RetentionClassPermanent,
 	}, scope)
 	return content, []string{ref}, true
 }

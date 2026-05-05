@@ -324,6 +324,10 @@ func DefaultConfig() *Config {
 				MaxAge:   30,
 				Interval: 5,
 			},
+			// MediaArchive defaults are intentionally located on the
+			// top-level Media field (see DefaultConfig assignment below)
+			// rather than under Tools — archive is a media subsystem
+			// concern, not a tool.
 			Web: WebToolsConfig{
 				ToolConfig: ToolConfig{
 					Enabled: true,
@@ -506,6 +510,15 @@ func DefaultConfig() *Config {
 			TTSModelName:      "",
 			EchoTranscription: false,
 			ElevenLabsAPIKey:  "",
+		},
+		Media: MediaConfig{
+			Archive: MediaArchiveConfig{
+				Enabled:            true,
+				Root:               filepath.Join(GetHome(), "media"),
+				EphemeralTTLDays:   30,
+				ReaperEnabled:      true,
+				ReaperIntervalMins: 60,
+			},
 		},
 		BuildInfo: BuildInfo{
 			Version:   Version,

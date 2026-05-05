@@ -1177,9 +1177,10 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 	storeMedia := func(localPath, filename string) string {
 		if store := c.GetMediaStore(); store != nil {
 			ref, err := store.Store(localPath, media.MediaMeta{
-				Filename:      filename,
-				Source:        "telegram",
-				CleanupPolicy: media.CleanupPolicyDeleteOnCleanup,
+				Filename:       filename,
+				Source:         "telegram",
+				CleanupPolicy:  media.CleanupPolicyDeleteOnCleanup,
+				RetentionClass: media.RetentionClassPermanent,
 			}, scope)
 			if err == nil {
 				return ref
