@@ -23,6 +23,10 @@ type MessageBus interface {
 
 	// InboundChan returns the channel for receiving inbound messages.
 	InboundChan() <-chan bus.InboundMessage
+
+	// ExtractTrace returns a context populated with the trace context
+	// carried in the supplied W3C TraceContext map carrier.
+	ExtractTrace(ctx context.Context, carrier map[string]string) context.Context
 }
 
 // ChannelManager manages channel lifecycle and provides channel access.

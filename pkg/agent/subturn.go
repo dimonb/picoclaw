@@ -11,7 +11,11 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/providers/messageutil"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"github.com/sipeed/picoclaw/pkg/tools"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ====================== Config & Constants ======================
@@ -267,6 +271,22 @@ func spawnSubTurn(
 	parentTS *turnState,
 	cfg SubTurnConfig,
 ) (result *tools.ToolResult, err error) {
+	// Open a span on the parent context so the subagent call is visible in traces.
+	ctx, span := telemetry.GetTracer().Start(ctx, "SubTurn",
+		trace.WithAttributes(
+			attribute.String("model", cfg.Model),
+			attribute.Bool("async", cfg.Async),
+			attribute.Bool("critical", cfg.Critical),
+		),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	// Get effective SubTurn configuration
 	rtCfg := al.getSubTurnConfig()
 
@@ -327,7 +347,12 @@ func spawnSubTurn(
 	// 4. Create INDEPENDENT child context (not derived from parent ctx).
 	// This allows the child to continue running after parent finishes gracefully.
 	// The child has its own timeout for self-protection.
-	childCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	// Inject the parent's span context as a remote span so child spans appear
+	// linked in the same trace, even though the context is independent.
+	childCtx, cancel := context.WithTimeout(
+		trace.ContextWithRemoteSpanContext(context.Background(), span.SpanContext()),
+		timeout,
+	)
 	defer cancel()
 
 	childID := al.generateSubTurnID()

@@ -12,7 +12,10 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"github.com/sipeed/picoclaw/pkg/utils"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func (al *AgentLoop) buildContinuationTarget(msg bus.InboundMessage) (*continuationTarget, error) {
@@ -102,8 +105,32 @@ func (al *AgentLoop) ProcessHeartbeat(
 	})
 }
 
-func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (string, error) {
+func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage) (resp string, err error) {
 	msg = bus.NormalizeInboundMessage(msg)
+
+	// Link any cross-process trace context attached by the channel/bus producer.
+	if al.bus != nil {
+		ctx = al.bus.ExtractTrace(ctx, msg.TraceCarrier)
+	}
+
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "AgentTurn",
+		trace.WithAttributes(
+			attribute.String("channel", msg.Channel),
+			attribute.String("chat_id", msg.ChatID),
+			attribute.String("session_key", msg.SessionKey),
+			attribute.String("msg.content", utils.Truncate(msg.Content, 1024)),
+		),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+		} else {
+			span.SetAttributes(attribute.String("response.content", utils.Truncate(resp, 1024)))
+		}
+		span.End()
+	}()
+	defer telemetry.WithPanicRecovery(ctx)
 
 	// Add message preview to log (show full content for error messages)
 	var logContent string
@@ -112,7 +139,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	} else {
 		logContent = utils.Truncate(msg.Content, 80)
 	}
-	logger.InfoCF(
+	logger.InfoCFCtx(ctx,
 		"agent",
 		fmt.Sprintf("Processing message from %s:%s: %s", msg.Channel, msg.SenderID, logContent),
 		map[string]any{
