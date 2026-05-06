@@ -128,6 +128,11 @@ toolLoop:
 			exec.abortedByHardAbort = true
 			return ToolControlBreak
 		}
+		if turnCtx.Err() != nil {
+			_ = ts.requestHardAbort()
+			exec.abortedByHardAbort = true
+			return ToolControlBreak
+		}
 
 		toolName := tc.Name
 		toolArgs := cloneStringAnyMap(tc.Arguments)
