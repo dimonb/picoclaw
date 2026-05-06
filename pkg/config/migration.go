@@ -41,6 +41,8 @@ type legacyDiagnosticConfig struct {
 	Heartbeat   HeartbeatConfig        `json:"heartbeat,omitempty"`
 	Devices     DevicesConfig          `json:"devices,omitempty"`
 	Voice       VoiceConfig            `json:"voice,omitempty"`
+	Media       MediaConfig            `json:"media,omitempty"`
+	Telemetry   TelemetryConfig        `json:"telemetry,omitempty"`
 	Bindings    json.RawMessage        `json:"bindings,omitempty"`
 	Providers   json.RawMessage        `json:"providers,omitempty"`
 }
