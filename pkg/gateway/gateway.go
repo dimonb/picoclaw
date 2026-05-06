@@ -51,6 +51,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/pid"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/state"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -154,6 +155,13 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 	if err != nil {
 		return fmt.Errorf("error loading config: %w", err)
 	}
+
+	// Initialize telemetry
+	telemetryShutdown, telErr := telemetry.Init(context.Background(), cfg.Telemetry)
+	if telErr != nil {
+		logger.ErrorCF("gateway", "Failed to initialize telemetry", map[string]any{"error": telErr.Error()})
+	}
+	defer telemetryShutdown()
 
 	if err = preCheckConfig(cfg); err != nil {
 		return fmt.Errorf("config pre-check failed: %w", err)

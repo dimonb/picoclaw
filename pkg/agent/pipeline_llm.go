@@ -14,6 +14,9 @@ import (
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // CallLLM performs an LLM call with fallback support, hook invocation, and retry logic.
@@ -25,7 +28,22 @@ func (p *Pipeline) CallLLM(
 	ts *turnState,
 	exec *turnExecution,
 	iteration int,
-) (Control, error) {
+) (_ Control, err error) {
+	tr := telemetry.GetTracer()
+	llmCallCtx, llmSpan := tr.Start(turnCtx, "LLMCall",
+		trace.WithAttributes(
+			attribute.Int("iteration", iteration),
+			attribute.String("agent_id", ts.agent.ID),
+		),
+	)
+	turnCtx = llmCallCtx
+	defer func() {
+		if err != nil {
+			llmSpan.RecordError(err)
+		}
+		llmSpan.End()
+	}()
+
 	al := p.al
 	maxMediaSize := p.Cfg.Agents.Defaults.GetMaxMediaSize()
 
@@ -256,7 +274,6 @@ func (p *Pipeline) CallLLM(
 	}
 
 	// Retry loop
-	var err error
 	maxRetries := p.Cfg.Agents.Defaults.MaxLLMRetries
 	if maxRetries <= 0 {
 		maxRetries = 2

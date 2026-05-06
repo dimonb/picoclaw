@@ -38,3 +38,7 @@ func (a *messageBusAdapter) GetStreamer(ctx context.Context, channel, chatID, se
 func (a *messageBusAdapter) InboundChan() <-chan bus.InboundMessage {
 	return a.inner.InboundChan()
 }
+
+func (a *messageBusAdapter) ExtractTrace(ctx context.Context, carrier map[string]string) context.Context {
+	return a.inner.ExtractTrace(ctx, carrier)
+}

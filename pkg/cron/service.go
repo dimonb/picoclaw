@@ -1,6 +1,7 @@
 package cron
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -12,8 +13,12 @@ import (
 	"time"
 
 	"github.com/adhocore/gronx"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
 )
 
 type CronSchedule struct {
@@ -238,7 +243,7 @@ func (cs *CronService) executeJobByID(jobID string) {
 
 	var err error
 	if cs.onJob != nil {
-		_, err = cs.onJob(callbackJob)
+		err = cs.runJobWithSpan(jobID, callbackJob)
 	}
 
 	execDuration := time.Now().UnixMilli() - startTime
@@ -638,4 +643,23 @@ func generateID() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
+}
+
+func (cs *CronService) runJobWithSpan(jobID string, job *CronJob) error {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(context.Background(), "CronJobExecute",
+		trace.WithAttributes(
+			attribute.String("job_id", jobID),
+			attribute.String("job_name", job.Name),
+		),
+	)
+	defer span.End()
+	defer telemetry.WithPanicRecovery(ctx)
+
+	_, err := cs.onJob(job)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
 }

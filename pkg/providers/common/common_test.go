@@ -5,8 +5,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"testing"
+	"unsafe"
 
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
@@ -22,9 +24,13 @@ func TestNewHTTPClient_DefaultTimeout(t *testing.T) {
 
 func TestNewHTTPClient_WithProxy(t *testing.T) {
 	client := NewHTTPClient("http://127.0.0.1:8080")
-	transport, ok := client.Transport.(*http.Transport)
+	// NewHTTPClient now wraps the proxy-aware transport with otelhttp for
+	// OpenTelemetry instrumentation. Reach the inner *http.Transport via
+	// reflection so we can validate the proxy function.
+	inner := unwrapInnerRoundTripper(t, client.Transport)
+	transport, ok := inner.(*http.Transport)
 	if !ok || transport == nil {
-		t.Fatalf("expected http.Transport with proxy, got %T", client.Transport)
+		t.Fatalf("expected http.Transport with proxy, got %T", inner)
 	}
 	req := &http.Request{URL: &url.URL{Scheme: "https", Host: "api.example.com"}}
 	gotProxy, err := transport.Proxy(req)
@@ -38,9 +44,39 @@ func TestNewHTTPClient_WithProxy(t *testing.T) {
 
 func TestNewHTTPClient_NoProxy(t *testing.T) {
 	client := NewHTTPClient("")
-	if client.Transport != nil {
-		t.Errorf("expected nil transport without proxy, got %T", client.Transport)
+	// Without a proxy, NewHTTPClient still wraps http.DefaultTransport with
+	// otelhttp for OpenTelemetry instrumentation. The inner transport should
+	// be the package-default transport.
+	inner := unwrapInnerRoundTripper(t, client.Transport)
+	if inner != http.DefaultTransport {
+		t.Errorf("expected http.DefaultTransport inside otelhttp wrapper, got %T", inner)
 	}
+}
+
+// unwrapInnerRoundTripper peeks past otelhttp.Transport (which keeps an
+// unexported http.RoundTripper field) to recover the inner transport.
+func unwrapInnerRoundTripper(t *testing.T, rt http.RoundTripper) http.RoundTripper {
+	t.Helper()
+	v := reflect.ValueOf(rt)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return rt
+	}
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		if !f.IsValid() {
+			continue
+		}
+		if !f.CanInterface() {
+			f = reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem()
+		}
+		if inner, ok := f.Interface().(http.RoundTripper); ok && inner != nil {
+			return inner
+		}
+	}
+	return rt
 }
 
 func TestNewHTTPClient_InvalidProxy(t *testing.T) {

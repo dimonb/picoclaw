@@ -53,6 +53,11 @@ type InboundMessage struct {
 	SenderID  string `json:"sender_id"`
 	ChatID    string `json:"chat_id"`
 	MessageID string `json:"message_id,omitempty"` // platform message ID
+
+	// TraceCarrier is the W3C TraceContext propagation carrier used to link
+	// cross-process spans. Populated by PublishInbound; consumed by
+	// MessageBus.ExtractTrace on the receive side.
+	TraceCarrier map[string]string `json:"trace_carrier,omitempty"`
 }
 
 // OutboundScope captures the structured session scope associated with an
@@ -91,6 +96,9 @@ type OutboundMessage struct {
 	// Feedback is an optional channel for receiving delivered message IDs.
 	// Typically used by messaging tools with wait_delivery=true.
 	Feedback chan []string `json:"-"`
+
+	// TraceCarrier propagates trace context to downstream channel sends.
+	TraceCarrier map[string]string `json:"trace_carrier,omitempty"`
 }
 
 // MediaPart describes a single media attachment to send.
@@ -104,13 +112,14 @@ type MediaPart struct {
 
 // OutboundMediaMessage carries media attachments from Agent to channels via the bus.
 type OutboundMediaMessage struct {
-	Channel    string         `json:"channel"`
-	ChatID     string         `json:"chat_id"`
-	Context    InboundContext `json:"context"`
-	AgentID    string         `json:"agent_id,omitempty"`
-	SessionKey string         `json:"session_key,omitempty"`
-	Scope      *OutboundScope `json:"scope,omitempty"`
-	Parts      []MediaPart    `json:"parts"`
+	Channel      string            `json:"channel"`
+	ChatID       string            `json:"chat_id"`
+	Context      InboundContext    `json:"context"`
+	AgentID      string            `json:"agent_id,omitempty"`
+	SessionKey   string            `json:"session_key,omitempty"`
+	Scope        *OutboundScope    `json:"scope,omitempty"`
+	Parts        []MediaPart       `json:"parts"`
+	TraceCarrier map[string]string `json:"trace_carrier,omitempty"`
 }
 
 // AudioChunk represents a chunk of streaming voice data.

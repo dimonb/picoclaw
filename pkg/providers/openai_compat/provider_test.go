@@ -9,10 +9,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers/common"
@@ -1177,9 +1179,13 @@ func TestProvider_ProxyConfigured(t *testing.T) {
 	proxyURL := "http://127.0.0.1:8080"
 	p := NewProvider("key", "https://example.com", proxyURL)
 
-	transport, ok := p.httpClient.Transport.(*http.Transport)
+	// The common HTTP client wraps the proxy-aware transport with otelhttp for
+	// OpenTelemetry instrumentation. Use reflection to reach the inner
+	// *http.Transport so we can validate the proxy function directly.
+	inner := unwrapInnerTransport(t, p.httpClient.Transport)
+	transport, ok := inner.(*http.Transport)
 	if !ok || transport == nil {
-		t.Fatalf("expected http transport with proxy, got %T", p.httpClient.Transport)
+		t.Fatalf("expected http transport with proxy, got %T", inner)
 	}
 
 	req := &http.Request{URL: &url.URL{Scheme: "https", Host: "api.example.com"}}
@@ -1190,6 +1196,40 @@ func TestProvider_ProxyConfigured(t *testing.T) {
 	if gotProxy == nil || gotProxy.String() != proxyURL {
 		t.Fatalf("proxy = %v, want %s", gotProxy, proxyURL)
 	}
+}
+
+// unwrapInnerTransport peeks past otelhttp.Transport (which embeds an
+// unexported http.RoundTripper) to recover the inner transport for tests.
+func unwrapInnerTransport(t *testing.T, rt http.RoundTripper) http.RoundTripper {
+	t.Helper()
+	v := reflect.ValueOf(rt)
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Struct {
+		return rt
+	}
+	for i := 0; i < v.NumField(); i++ {
+		f := v.Field(i)
+		if !f.IsValid() {
+			continue
+		}
+		if inner, ok := unsafeInterface(f).(http.RoundTripper); ok && inner != nil {
+			return inner
+		}
+	}
+	return rt
+}
+
+func unsafeInterface(v reflect.Value) any {
+	if !v.CanInterface() {
+		v = reflect.NewAt(v.Type(), unsafePointer(v)).Elem()
+	}
+	return v.Interface()
+}
+
+func unsafePointer(v reflect.Value) unsafe.Pointer {
+	return unsafe.Pointer(v.UnsafeAddr())
 }
 
 func TestProviderChat_AcceptsNumericOptionTypes(t *testing.T) {

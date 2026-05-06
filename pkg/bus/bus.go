@@ -10,6 +10,11 @@ import (
 
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // ErrBusClosed is returned when publishing to a closed MessageBus.
@@ -219,6 +224,7 @@ func (mb *MessageBus) PublishInbound(ctx context.Context, msg InboundMessage) er
 		mb.publishFailure("inbound", runtimeScopeFromInboundContext(msg.Context), ErrMissingInboundContext)
 		return ErrMissingInboundContext
 	}
+	msg.TraceCarrier = injectTrace(ctx)
 	if err := publish(ctx, mb, mb.inbound, msg, publishPolicy{
 		stream: "inbound",
 	}, &mb.inboundStats, runtimeScopeFromInboundContext(msg.Context)); err != nil {
@@ -241,6 +247,16 @@ func (mb *MessageBus) PublishOutbound(ctx context.Context, msg OutboundMessage) 
 		mb.publishFailure("outbound", runtimeScopeFromInboundContext(msg.Context), ErrMissingOutboundContext)
 		return ErrMissingOutboundContext
 	}
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "ChannelSend",
+		trace.WithAttributes(
+			attribute.String("channel", msg.Channel),
+			attribute.String("chat_id", msg.ChatID),
+		),
+	)
+	defer span.End()
+
+	msg.TraceCarrier = injectTrace(ctx)
 	if err := publish(ctx, mb, mb.outbound, msg, publishPolicy{
 		stream: "outbound",
 	}, &mb.outboundStats, runtimeScopeFromInboundContext(msg.Context)); err != nil {
@@ -263,6 +279,17 @@ func (mb *MessageBus) PublishOutboundMedia(ctx context.Context, msg OutboundMedi
 		mb.publishFailure("outbound_media", runtimeScopeFromInboundContext(msg.Context), ErrMissingOutboundMediaContext)
 		return ErrMissingOutboundMediaContext
 	}
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "ChannelSendMedia",
+		trace.WithAttributes(
+			attribute.String("channel", msg.Channel),
+			attribute.String("chat_id", msg.ChatID),
+			attribute.Int("media_count", len(msg.Parts)),
+		),
+	)
+	defer span.End()
+
+	msg.TraceCarrier = injectTrace(ctx)
 	if err := publish(ctx, mb, mb.outboundMedia, msg, publishPolicy{
 		stream: "outbound_media",
 	}, &mb.mediaStats, runtimeScopeFromInboundContext(msg.Context)); err != nil {
@@ -273,6 +300,25 @@ func (mb *MessageBus) PublishOutboundMedia(ctx context.Context, msg OutboundMedi
 		return err
 	}
 	return nil
+}
+
+// ExtractTrace returns a context with trace information extracted from the
+// supplied carrier (typically TraceCarrier on a bus message). Returns ctx
+// unchanged when the carrier is nil/empty.
+func (mb *MessageBus) ExtractTrace(ctx context.Context, carrier map[string]string) context.Context {
+	if len(carrier) == 0 {
+		return ctx
+	}
+	return otel.GetTextMapPropagator().Extract(ctx, propagation.MapCarrier(carrier))
+}
+
+func injectTrace(ctx context.Context) map[string]string {
+	carrier := make(propagation.MapCarrier)
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
+	if len(carrier) == 0 {
+		return nil
+	}
+	return map[string]string(carrier)
 }
 
 func (mb *MessageBus) OutboundMediaChan() <-chan OutboundMediaMessage {

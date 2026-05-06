@@ -17,6 +17,10 @@ import (
 	"github.com/sipeed/picoclaw/pkg/providers/common"
 	"github.com/sipeed/picoclaw/pkg/providers/messageutil"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 )
 
 type (
@@ -449,21 +453,41 @@ func (p *Provider) Chat(
 	tools []ToolDefinition,
 	model string,
 	options map[string]any,
-) (*LLMResponse, error) {
+) (resp *LLMResponse, err error) {
+	tr := telemetry.GetTracer()
+	ctx, span := tr.Start(ctx, "OpenAIRequest",
+		trace.WithAttributes(attribute.String("model", model)),
+	)
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		} else if resp != nil {
+			if resp.Usage != nil {
+				span.SetAttributes(
+					attribute.Int("prompt_tokens", resp.Usage.PromptTokens),
+					attribute.Int("completion_tokens", resp.Usage.CompletionTokens),
+				)
+			}
+			span.SetAttributes(attribute.String("msg.content", spanTruncate(resp.Content, 1024)))
+		}
+		span.End()
+	}()
+
 	if p.apiBase == "" {
 		return nil, fmt.Errorf("API base not configured")
 	}
 
 	requestBody := p.buildRequestBody(messages, tools, model, options)
 
-	jsonData, err := json.Marshal(requestBody)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	jsonData, jerr := json.Marshal(requestBody)
+	if jerr != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", jerr)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", p.apiBase+"/chat/completions", bytes.NewReader(jsonData))
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
+	req, rerr := http.NewRequestWithContext(ctx, "POST", p.apiBase+"/chat/completions", bytes.NewReader(jsonData))
+	if rerr != nil {
+		return nil, fmt.Errorf("failed to create request: %w", rerr)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -475,17 +499,17 @@ func (p *Provider) Chat(
 	}
 	p.applyCustomHeaders(req)
 
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("failed to send request: %w", err)
+	httpResp, herr := p.httpClient.Do(req)
+	if herr != nil {
+		return nil, fmt.Errorf("failed to send request: %w", herr)
 	}
-	defer resp.Body.Close()
+	defer httpResp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, common.HandleErrorResponse(resp, p.apiBase)
+	if httpResp.StatusCode != http.StatusOK {
+		return nil, common.HandleErrorResponse(httpResp, p.apiBase)
 	}
 
-	return common.ReadAndParseResponse(resp, p.apiBase)
+	return common.ReadAndParseResponse(httpResp, p.apiBase)
 }
 
 // ChatStream implements streaming via OpenAI-compatible SSE (stream: true).
@@ -855,4 +879,13 @@ func isNativeSearchHost(apiBase string) bool {
 // (Mistral, Gemini, DeepSeek, Groq, etc.) reject unknown fields with 422 errors.
 func supportsPromptCacheKey(apiBase string) bool {
 	return isNativeOpenAIOrAzureEndpoint(apiBase)
+}
+
+// spanTruncate is a local helper to keep span attributes bounded without
+// importing pkg/utils (which would create an import cycle with this package).
+func spanTruncate(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }
