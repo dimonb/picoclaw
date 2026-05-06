@@ -46,6 +46,7 @@ type Config struct {
 	Devices   DevicesConfig   `json:"devices"             yaml:"-"`
 	Voice     VoiceConfig     `json:"voice"               yaml:"-"`
 	Media     MediaConfig     `json:"media,omitempty"     yaml:"-"`
+	Telemetry TelemetryConfig `json:"telemetry,omitempty" yaml:"-"`
 	// BuildInfo contains build-time version information
 	BuildInfo BuildInfo `json:"build_info,omitempty" yaml:"-"`
 
@@ -120,6 +121,15 @@ type BuildInfo struct {
 	GitCommit string `json:"git_commit"`
 	BuildTime string `json:"build_time"`
 	GoVersion string `json:"go_version"`
+}
+
+// TelemetryConfig controls OpenTelemetry tracing and log export.
+type TelemetryConfig struct {
+	Enabled     bool              `json:"enabled"      env:"PICOCLAW_TELEMETRY_ENABLED"`
+	Endpoint    string            `json:"endpoint"     env:"PICOCLAW_TELEMETRY_ENDPOINT"`
+	Protocol    string            `json:"protocol"     env:"PICOCLAW_TELEMETRY_PROTOCOL"` // "http" or "grpc"
+	Headers     map[string]string `json:"headers"`
+	ServiceName string            `json:"service_name" env:"PICOCLAW_TELEMETRY_SERVICE_NAME"`
 }
 
 // MarshalJSON implements custom JSON marshaling for Config
