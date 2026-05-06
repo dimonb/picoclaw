@@ -1,6 +1,7 @@
 package agent
 
 import (
+	_ "embed"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +12,9 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
+
+//go:embed default_soul.md
+var defaultSoul string
 
 // AgentDefinitionSource identifies which agent bootstrap file produced the definition.
 type AgentDefinitionSource string
@@ -105,12 +109,15 @@ func loadAgentDefinition(workspace string) AgentContextDefinition {
 	}
 
 	defaultSoulPath := filepath.Join(workspace, "SOUL.md")
-	if definition.Source != "" || fileExists(defaultSoulPath) {
-		if content, err := os.ReadFile(defaultSoulPath); err == nil {
-			definition.Soul = &SoulDefinition{
-				Path:    defaultSoulPath,
-				Content: string(content),
-			}
+	if content, err := os.ReadFile(defaultSoulPath); err == nil {
+		definition.Soul = &SoulDefinition{
+			Path:    defaultSoulPath,
+			Content: string(content),
+		}
+	} else {
+		definition.Soul = &SoulDefinition{
+			Path:    "default_soul.md",
+			Content: defaultSoul,
 		}
 	}
 
