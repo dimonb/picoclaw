@@ -71,7 +71,7 @@ func TestFetchMessageTool_TopicFormRef(t *testing.T) {
 	}
 
 	if _, err := s.AddMessageWithReasoning(
-		ctx, conv.ConversationID, "user", bodyContent, "", topicRef, md, 0,
+		ctx, conv.ConversationID, "user", bodyContent, "", topicRef, md, nil, 0,
 	); err != nil {
 		t.Fatalf("AddMessageWithReasoning: %v", err)
 	}

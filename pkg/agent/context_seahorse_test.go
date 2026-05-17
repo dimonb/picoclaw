@@ -1361,3 +1361,126 @@ func TestDispatchMessageIDPersists(t *testing.T) {
 		t.Errorf("fetch_message ForLLM missing id %q or content %q: %q", wantMsgID, wantContent, fetchRes.ForLLM)
 	}
 }
+
+// TestSeahorseRoundTrip_NoSyntheticContentForToolUse guards against leaking
+// the synthetic "[tool_use: …]" string (produced by partsToReadableContent
+// for FTS5 indexing) back to the LLM as assistant content. An assistant
+// message whose original Content was empty must come back empty after
+// round-tripping through seahorse storage.
+func TestSeahorseRoundTrip_NoSyntheticContentForToolUse(t *testing.T) {
+	src := protocoltypes.Message{
+		Role:    "assistant",
+		Content: "",
+		ToolCalls: []protocoltypes.ToolCall{
+			{
+				ID:   "tc_1",
+				Type: "function",
+				Function: &protocoltypes.FunctionCall{
+					Name:      "read_file",
+					Arguments: `{"path":"/tmp/x"}`,
+				},
+			},
+		},
+	}
+
+	// Simulate what AddMessageWithPartsAndReasoning persists in the
+	// `messages.content` column (the parts-derived readable string).
+	sh := providerToSeahorseMessage(src)
+	storedContent := ""
+	for _, p := range sh.Parts {
+		if storedContent != "" {
+			storedContent += "\n"
+		}
+		switch p.Type {
+		case "text":
+			storedContent += p.Text
+		case "tool_use":
+			storedContent += fmt.Sprintf("[tool_use: %s, args: %s]", p.Name, p.Arguments)
+		case "tool_result":
+			storedContent += fmt.Sprintf("[tool_result for %s: %s]", p.ToolCallID, p.Text)
+		}
+	}
+
+	result := &seahorse.AssembleResult{
+		Messages: []seahorse.Message{{
+			Role:    sh.Role,
+			Content: storedContent, // what the SELECT would return
+			Parts:   sh.Parts,
+		}},
+	}
+
+	got := seahorseToProviderMessages(result)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(got))
+	}
+	if got[0].Content != "" {
+		t.Errorf("Content leaked synthetic readable form: %q", got[0].Content)
+	}
+	if len(got[0].ToolCalls) != 1 || got[0].ToolCalls[0].ID != "tc_1" {
+		t.Errorf("ToolCalls not reconstructed: %+v", got[0].ToolCalls)
+	}
+}
+
+// TestSeahorseRoundTrip_PreservesAssistantTextWithToolCalls ensures that
+// when an assistant message carries both a textual preface and tool_calls,
+// the preface survives the round-trip via a synthesized "text" part.
+func TestSeahorseRoundTrip_PreservesAssistantTextWithToolCalls(t *testing.T) {
+	const preface = "Let me read the file first."
+	src := protocoltypes.Message{
+		Role:    "assistant",
+		Content: preface,
+		ToolCalls: []protocoltypes.ToolCall{
+			{ID: "tc_2", Type: "function", Function: &protocoltypes.FunctionCall{Name: "read", Arguments: "{}"}},
+		},
+	}
+
+	sh := providerToSeahorseMessage(src)
+	// First part must be the preserved text so partsToReadableContent
+	// recovers it for FTS / summary use as well.
+	if len(sh.Parts) == 0 || sh.Parts[0].Type != "text" || sh.Parts[0].Text != preface {
+		t.Fatalf("expected leading text part with preface, got %+v", sh.Parts)
+	}
+
+	// Simulate readable form persisted in messages.content.
+	storedContent := preface + "\n[tool_use: read, args: {}]"
+	result := &seahorse.AssembleResult{
+		Messages: []seahorse.Message{{Role: sh.Role, Content: storedContent, Parts: sh.Parts}},
+	}
+
+	got := seahorseToProviderMessages(result)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(got))
+	}
+	if got[0].Content != preface {
+		t.Errorf("Content = %q, want %q", got[0].Content, preface)
+	}
+	if len(got[0].ToolCalls) != 1 {
+		t.Errorf("expected 1 tool call, got %d", len(got[0].ToolCalls))
+	}
+}
+
+// TestSeahorseRoundTrip_PreservesAttachments verifies that attachments
+// thread through providerToSeahorseMessage and seahorseToProviderMessages.
+func TestSeahorseRoundTrip_PreservesAttachments(t *testing.T) {
+	atts := []protocoltypes.Attachment{
+		{Type: "image", URL: "https://x/img.png", Filename: "img.png", ContentType: "image/png"},
+	}
+	src := protocoltypes.Message{Role: "user", Content: "look", Attachments: atts}
+
+	sh := providerToSeahorseMessage(src)
+	if len(sh.Attachments) != 1 || sh.Attachments[0] != atts[0] {
+		t.Fatalf("seahorse.Message.Attachments not copied: %+v", sh.Attachments)
+	}
+
+	result := &seahorse.AssembleResult{
+		Messages: []seahorse.Message{{
+			Role:        sh.Role,
+			Content:     sh.Content,
+			Attachments: sh.Attachments,
+		}},
+	}
+	got := seahorseToProviderMessages(result)
+	if len(got) != 1 || len(got[0].Attachments) != 1 || got[0].Attachments[0] != atts[0] {
+		t.Fatalf("round-trip lost attachments: %+v", got)
+	}
+}

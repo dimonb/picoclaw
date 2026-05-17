@@ -213,6 +213,7 @@ func TestStoreAddAndGetMessagesWithReasoningContent(t *testing.T) {
 		"let me think",
 		"",
 		nil,
+		nil,
 		5,
 	)
 	if err != nil {
@@ -265,11 +266,11 @@ func TestStoreGetMessageByChannelMessageID(t *testing.T) {
 	}
 
 	const duplicateRef = "12345:9:67"
-	first, err := s.AddMessageWithReasoning(ctx, conv.ConversationID, "user", "first duplicate ref", "", duplicateRef, nil, 1)
+	first, err := s.AddMessageWithReasoning(ctx, conv.ConversationID, "user", "first duplicate ref", "", duplicateRef, nil, nil, 1)
 	if err != nil {
 		t.Fatalf("add first duplicate ref: %v", err)
 	}
-	second, err := s.AddMessageWithReasoning(ctx, conv.ConversationID, "assistant", "second duplicate ref", "", duplicateRef, nil, 1)
+	second, err := s.AddMessageWithReasoning(ctx, conv.ConversationID, "assistant", "second duplicate ref", "", duplicateRef, nil, nil, 1)
 	if err != nil {
 		t.Fatalf("add second duplicate ref: %v", err)
 	}
@@ -347,6 +348,7 @@ func TestStoreAddMessageWithPartsAndReasoningContent(t *testing.T) {
 		parts,
 		"need to inspect the file first",
 		"",
+		nil,
 		nil,
 		10,
 	)

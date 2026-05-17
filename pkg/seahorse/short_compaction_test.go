@@ -177,7 +177,7 @@ func TestCompactLeafPreservesChannelMessageRefLookup(t *testing.T) {
 			channelID = ref
 			content = "message carrying channel ref before compaction"
 		}
-		m, err := s.AddMessageWithReasoning(ctx, convID, "user", content, "", channelID, nil, 100)
+		m, err := s.AddMessageWithReasoning(ctx, convID, "user", content, "", channelID, nil, nil, 100)
 		if err != nil {
 			t.Fatalf("AddMessageWithReasoning %d: %v", i, err)
 		}

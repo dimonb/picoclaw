@@ -26,6 +26,7 @@ type Message struct {
 	ReasoningContent string                         `json:"reasoningContent,omitempty"`
 	ChannelMessageID string                         `json:"channelMessageId,omitempty"`
 	Metadata         *protocoltypes.MessageMetadata `json:"metadata,omitempty"`
+	Attachments      []protocoltypes.Attachment     `json:"attachments,omitempty"`
 	TokenCount       int                            `json:"tokenCount"`
 	CreatedAt        time.Time                      `json:"createdAt"`
 	Parts            []MessagePart                  `json:"parts,omitempty"`

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
@@ -221,7 +222,24 @@ func providerToSeahorseMessage(msg protocoltypes.Message) seahorse.Message {
 		ReasoningContent: msg.ReasoningContent,
 		ChannelMessageID: msg.MessageID,
 		Metadata:         msg.Metadata,
+		Attachments:      append([]protocoltypes.Attachment(nil), msg.Attachments...),
 		TokenCount:       tokenizer.EstimateMessageTokens(msg),
+	}
+
+	hasStructured := len(msg.ToolCalls) > 0 || msg.ToolCallID != "" || len(msg.Media) > 0
+
+	// When a structured message also carries raw text content (e.g. an
+	// assistant reply with both narrative and tool_calls), preserve it as a
+	// dedicated text part so the original content survives the
+	// parts-only INSERT path (store.AddMessageWithPartsAndReasoning derives
+	// the messages.content column from parts, ignoring msg.Content).
+	// Tool results are excluded because their text is stored inside the
+	// tool_result part below.
+	if hasStructured && msg.Content != "" && msg.ToolCallID == "" {
+		result.Parts = append(result.Parts, seahorse.MessagePart{
+			Type: "text",
+			Text: msg.Content,
+		})
 	}
 
 	// Convert ToolCalls → MessageParts
@@ -265,15 +283,29 @@ func seahorseToProviderMessages(result *seahorse.AssembleResult) []protocoltypes
 	for _, msg := range result.Messages {
 		pm := protocoltypes.Message{
 			Role:             msg.Role,
-			Content:          msg.Content,
 			ReasoningContent: msg.ReasoningContent,
 			MessageID:        msg.ChannelMessageID,
 			Metadata:         msg.Metadata,
+			Attachments:      append([]protocoltypes.Attachment(nil), msg.Attachments...),
 		}
 
-		// Reconstruct ToolCalls from parts
+		// When parts exist, msg.Content is the synthetic readable form
+		// (partsToReadableContent) derived for FTS5/summary use. Rebuild
+		// pm.Content from real text/tool_result parts instead to avoid
+		// leaking "[tool_use: …]" strings back into the LLM context.
+		hasParts := len(msg.Parts) > 0
+		if !hasParts {
+			pm.Content = msg.Content
+		}
+
+		var textParts []string
 		for _, part := range msg.Parts {
-			if part.Type == "tool_use" {
+			switch part.Type {
+			case "text":
+				if part.Text != "" {
+					textParts = append(textParts, part.Text)
+				}
+			case "tool_use":
 				pm.ToolCalls = append(pm.ToolCalls, protocoltypes.ToolCall{
 					ID:   part.ToolCallID,
 					Type: "function", // Required by OpenAI-compatible APIs (GLM, etc.)
@@ -282,16 +314,19 @@ func seahorseToProviderMessages(result *seahorse.AssembleResult) []protocoltypes
 						Arguments: part.Arguments,
 					},
 				})
-			}
-			if part.Type == "tool_result" {
+			case "tool_result":
 				pm.ToolCallID = part.ToolCallID
 				if pm.Content == "" && part.Text != "" {
 					pm.Content = part.Text
 				}
+			case "media":
+				if part.MediaURI != "" {
+					pm.Media = append(pm.Media, part.MediaURI)
+				}
 			}
-			if part.Type == "media" && part.MediaURI != "" {
-				pm.Media = append(pm.Media, part.MediaURI)
-			}
+		}
+		if hasParts && pm.Content == "" && len(textParts) > 0 {
+			pm.Content = strings.Join(textParts, "\n")
 		}
 
 		messages = append(messages, pm)

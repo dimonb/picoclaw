@@ -49,6 +49,7 @@ func runSchema(db *sql.DB) error {
 			reasoning_content TEXT NOT NULL DEFAULT '',
 			channel_message_id TEXT,
 			metadata        TEXT,
+			attachments     TEXT,
 			token_count     INTEGER NOT NULL DEFAULT 0,
 			created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
@@ -169,6 +170,23 @@ func runSchema(db *sql.DB) error {
 	}
 	if err := ensureMessagesMetadataColumn(db); err != nil {
 		return err
+	}
+	if err := ensureMessagesAttachmentsColumn(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureMessagesAttachmentsColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "messages", "attachments")
+	if err != nil {
+		return fmt.Errorf("check messages.attachments: %w", err)
+	}
+	if hasColumn {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE messages ADD COLUMN attachments TEXT`); err != nil {
+		return fmt.Errorf("add messages.attachments: %w", err)
 	}
 	return nil
 }

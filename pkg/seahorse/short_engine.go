@@ -13,6 +13,7 @@ import (
 	_ "modernc.org/sqlite"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
 // Config holds engine configuration.
@@ -262,6 +263,7 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 				msg.ReasoningContent,
 				msg.ChannelMessageID,
 				msg.Metadata,
+				msg.Attachments,
 				msg.TokenCount,
 			)
 		} else {
@@ -273,6 +275,7 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 				msg.ReasoningContent,
 				msg.ChannelMessageID,
 				msg.Metadata,
+				msg.Attachments,
 				msg.TokenCount,
 			)
 		}
@@ -459,6 +462,16 @@ func (e *Engine) Bootstrap(ctx context.Context, sessionKey string, messages []Me
 		return fmt.Errorf("bootstrap: get messages: %w", err)
 	}
 
+	// Migration repair path: rows ingested before a field was tracked
+	// (reasoning_content, channel_message_id, metadata, attachments) may have
+	// empty values while the canonical JSONL already carries them. Backfill
+	// in place — and mutate dbMsgs — BEFORE the fast path, otherwise
+	// messageMatches (which compares only text-shape fields) would short-
+	// circuit and the missing data would never reach the DB.
+	if _, err := e.repairBootstrapMissingFields(ctx, dbMsgs, messages); err != nil {
+		return fmt.Errorf("bootstrap: backfill missing fields: %w", err)
+	}
+
 	// Fast path: DB has same count and exact match → no-op
 	if len(dbMsgs) == len(messages) {
 		matched := true
@@ -471,16 +484,6 @@ func (e *Engine) Bootstrap(ctx context.Context, sessionKey string, messages []Me
 		if matched {
 			return nil // DB is up to date
 		}
-	}
-
-	// Migration repair path: old SeaHorse rows may be missing reasoning_content
-	// even though the canonical JSONL history already has it. Backfill those
-	// rows in place so we do not treat this as edited history and leave stale
-	// summaries/context behind after a partial raw-message rebuild.
-	if repaired, err := e.repairBootstrapReasoningContent(ctx, dbMsgs, messages); err != nil {
-		return fmt.Errorf("bootstrap: repair reasoning_content: %w", err)
-	} else if repaired && len(dbMsgs) == len(messages) {
-		return nil
 	}
 
 	// Find longest matching prefix from the start
@@ -573,55 +576,147 @@ func (e *Engine) Bootstrap(ctx context.Context, sessionKey string, messages []Me
 	return nil
 }
 
-func (e *Engine) repairBootstrapReasoningContent(ctx context.Context, dbMsgs, messages []Message) (bool, error) {
+// repairBootstrapMissingFields backfills empty per-row metadata in SQLite from
+// the JSONL canonical history. It handles reasoning_content, channel_message_id,
+// metadata, and attachments — each field is repaired independently when the DB
+// row is empty and the JSONL row has a value. If any field disagrees in a way
+// that is not a missing-vs-present situation (e.g. both populated but different),
+// the repair is aborted so the caller can fall back to a full rebuild.
+//
+// dbMsgs is mutated in place so callers can short-circuit subsequent comparisons.
+func (e *Engine) repairBootstrapMissingFields(ctx context.Context, dbMsgs, messages []Message) (bool, error) {
 	if len(dbMsgs) == 0 || len(messages) == 0 {
 		return false, nil
 	}
 
 	overlap := min(len(messages), len(dbMsgs))
 
-	var updates []struct {
-		index            int
-		messageID        int64
-		reasoningContent string
+	type fieldUpdate struct {
+		index             int
+		messageID         int64
+		updateReasoning   bool
+		reasoningContent  string
+		updateChannelID   bool
+		channelMessageID  string
+		updateMetadata    bool
+		metadata          *protocoltypes.MessageMetadata
+		updateAttachments bool
+		attachments       []protocoltypes.Attachment
 	}
+
+	var updates []fieldUpdate
 
 	for i := range overlap {
 		if !messageMatchesIgnoringReasoning(dbMsgs[i], messages[i]) {
 			return false, nil
 		}
-		if dbMsgs[i].ReasoningContent == messages[i].ReasoningContent {
-			continue
+
+		upd := fieldUpdate{index: i, messageID: dbMsgs[i].ID}
+
+		if dbMsgs[i].ReasoningContent != messages[i].ReasoningContent {
+			if dbMsgs[i].ReasoningContent != "" || messages[i].ReasoningContent == "" {
+				return false, nil
+			}
+			upd.updateReasoning = true
+			upd.reasoningContent = messages[i].ReasoningContent
 		}
-		if dbMsgs[i].ReasoningContent != "" || messages[i].ReasoningContent == "" {
-			return false, nil
+
+		if dbMsgs[i].ChannelMessageID != messages[i].ChannelMessageID {
+			if dbMsgs[i].ChannelMessageID != "" || messages[i].ChannelMessageID == "" {
+				return false, nil
+			}
+			upd.updateChannelID = true
+			upd.channelMessageID = messages[i].ChannelMessageID
 		}
-		updates = append(updates, struct {
-			index            int
-			messageID        int64
-			reasoningContent string
-		}{
-			index:            i,
-			messageID:        dbMsgs[i].ID,
-			reasoningContent: messages[i].ReasoningContent,
-		})
+
+		if !metadataEqual(dbMsgs[i].Metadata, messages[i].Metadata) {
+			if !dbMsgs[i].Metadata.IsEmpty() || messages[i].Metadata.IsEmpty() {
+				return false, nil
+			}
+			upd.updateMetadata = true
+			upd.metadata = messages[i].Metadata
+		}
+
+		if !attachmentsEqual(dbMsgs[i].Attachments, messages[i].Attachments) {
+			if len(dbMsgs[i].Attachments) != 0 || len(messages[i].Attachments) == 0 {
+				return false, nil
+			}
+			upd.updateAttachments = true
+			upd.attachments = append([]protocoltypes.Attachment(nil), messages[i].Attachments...)
+		}
+
+		if upd.updateReasoning || upd.updateChannelID || upd.updateMetadata || upd.updateAttachments {
+			updates = append(updates, upd)
+		}
 	}
 
 	if len(updates) == 0 {
 		return false, nil
 	}
 
-	for _, update := range updates {
-		if err := e.store.UpdateMessageReasoningContent(ctx, update.messageID, update.reasoningContent); err != nil {
-			return false, err
+	var nReasoning, nChannel, nMeta, nAtt int
+	for _, u := range updates {
+		if u.updateReasoning {
+			if err := e.store.UpdateMessageReasoningContent(ctx, u.messageID, u.reasoningContent); err != nil {
+				return false, err
+			}
+			dbMsgs[u.index].ReasoningContent = u.reasoningContent
+			nReasoning++
 		}
-		dbMsgs[update.index].ReasoningContent = update.reasoningContent
+		if u.updateChannelID {
+			if err := e.store.UpdateMessageChannelMessageID(ctx, u.messageID, u.channelMessageID); err != nil {
+				return false, err
+			}
+			dbMsgs[u.index].ChannelMessageID = u.channelMessageID
+			nChannel++
+		}
+		if u.updateMetadata {
+			if err := e.store.UpdateMessageMetadata(ctx, u.messageID, u.metadata); err != nil {
+				return false, err
+			}
+			dbMsgs[u.index].Metadata = u.metadata
+			nMeta++
+		}
+		if u.updateAttachments {
+			if err := e.store.UpdateMessageAttachments(ctx, u.messageID, u.attachments); err != nil {
+				return false, err
+			}
+			dbMsgs[u.index].Attachments = u.attachments
+			nAtt++
+		}
 	}
 
-	logger.InfoCF("seahorse", "bootstrap: repaired missing reasoning_content", map[string]any{
-		"messages": len(updates),
+	logger.InfoCF("seahorse", "bootstrap: backfilled missing fields", map[string]any{
+		"reasoning_content":  nReasoning,
+		"channel_message_id": nChannel,
+		"metadata":           nMeta,
+		"attachments":        nAtt,
 	})
 	return true, nil
+}
+
+func metadataEqual(a, b *protocoltypes.MessageMetadata) bool {
+	aEmpty := a.IsEmpty()
+	bEmpty := b.IsEmpty()
+	if aEmpty && bEmpty {
+		return true
+	}
+	if aEmpty != bEmpty {
+		return false
+	}
+	return *a == *b
+}
+
+func attachmentsEqual(a, b []protocoltypes.Attachment) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // truncate shortens a string for logging.

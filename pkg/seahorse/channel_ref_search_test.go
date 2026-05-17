@@ -29,7 +29,7 @@ func TestFTSAndChannelRefCoexist(t *testing.T) {
 	)
 
 	added, err := s.AddMessageWithReasoning(
-		ctx, conv.ConversationID, "user", bodyContent, "", ref, nil, 0,
+		ctx, conv.ConversationID, "user", bodyContent, "", ref, nil, nil, 0,
 	)
 	if err != nil {
 		t.Fatalf("AddMessageWithReasoning: %v", err)
