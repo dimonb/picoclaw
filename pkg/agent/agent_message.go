@@ -98,7 +98,6 @@ func (al *AgentLoop) ProcessHeartbeat(
 	}
 	return al.runAgentLoop(ctx, agent, processOptions{
 		Dispatch:             dispatch,
-		DefaultResponse:      defaultResponse,
 		EnableSummary:        false,
 		SendResponse:         false,
 		SuppressToolFeedback: true,
@@ -208,7 +207,6 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		SenderID:                msg.SenderID,
 		SenderDisplayName:       msg.Sender.DisplayName,
 		SenderUsername:          msg.Sender.Username,
-		DefaultResponse:         defaultResponse,
 		EnableSummary:           true,
 		SendResponse:            false,
 		AllowInterimPicoPublish: true,

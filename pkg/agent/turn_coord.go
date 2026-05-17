@@ -186,8 +186,8 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 				turnStatus = TurnEndStatusError
 				return turnResult{}, fmt.Errorf("hook requested turn abort")
 			}
-			// Ensure empty response falls back to DefaultResponse
-			if finalContent == "" {
+			// Ensure empty response falls back to DefaultResponse only when one is provided
+			if finalContent == "" && ts.opts.DefaultResponse != "" {
 				finalContent = ts.opts.DefaultResponse
 			}
 			return pipeline.Finalize(ctx, turnCtx, ts, exec, turnStatus, finalContent)
@@ -234,7 +234,7 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	if finalContent == "" {
 		if ts.currentIteration() >= ts.agent.MaxIterations && ts.agent.MaxIterations > 0 {
 			finalContent = toolLimitResponse
-		} else {
+		} else if ts.opts.DefaultResponse != "" {
 			finalContent = ts.opts.DefaultResponse
 		}
 	}

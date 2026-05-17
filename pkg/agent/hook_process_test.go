@@ -44,13 +44,12 @@ func TestAgentLoop_MountProcessHook_LLMAndObserver(t *testing.T) {
 	}
 
 	resp, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "hello",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "hello",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -84,13 +83,12 @@ func TestAgentLoop_MountProcessHook_ToolRewrite(t *testing.T) {
 	}
 
 	resp, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "run tool",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "run tool",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -150,13 +148,12 @@ func TestAgentLoop_MountProcessHook_ApprovalDeny(t *testing.T) {
 	defer al.UnsubscribeEvents(sub.ID)
 
 	resp, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "run blocked tool",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "run blocked tool",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -229,13 +226,12 @@ func TestAgentLoop_MountProcessHook_IsolationSupportsRelativeDirAndCommand(t *te
 	}
 
 	resp, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-relative",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "hello",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-relative",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "hello",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)

@@ -105,7 +105,7 @@ type processOptions struct {
 	SystemPromptOverride    string                 // Override the default system prompt (Used by SubTurns)
 	Media                   []string               // media:// refs from inbound message
 	InitialSteeringMessages []providers.Message    // Steering messages from refactor/agent
-	DefaultResponse         string                 // Response when LLM returns empty
+	DefaultResponse         string                 // Optional non-empty fallback when LLM returns no content. Leave empty to publish nothing.
 	EnableSummary           bool                   // Whether to trigger summarization
 	SendResponse            bool                   // Whether to send response via bus
 	AllowInterimPicoPublish bool                   // Whether pico tool-call interim text can be published when SendResponse is false
@@ -124,7 +124,6 @@ type continuationTarget struct {
 }
 
 const (
-	defaultResponse            = "The model returned an empty response. This may indicate a provider error or token limit."
 	toolLimitResponse          = "I've reached `max_tool_iterations` without a final response. Increase `max_tool_iterations` in config.json if this task needs more tool steps."
 	handledToolResponseSummary = "Requested output delivered via tool attachment."
 	sessionKeyAgentPrefix      = "agent:"

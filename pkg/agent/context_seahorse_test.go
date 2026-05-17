@@ -545,13 +545,12 @@ func TestSeahorseRealLoopNoDuplicateMessages(t *testing.T) {
 
 	// Run a turn: user message -> LLM response
 	_, err := al.runAgentLoop(ctx, defaultAgent, processOptions{
-		SessionKey:      sessionKey,
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "hello",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    sessionKey,
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "hello",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -896,13 +895,12 @@ func TestSeahorseSteeringMessageIngested(t *testing.T) {
 
 	// First turn: establish conversation
 	_, err := al.runAgentLoop(ctx, defaultAgent, processOptions{
-		SessionKey:      sessionKey,
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "hello",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    sessionKey,
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "hello",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("first runAgentLoop failed: %v", err)
@@ -919,13 +917,12 @@ func TestSeahorseSteeringMessageIngested(t *testing.T) {
 
 	// Second turn: should process steering message
 	_, err = al.runAgentLoop(ctx, defaultAgent, processOptions{
-		SessionKey:      sessionKey,
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "continue",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    sessionKey,
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "continue",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("second runAgentLoop failed: %v", err)
@@ -1052,13 +1049,12 @@ func TestSeahorseSummarizeSkipsCondensedWhenBelowThreshold(t *testing.T) {
 
 	// Trigger Summarize
 	_, err = al.runAgentLoop(ctx, defaultAgent, processOptions{
-		SessionKey:      sessionKey,
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "trigger",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   true,
-		SendResponse:    false,
+		SessionKey:    sessionKey,
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "trigger",
+		EnableSummary: true,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop: %v", err)

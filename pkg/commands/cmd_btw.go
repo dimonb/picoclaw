@@ -11,7 +11,7 @@ func btwCommand() Definition {
 		Description: "Ask a side question without changing session history",
 		Usage:       "/btw <question>",
 		Handler: func(ctx context.Context, req Request, rt *Runtime) error {
-			const emptyAnswerMsg = "The model returned an empty response. This may indicate a provider error or token limit."
+			const emptyAnswerMsg = "(empty response from model)"
 
 			if rt == nil || rt.AskSideQuestion == nil {
 				return req.Reply(unavailableMsg)

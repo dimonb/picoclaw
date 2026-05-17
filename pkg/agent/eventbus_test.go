@@ -131,13 +131,12 @@ func TestAgentLoop_EmitsMinimalTurnEvents(t *testing.T) {
 	defer al.UnsubscribeEvents(sub.ID)
 
 	response, err := al.runAgentLoop(context.Background(), defaultAgent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "run tool",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "run tool",
+		EnableSummary: false,
+		SendResponse:  false,
 		InboundContext: &bus.InboundContext{
 			Channel:  "cli",
 			ChatID:   "direct",
@@ -424,13 +423,12 @@ func TestAgentLoop_EmitsContextCompressEventOnRetry(t *testing.T) {
 	defer al.UnsubscribeEvents(sub.ID)
 
 	resp, err := al.runAgentLoop(context.Background(), defaultAgent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "Trigger message",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "Trigger message",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -579,13 +577,12 @@ func TestAgentLoop_EmitsFollowUpQueuedEvent(t *testing.T) {
 	defer al.UnsubscribeEvents(sub.ID)
 
 	resp, err := al.runAgentLoop(context.Background(), defaultAgent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "run async tool",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "run async tool",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
