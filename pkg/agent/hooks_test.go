@@ -438,13 +438,12 @@ func TestAgentLoop_Hooks_ObserverAndLLMInterceptor(t *testing.T) {
 	}
 
 	resp, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "hello",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "hello",
+		EnableSummary: false,
+		SendResponse:  false,
 		InboundContext: &bus.InboundContext{
 			Channel:  "cli",
 			ChatID:   "direct",
@@ -761,13 +760,12 @@ func TestAgentLoop_Hooks_ToolInterceptorCanRewrite(t *testing.T) {
 	}
 
 	resp, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "run tool",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "run tool",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -816,13 +814,12 @@ func TestAgentLoop_Hooks_ToolFeedbackUsesRewrittenToolName(t *testing.T) {
 	}
 
 	_, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "run tool",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "run tool",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -874,13 +871,12 @@ func TestAgentLoop_Hooks_ToolApproverCanDeny(t *testing.T) {
 	defer closeRuntimeEvents()
 
 	resp, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "run tool",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "run tool",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -955,13 +951,12 @@ func TestAgentLoop_Hooks_ToolRespondAction(t *testing.T) {
 	defer closeRuntimeEvents()
 
 	resp, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "run tool",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "run tool",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -1026,13 +1021,12 @@ func TestAgentLoop_Hooks_ToolDenyAction(t *testing.T) {
 	}
 
 	resp, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-1",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "run tool",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-1",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "run tool",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -1149,13 +1143,12 @@ func TestAgentLoop_HookRespond_MediaError(t *testing.T) {
 	defer closeRuntimeEvents()
 
 	_, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-media-err",
-		Channel:         "discord",
-		ChatID:          "chat1",
-		UserMessage:     "send media",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-media-err",
+		Channel:       "discord",
+		ChatID:        "chat1",
+		UserMessage:   "send media",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -1209,13 +1202,12 @@ func TestAgentLoop_HookRespond_BusFallback(t *testing.T) {
 	defer closeRuntimeEvents()
 
 	resp, err := al.runAgentLoop(context.Background(), agent, processOptions{
-		SessionKey:      "session-bus-fallback",
-		Channel:         "cli",
-		ChatID:          "chat1",
-		UserMessage:     "send media",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-bus-fallback",
+		Channel:       "cli",
+		ChatID:        "chat1",
+		UserMessage:   "send media",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
@@ -1285,9 +1277,8 @@ func TestAgentLoop_HookRespond_ResponseHandledMediaPreservesOutboundContext(t *t
 			},
 			UserMessage: "send media",
 		},
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)

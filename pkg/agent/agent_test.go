@@ -30,6 +30,11 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
+// defaultResponse is the legacy empty-response fallback string. Production code
+// dropped the hardcoded fallback (silence is now a valid outcome), but tests
+// still exercise the opt-in processOptions.DefaultResponse path with this value.
+const defaultResponse = "The model returned an empty response. This may indicate a provider error or token limit."
+
 type fakeChannel struct{ id string }
 
 func (f *fakeChannel) Name() string                    { return "fake" }
@@ -1990,9 +1995,8 @@ func TestRunAgentLoop_ResponseHandledToolPublishesForUserWhenSendResponseDisable
 				SenderID: "user1",
 			},
 		},
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop() error = %v", err)
@@ -5259,7 +5263,7 @@ func TestAgentLoop_LoadImageFollowUpWithoutImageModelFailsClearly(t *testing.T) 
 	}
 }
 
-func TestAgentLoop_EmptyModelResponseUsesAccurateFallback(t *testing.T) {
+func TestAgentLoop_EmptyModelResponseStaysEmpty(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
 		t.Fatalf("Failed to create temp dir: %v", err)
@@ -5285,8 +5289,15 @@ func TestAgentLoop_EmptyModelResponseUsesAccurateFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProcessDirectWithChannel failed: %v", err)
 	}
-	if response != defaultResponse {
-		t.Fatalf("response = %q, want %q", response, defaultResponse)
+	if response != "" {
+		t.Fatalf("response = %q, want empty string", response)
+	}
+
+	// Empty content must not be published to the bus.
+	select {
+	case msg := <-msgBus.OutboundChan():
+		t.Fatalf("unexpected outbound publish on empty response: %+v", msg)
+	default:
 	}
 }
 
@@ -6211,7 +6222,7 @@ func TestProcessMessage_MessageToolPublishesOutboundWithTurnMetadata(t *testing.
 	provider := &messageToolProvider{}
 	al := NewAgentLoop(cfg, msgBus, provider)
 
-	response, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
+	_, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{
 		Channel:  "telegram",
 		SenderID: "user-1",
 		ChatID:   "chat-1",
@@ -6219,9 +6230,6 @@ func TestProcessMessage_MessageToolPublishesOutboundWithTurnMetadata(t *testing.
 	}))
 	if err != nil {
 		t.Fatalf("processMessage() error = %v", err)
-	}
-	if response == "" {
-		t.Fatal("expected processMessage() to return a final loop response")
 	}
 
 	select {
@@ -6359,7 +6367,6 @@ func TestRunAgentLoop_PicoSkipsInterimPublishWhenNotAllowed(t *testing.T) {
 		Channel:                 "pico",
 		ChatID:                  "session-1",
 		UserMessage:             "run with tools",
-		DefaultResponse:         defaultResponse,
 		EnableSummary:           false,
 		SendResponse:            false,
 		AllowInterimPicoPublish: false,

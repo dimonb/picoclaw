@@ -640,13 +640,12 @@ func TestIngestCalledDuringTurn(t *testing.T) {
 
 	// Run a turn — ingestMessage is called for user message and final assistant message
 	_, err := al.runAgentLoop(context.Background(), defaultAgent, processOptions{
-		SessionKey:      "session-ingest-turn",
-		Channel:         "cli",
-		ChatID:          "direct",
-		UserMessage:     "test ingest",
-		DefaultResponse: defaultResponse,
-		EnableSummary:   false,
-		SendResponse:    false,
+		SessionKey:    "session-ingest-turn",
+		Channel:       "cli",
+		ChatID:        "direct",
+		UserMessage:   "test ingest",
+		EnableSummary: false,
+		SendResponse:  false,
 	})
 	if err != nil {
 		t.Fatalf("runAgentLoop failed: %v", err)
