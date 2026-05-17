@@ -114,7 +114,7 @@ func (p *Pipeline) ExecuteTools(
 	ts *turnState,
 	exec *turnExecution,
 	iteration int,
-) ToolControl {
+) (ToolControl, error) {
 	al := p.al
 	normalizedToolCalls := exec.normalizedToolCalls
 
@@ -126,12 +126,15 @@ toolLoop:
 	for i, tc := range normalizedToolCalls {
 		if ts.hardAbortRequested() {
 			exec.abortedByHardAbort = true
-			return ToolControlBreak
+			return ToolControlBreak, nil
 		}
 		if turnCtx.Err() != nil {
 			_ = ts.requestHardAbort()
 			exec.abortedByHardAbort = true
-			return ToolControlBreak
+			// turnCtx cancellation is control flow, not a tool-execution
+			// failure — caller treats non-nil error as TurnEndStatusError,
+			// which would mis-classify a routine cancel/timeout.
+			return ToolControlBreak, nil //nolint:nilerr
 		}
 
 		toolName := tc.Name
@@ -228,7 +231,7 @@ toolLoop:
 					shouldSendForUser := !hookResult.Silent && hookResult.ForUser != "" &&
 						(ts.opts.SendResponse || hookResult.ResponseHandled)
 					if shouldSendForUser {
-						al.bus.PublishOutbound(ctx, bus.OutboundMessage{
+						if err := al.bus.PublishOutbound(ctx, bus.OutboundMessage{
 							Context: bus.InboundContext{
 								Channel: ts.channel,
 								ChatID:  ts.chatID,
@@ -237,7 +240,16 @@ toolLoop:
 								},
 							},
 							Content: hookResult.ForUser,
-						})
+						}); err != nil {
+							logger.WarnCF("agent", "Failed to publish hook ForUser payload",
+								map[string]any{
+									"agent_id": ts.agent.ID,
+									"tool":     toolName,
+									"channel":  ts.channel,
+									"chat_id":  ts.chatID,
+									"error":    err.Error(),
+								})
+						}
 					}
 
 					if len(hookResult.Media) > 0 && hookResult.ResponseHandled {
@@ -286,7 +298,16 @@ toolLoop:
 								)
 							}
 						} else if al.bus != nil {
-							al.bus.PublishOutboundMedia(ctx, outboundMedia)
+							if err := al.bus.PublishOutboundMedia(ctx, outboundMedia); err != nil {
+								logger.WarnCF("agent", "Failed to publish hook media payload",
+									map[string]any{
+										"agent_id": ts.agent.ID,
+										"tool":     toolName,
+										"channel":  ts.channel,
+										"chat_id":  ts.chatID,
+										"error":    err.Error(),
+									})
+							}
 							hookResult.ResponseHandled = false
 						}
 					}
@@ -433,11 +454,11 @@ toolLoop:
 				continue
 			case HookActionAbortTurn:
 				exec.abortedByHook = true
-				return ToolControlBreak
+				return ToolControlBreak, nil
 			case HookActionHardAbort:
 				_ = ts.requestHardAbort()
 				exec.abortedByHardAbort = true
-				return ToolControlBreak
+				return ToolControlBreak, nil
 			}
 		}
 
@@ -584,7 +605,7 @@ toolLoop:
 
 		if ts.hardAbortRequested() {
 			exec.abortedByHardAbort = true
-			return ToolControlBreak
+			return ToolControlBreak, nil
 		}
 
 		if al.hooks != nil {
@@ -608,11 +629,11 @@ toolLoop:
 				}
 			case HookActionAbortTurn:
 				exec.abortedByHook = true
-				return ToolControlBreak
+				return ToolControlBreak, nil
 			case HookActionHardAbort:
 				_ = ts.requestHardAbort()
 				exec.abortedByHardAbort = true
-				return ToolControlBreak
+				return ToolControlBreak, nil
 			}
 		}
 
@@ -803,7 +824,7 @@ toolLoop:
 				"allResponsesHandled": exec.allResponsesHandled,
 			})
 		exec.allResponsesHandled = false
-		return ToolControlContinue
+		return ToolControlContinue, nil
 	}
 
 	// Poll for newly arrived steering
@@ -815,7 +836,7 @@ toolLoop:
 			})
 		exec.pendingMessages = append(exec.pendingMessages, steerMsgs...)
 		exec.allResponsesHandled = false
-		return ToolControlContinue
+		return ToolControlContinue, nil
 	}
 
 	// No pending steering: finalize or break depending on allResponsesHandled
@@ -855,7 +876,7 @@ toolLoop:
 				"iteration":  iteration,
 				"tool_count": len(normalizedToolCalls),
 			})
-		return ToolControlBreak
+		return ToolControlBreak, nil
 	}
 
 	// allResponsesHandled=false and no pending steering: continue so coordinator
@@ -865,5 +886,5 @@ toolLoop:
 	logger.DebugCF("agent", "TTL tick after tool execution", map[string]any{
 		"agent_id": ts.agent.ID, "iteration": iteration,
 	})
-	return ToolControlContinue
+	return ToolControlContinue, nil
 }

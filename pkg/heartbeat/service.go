@@ -336,14 +336,30 @@ func (hs *HeartbeatService) sendResponse(response string) {
 		return
 	}
 
-	pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer pubCancel()
-	msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-		Context: bus.NewOutboundContext(platform, userID, ""),
-		Content: response,
-	})
 
-	hs.logInfof("Heartbeat result sent to %s", platform)
+	feedback := make(chan bus.DeliveryResult, 1)
+	err := msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+		Context:  bus.NewOutboundContext(platform, userID, ""),
+		Content:  response,
+		Feedback: feedback,
+	})
+	if err != nil {
+		hs.logErrorf("Failed to publish heartbeat result: %v", err)
+		return
+	}
+
+	select {
+	case res := <-feedback:
+		if res.Err != nil {
+			hs.logErrorf("Heartbeat result delivery error: %v", res.Err)
+		} else {
+			hs.logInfof("Heartbeat result delivered to %s", platform)
+		}
+	case <-pubCtx.Done():
+		hs.logErrorf("Heartbeat result delivery timeout")
+	}
 }
 
 // parseLastChannel parses the last channel string into platform and userID.

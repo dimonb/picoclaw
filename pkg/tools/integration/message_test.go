@@ -418,7 +418,7 @@ func TestMessageTool_Execute_WaitDeliveryReturnsDeliveredRefs(t *testing.T) {
 	if result.Silent {
 		t.Fatal("wait_delivery result should be visible to the LLM")
 	}
-	if !strings.Contains(result.ForLLM, "message_id: "+deliveredRef) {
+	if !strings.Contains(result.ForLLM, "#"+deliveredRef) {
 		t.Fatalf("result missing delivered ref %q: %q", deliveredRef, result.ForLLM)
 	}
 }

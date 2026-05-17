@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
 
 // escapeXML escapes special characters for safe inclusion in XML content.
@@ -139,9 +138,11 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 	for _, r := range final {
 		totalTokens += r.tokenCount
 		if r.itemType == "message" && r.message != nil {
-			msg := *r.message
-			msg.Content = FormatMessageXML(&msg)
-			messages = append(messages, msg)
+			// Return the message as-is (raw Content). Callers (agent layer)
+			// are responsible for any render-time envelope wrapping such as
+			// `<msg id=... sender=... reply_to=...>` — this keeps seahorse a
+			// pure storage/retrieval layer.
+			messages = append(messages, *r.message)
 			sourceIDs = append(sourceIDs, fmt.Sprintf("msg:%d", r.message.ID))
 		} else if r.itemType == "summary" && r.summary != nil {
 			summaries = append(summaries, *r.summary)
@@ -350,44 +351,4 @@ func FormatSummaryXML(s *Summary, parentIDs []string) string {
 		escapeXML(s.Content),
 		parentsSection,
 	)
-}
-
-// FormatMessageXML formats a message as XML with its channel reference.
-// This allows the LLM to see and target specific messages via their opaque refs.
-func FormatMessageXML(m *Message) string {
-	if m.ChannelMessageID == "" && m.Metadata.IsEmpty() {
-		return m.Content
-	}
-
-	var attrs strings.Builder
-	if m.ChannelMessageID != "" {
-		fmt.Fprintf(&attrs, ` id="%s"`, escapeXML(m.ChannelMessageID))
-	}
-	if md := m.Metadata; md != nil {
-		if sender := messageSenderAttr(md); sender != "" {
-			fmt.Fprintf(&attrs, ` sender="%s"`, escapeXML(sender))
-		}
-		if md.ReplyToMessageID != "" {
-			fmt.Fprintf(&attrs, ` reply_to="%s"`, escapeXML(md.ReplyToMessageID))
-		}
-	}
-
-	if attrs.Len() == 0 {
-		return m.Content
-	}
-
-	return fmt.Sprintf("<msg%s>%s</msg>", attrs.String(), escapeXML(m.Content))
-}
-
-// messageSenderAttr returns the most human-readable sender identifier
-// available in the metadata bag, preferring the display name over the
-// canonical sender ID.
-func messageSenderAttr(md *protocoltypes.MessageMetadata) string {
-	if md == nil {
-		return ""
-	}
-	if md.SenderDisplayName != "" {
-		return md.SenderDisplayName
-	}
-	return md.SenderID
 }

@@ -487,7 +487,11 @@ func TestPipeline_SetupTurn_UsesLightCandidateDisplayName(t *testing.T) {
 	}
 }
 
-func TestRunTurn_FinalizeSaveErrorEmitsErrorTurnEnd(t *testing.T) {
+// In the "persist after delivery" design the assistant-message session save
+// moved out of Pipeline.Finalize into persistAssistantMessage (which runs after
+// the turn ends and outbound delivery completes). A save failure therefore
+// surfaces as a ProcessDirect error rather than an error TurnEnd event.
+func TestRunTurn_SaveErrorPropagatesFromPersist(t *testing.T) {
 	al, agent, cleanup := newTurnCoordTestLoop(t, &simpleConvProvider{})
 	defer cleanup()
 
@@ -497,31 +501,8 @@ func TestRunTurn_FinalizeSaveErrorEmitsErrorTurnEnd(t *testing.T) {
 		err:          saveErr,
 	}
 
-	sub := al.SubscribeEvents(8)
-	defer al.UnsubscribeEvents(sub.ID)
-
 	if _, err := al.ProcessDirect(context.Background(), "hello", "session-save-fail"); err == nil {
-		t.Fatal("expected ProcessDirect to fail")
-	}
-
-	deadline := time.After(2 * time.Second)
-	for {
-		select {
-		case evt := <-sub.C:
-			if evt.Kind != EventKindTurnEnd {
-				continue
-			}
-			payload, ok := evt.Payload.(TurnEndPayload)
-			if !ok {
-				t.Fatalf("TurnEnd payload type = %T", evt.Payload)
-			}
-			if payload.Status != TurnEndStatusError {
-				t.Fatalf("TurnEnd status = %q, want %q", payload.Status, TurnEndStatusError)
-			}
-			return
-		case <-deadline:
-			t.Fatal("timed out waiting for turn_end event")
-		}
+		t.Fatal("expected ProcessDirect to fail when session save fails")
 	}
 }
 

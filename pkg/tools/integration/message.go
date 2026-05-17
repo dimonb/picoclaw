@@ -245,7 +245,11 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 		res = fmt.Sprintf("Message with %d media attachment(s) sent to %s:%s", len(parts), channel, chatID)
 	}
 	if len(deliveredIDs) > 0 {
-		res = fmt.Sprintf("Message sent. message_id: %s", strings.Join(deliveredIDs, ", "))
+		refs := make([]string, len(deliveredIDs))
+		for i, id := range deliveredIDs {
+			refs[i] = "#" + id
+		}
+		res = fmt.Sprintf("[msgs:%s] Message sent.", strings.Join(refs, ", "))
 	}
 
 	// Silent by default unless wait_delivery is requested

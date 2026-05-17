@@ -553,13 +553,14 @@ type WhatsAppSettings struct {
 }
 
 type TelegramSettings struct {
-	Token             SecureString        `json:"token,omitzero"        yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_TELEGRAM_TOKEN"`
-	BaseURL           string              `json:"base_url"              yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_BASE_URL"`
-	Proxy             string              `json:"proxy"                 yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_PROXY"`
-	AllowChats        FlexibleStringSlice `json:"allow_chats,omitempty" yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOW_CHATS"`
-	Streaming         StreamingConfig     `json:"streaming,omitzero"    yaml:"-"`
-	UseMarkdownV2     bool                `json:"use_markdown_v2"       yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_USE_MARKDOWN_V2"`
-	MediaGroupDelayMS int                 `json:"media_group_delay_ms"  yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_MEDIA_GROUP_DELAY_MS"`
+	Token                SecureString        `json:"token,omitzero"                   yaml:"token,omitempty" env:"PICOCLAW_CHANNELS_TELEGRAM_TOKEN"`
+	BaseURL              string              `json:"base_url"                         yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_BASE_URL"`
+	Proxy                string              `json:"proxy"                            yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_PROXY"`
+	AllowChats           FlexibleStringSlice `json:"allow_chats,omitempty"            yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOW_CHATS"`
+	Streaming            StreamingConfig     `json:"streaming,omitzero"               yaml:"-"`
+	UseMarkdownV2        bool                `json:"use_markdown_v2"                  yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_USE_MARKDOWN_V2"`
+	MediaGroupDelayMS    int                 `json:"media_group_delay_ms"             yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_MEDIA_GROUP_DELAY_MS"`
+	AllowedReactionEmoji FlexibleStringSlice `json:"allowed_reaction_emoji,omitempty" yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOWED_REACTION_EMOJI"`
 }
 
 type FeishuSettings struct {
@@ -704,9 +705,9 @@ func (c *VKSettings) SetToken(token string) {
 
 // WebhookSettings configures the generic request/response webhook channel.
 type WebhookSettings struct {
-	SharedSecret          SecureString `json:"shared_secret,omitzero"          yaml:"shared_secret,omitempty" env:"PICOCLAW_CHANNELS_WEBHOOK_SHARED_SECRET"`
-	RequestTimeoutSeconds int          `json:"request_timeout_seconds,omitempty" yaml:"-"                    env:"PICOCLAW_CHANNELS_WEBHOOK_REQUEST_TIMEOUT_SECONDS"`
-	ResultTTLSeconds      int          `json:"result_ttl_seconds,omitempty"     yaml:"-"                    env:"PICOCLAW_CHANNELS_WEBHOOK_RESULT_TTL_SECONDS"`
+	SharedSecret          SecureString `json:"shared_secret,omitzero"            yaml:"shared_secret,omitempty" env:"PICOCLAW_CHANNELS_WEBHOOK_SHARED_SECRET"`
+	RequestTimeoutSeconds int          `json:"request_timeout_seconds,omitempty" yaml:"-"                       env:"PICOCLAW_CHANNELS_WEBHOOK_REQUEST_TIMEOUT_SECONDS"`
+	ResultTTLSeconds      int          `json:"result_ttl_seconds,omitempty"      yaml:"-"                       env:"PICOCLAW_CHANNELS_WEBHOOK_RESULT_TTL_SECONDS"`
 }
 
 func (c *WebhookSettings) SetSharedSecret(secret string) {
@@ -1098,10 +1099,10 @@ type MediaConfig struct {
 //   - Ephemeral entries are evicted by the reaper after EphemeralTTL has
 //     elapsed since they were last resolved.
 type MediaArchiveConfig struct {
-	Enabled            bool   `json:"enabled"                       env:"PICOCLAW_MEDIA_ARCHIVE_ENABLED"`
-	Root               string `json:"root,omitempty"                env:"PICOCLAW_MEDIA_ARCHIVE_ROOT"`
-	EphemeralTTLDays   int    `json:"ephemeral_ttl_days,omitempty"  env:"PICOCLAW_MEDIA_ARCHIVE_EPHEMERAL_TTL_DAYS"`
-	ReaperEnabled      bool   `json:"reaper_enabled"                env:"PICOCLAW_MEDIA_ARCHIVE_REAPER_ENABLED"`
+	Enabled            bool   `json:"enabled"                           env:"PICOCLAW_MEDIA_ARCHIVE_ENABLED"`
+	Root               string `json:"root,omitempty"                    env:"PICOCLAW_MEDIA_ARCHIVE_ROOT"`
+	EphemeralTTLDays   int    `json:"ephemeral_ttl_days,omitempty"      env:"PICOCLAW_MEDIA_ARCHIVE_EPHEMERAL_TTL_DAYS"`
+	ReaperEnabled      bool   `json:"reaper_enabled"                    env:"PICOCLAW_MEDIA_ARCHIVE_REAPER_ENABLED"`
 	ReaperIntervalMins int    `json:"reaper_interval_minutes,omitempty" env:"PICOCLAW_MEDIA_ARCHIVE_REAPER_INTERVAL_MINUTES"`
 }
 

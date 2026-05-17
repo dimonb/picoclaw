@@ -73,10 +73,10 @@ func TestFTSAndChannelRefCoexist(t *testing.T) {
 	}
 }
 
-// TestAssembledMessageCarriesChannelRef pins that the LLM-visible Assemble
-// output for a message with a channel_message_id wraps it as
-// <msg id="…">…</msg>, even though messages.content stores the raw body.
-// This is the path through which the LLM gets to see and re-target refs.
+// TestAssembledMessageCarriesChannelRef pins that Assemble preserves the
+// channel_message_id alongside the raw body. The seahorse layer is purely
+// storage/retrieval — the agent layer is responsible for the LLM-visible
+// `<msg id="…">…</msg>` envelope at prompt-build time.
 func TestAssembledMessageCarriesChannelRef(t *testing.T) {
 	engine, err := NewEngine(Config{DBPath: t.TempDir() + "/test.db"}, nil)
 	if err != nil {
@@ -89,12 +89,12 @@ func TestAssembledMessageCarriesChannelRef(t *testing.T) {
 	const ref = "telegram:chat-1:42"
 	const body = "raw body without any xml wrapping"
 
-	if _, err := engine.Ingest(ctx, sessionKey, []Message{{
+	if _, ingestErr := engine.Ingest(ctx, sessionKey, []Message{{
 		Role:             "user",
 		Content:          body,
 		ChannelMessageID: ref,
-	}}); err != nil {
-		t.Fatalf("Ingest: %v", err)
+	}}); ingestErr != nil {
+		t.Fatalf("Ingest: %v", ingestErr)
 	}
 
 	got, err := engine.GetRetrieval().Store().GetMessageByChannelMessageID(ctx, ref)
@@ -112,16 +112,17 @@ func TestAssembledMessageCarriesChannelRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
-	found := false
-	wantAttr := `id="` + ref + `"`
-	for _, m := range res.Messages {
-		if strings.Contains(m.Content, wantAttr) && strings.Contains(m.Content, body) {
-			found = true
+	var assembled *Message
+	for i := range res.Messages {
+		if res.Messages[i].ChannelMessageID == ref {
+			assembled = &res.Messages[i]
 			break
 		}
 	}
-	if !found {
-		t.Errorf("Assemble output did not wrap message with %s and body %q; got %+v",
-			wantAttr, body, res.Messages)
+	if assembled == nil {
+		t.Fatalf("Assemble output did not return message with ChannelMessageID=%q; got %+v", ref, res.Messages)
+	}
+	if assembled.Content != body {
+		t.Errorf("Assemble Content = %q, want raw %q", assembled.Content, body)
 	}
 }

@@ -78,6 +78,24 @@ type AgentLoop struct {
 	activeReqCond  *sync.Cond
 	activeReqCount int
 
+	// pendingAssistantStamps tracks the seahorse row ID of the latest
+	// persisted assistant message per session that is waiting for its
+	// channel-native ref to be stamped after deferred delivery (the
+	// processMessageSync / runTurnWithSteering path where SendResponse is
+	// false at turn time and PublishResponseIfNeeded publishes later).
+	// Keys: session key (string); values: row ID (int64).
+	//
+	// Concurrency invariant: at most one stamp is pending per sessionKey
+	// at any time. Upstream callers (processMessageSync,
+	// runTurnWithSteering) run turns sequentially for a given session —
+	// the next persistAssistantMessage cannot store a new rowID until the
+	// previous PublishResponseIfNeeded has returned and called
+	// stampPendingAssistantRef. If a concurrent caller were ever added for
+	// the same sessionKey, the second Store would overwrite the first
+	// rowID and the first turn's stamp would be lost; switch to a queue
+	// (slice or channel) at that point.
+	pendingAssistantStamps sync.Map
+
 	reloadFunc func() error
 
 	providerFactory func(*config.ModelConfig) (providers.LLMProvider, string, error)
@@ -94,6 +112,7 @@ type processOptions struct {
 	ReplyToMessageID        string          // Current inbound reply target message ID
 	SenderID                string          // Current sender ID for dynamic context
 	SenderDisplayName       string          // Current sender display name for dynamic context
+	SenderUsername          string          // Current sender platform handle (e.g. "@alice")
 	UserMessage             string          // User message content (may include prefix)
 	ForcedSkills            []string        // Skills explicitly requested for this message
 	TurnProfile             config.EffectiveTurnProfile
@@ -583,45 +602,12 @@ func (al *AgentLoop) runAgentLoop(
 		}
 	}
 
-	if opts.SendResponse && result.finalContent != "" {
-		agentID, sessionKey, scope := outboundTurnMetadata(
-			agent.ID,
-			opts.Dispatch.SessionKey,
-			opts.Dispatch.SessionScope,
-		)
-		var feedback chan []string
-		if result.assistantMessageID != 0 && al.contextManager != nil {
-			feedback = make(chan []string, 1)
-		}
-		msg := bus.OutboundMessage{
-			Context: outboundContextFromInbound(
-				opts.Dispatch.InboundContext,
-				opts.Dispatch.Channel(),
-				opts.Dispatch.ChatID(),
-				opts.Dispatch.ReplyToMessageID(),
-			),
-			AgentID:      agentID,
-			SessionKey:   sessionKey,
-			Scope:        scope,
-			Content:      result.finalContent,
-			ContextUsage: computeContextUsage(agent, opts.Dispatch.SessionKey),
-			Feedback:     feedback,
-		}
-		if modelName := strings.TrimSpace(result.modelName); modelName != "" {
-			if msg.Context.Raw == nil {
-				msg.Context.Raw = make(map[string]string, 1)
-			}
-			msg.Context.Raw["model_name"] = modelName
-		}
-		markFinalOutbound(&msg)
-		al.bus.PublishOutbound(ctx, msg)
-		if feedback != nil {
-			go al.stampAssistantDeliveredRef(
-				sessionKey,
-				result.assistantMessageID,
-				feedback,
-			)
-		}
+	deliveredID, err := al.maybeDeliverFinalResponse(ctx, agent, opts, result)
+	if err != nil {
+		return "", err
+	}
+	if persistErr := al.persistAssistantMessage(ctx, ts, opts, result, deliveredID); persistErr != nil {
+		return "", persistErr
 	}
 
 	if result.finalContent != "" {
@@ -638,54 +624,129 @@ func (al *AgentLoop) runAgentLoop(
 	return result.finalContent, nil
 }
 
-// stampAssistantDeliveredRef waits on the outbound feedback channel and
-// stamps the first delivered ref onto the persisted assistant message in
-// the active ContextManager. Closed (nil) feedback signals delivery
-// failure — nothing to stamp. Runs in its own goroutine because callers
-// fire-and-forget the outbound publish.
-func (al *AgentLoop) stampAssistantDeliveredRef(
-	sessionKey string,
-	messageID int64,
-	feedback <-chan []string,
-) {
-	defer func() {
-		if r := recover(); r != nil {
-			logger.WarnCF("agent", "stampAssistantDeliveredRef panic recovered", map[string]any{
-				"session_key": sessionKey,
-				"panic":       r,
-			})
-		}
-	}()
+// maybeDeliverFinalResponse publishes the assistant's final reply when
+// SendResponse is enabled and there is content to send. When the
+// destination channel is registered with the ChannelManager the publish is
+// synchronous and the channel-native ref of the delivered message is
+// returned so the caller can stamp it onto the persisted row. Synchronous
+// delivery failure aborts the turn (returned as an error) so callers do
+// not persist a message that never reached the user.
+//
+// Semantics change vs. the pre-sync-delivery world: previously
+// Pipeline.Finalize persisted the assistant row first and delivery was a
+// best-effort goroutine, so the row survived in history even when delivery
+// failed. Now a failed sync delivery means the assistant message is
+// dropped from both session JSONL and the ContextManager — including from
+// the LLM's view on subsequent turns. This is intentional: a message the
+// user never saw should not appear as "previously said" context.
+//
+// When no ChannelManager is registered for the channel (internal channels,
+// many unit tests) the publish is fire-and-forget and the returned ID is
+// empty — there is no channel to deliver to and no ref to capture.
+func (al *AgentLoop) maybeDeliverFinalResponse(
+	ctx context.Context,
+	agent *AgentInstance,
+	opts processOptions,
+	result turnResult,
+) (string, error) {
+	if !opts.SendResponse || result.finalContent == "" {
+		return "", nil
+	}
+	agentID, sessionKey, scope := outboundTurnMetadata(
+		agent.ID,
+		opts.Dispatch.SessionKey,
+		opts.Dispatch.SessionScope,
+	)
+	channel := opts.Dispatch.Channel()
+	msg := bus.OutboundMessage{
+		Context: outboundContextFromInbound(
+			opts.Dispatch.InboundContext,
+			channel,
+			opts.Dispatch.ChatID(),
+			opts.Dispatch.ReplyToMessageID(),
+		),
+		AgentID:      agentID,
+		SessionKey:   sessionKey,
+		Scope:        scope,
+		Content:      result.finalContent,
+		ContextUsage: computeContextUsage(agent, opts.Dispatch.SessionKey),
+	}
 
-	const deliveryTimeout = 30 * time.Second
-	var refs []string
-	select {
-	case got, ok := <-feedback:
-		if !ok {
-			return
+	if al.channelManager != nil {
+		if _, ok := al.channelManager.GetChannel(channel); ok {
+			res, err := al.PublishOutboundSync(ctx, msg)
+			if err != nil {
+				logger.WarnCF("agent", "Final response delivery failed", map[string]any{
+					"session_key": sessionKey,
+					"error":       err.Error(),
+				})
+				return "", fmt.Errorf("final response delivery failed: %w", err)
+			}
+			if res.Err != nil {
+				logger.WarnCF("agent", "Final response delivery error", map[string]any{
+					"session_key": sessionKey,
+					"error":       res.Err.Error(),
+				})
+				return "", fmt.Errorf("final response delivery error: %w", res.Err)
+			}
+			if len(res.IDs) > 0 {
+				return res.IDs[0], nil
+			}
+			return "", nil
 		}
-		refs = got
-	case <-time.After(deliveryTimeout):
-		logger.WarnCF("agent", "outbound delivery feedback timeout", map[string]any{
-			"session_key": sessionKey,
-			"message_id":  messageID,
-		})
-		return
 	}
-	if len(refs) == 0 || refs[0] == "" {
-		return
-	}
+	_ = al.bus.PublishOutbound(ctx, msg)
+	return "", nil
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := al.contextManager.UpdateChannelMessageID(ctx, sessionKey, messageID, refs[0]); err != nil {
-		logger.WarnCF("agent", "stamp assistant delivered ref failed", map[string]any{
-			"session_key":        sessionKey,
-			"message_id":         messageID,
-			"channel_message_id": refs[0],
-			"error":              err.Error(),
-		})
+// persistAssistantMessage records the assistant message produced by the
+// turn into session history.
+//
+// When the prior delivery returned a channel-native ref (SendResponse=true
+// path) it is set as MessageID so the persisted row is immediately
+// addressable by subsequent fetch / edit / react tool calls.
+//
+// When delivery is deferred (SendResponse=false — processMessageSync /
+// runTurnWithSteering publish later via PublishResponseIfNeeded), the row
+// ID returned by Ingest is parked in pendingAssistantStamps so the
+// deferred publisher can stamp the delivered ref onto the row once the
+// channel ID is captured.
+func (al *AgentLoop) persistAssistantMessage(
+	ctx context.Context,
+	ts *turnState,
+	opts processOptions,
+	result turnResult,
+	deliveredID string,
+) error {
+	if result.assistantMessage == nil || opts.NoHistory {
+		return nil
 	}
+	persistMsg := *result.assistantMessage
+	if deliveredID != "" {
+		persistMsg.MessageID = deliveredID
+	}
+	ts.agent.Sessions.AddFullMessage(ts.sessionKey, persistMsg)
+	ts.recordPersistedMessage(persistMsg)
+	rowID := ts.ingestMessage(ctx, al, persistMsg)
+	if err := ts.agent.Sessions.Save(ts.sessionKey); err != nil {
+		al.emitEvent(
+			EventKindError,
+			ts.eventMeta("runTurn", "turn.error"),
+			ErrorPayload{
+				Stage:   "session_save",
+				Message: err.Error(),
+			},
+		)
+		return fmt.Errorf("session save failed: %w", err)
+	}
+	if !opts.SendResponse && deliveredID == "" && rowID != 0 && ts.sessionKey != "" {
+		// Delivery is deferred to the upstream caller
+		// (processMessageSync / runTurnWithSteering →
+		// PublishResponseIfNeeded). Park the row ID so that path can
+		// stamp the delivered ref once the channel ID is captured.
+		al.pendingAssistantStamps.Store(ts.sessionKey, rowID)
+	}
+	return nil
 }
 
 // selectCandidates returns the model candidates and resolved model name to use

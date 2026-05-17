@@ -406,7 +406,14 @@ func (c *TelegramChannel) sendChunk(
 	}
 
 	if params.replyToID != "" {
-		if mid, parseErr := strconv.Atoi(params.replyToID); parseErr == nil {
+		// replyToID may be a bare message id ("42") or a channel-native
+		// composite ("chatID:msgID" / "chatID:threadID:msgID"). Take the
+		// trailing segment, which is always the message id.
+		raw := params.replyToID
+		if i := strings.LastIndex(raw, ":"); i >= 0 {
+			raw = raw[i+1:]
+		}
+		if mid, parseErr := strconv.Atoi(raw); parseErr == nil {
 			tgMsg.ReplyParameters = &telego.ReplyParameters{
 				MessageID: mid,
 			}
@@ -600,6 +607,75 @@ func (c *TelegramChannel) ReactToMessage(ctx context.Context, chatID, messageID 
 	}
 
 	return undo, nil
+}
+
+// SetMessageReaction implements channels.MessageReactor.
+// Sets an explicit emoji reaction on a specific message. The messageID may
+// be a bare integer or a composite "chatID:msgID" / "chatID:threadID:msgID";
+// the bare msg id is always the trailing segment.
+func (c *TelegramChannel) SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	cid, mid, err := resolveTelegramReactionTarget(chatID, messageID)
+	if err != nil {
+		return err
+	}
+	emoji = strings.TrimSpace(emoji)
+	if emoji == "" {
+		return fmt.Errorf("emoji is required")
+	}
+	return c.bot.SetMessageReaction(ctx, &telego.SetMessageReactionParams{
+		ChatID:    tu.ID(cid),
+		MessageID: mid,
+		Reaction: []telego.ReactionType{
+			&telego.ReactionTypeEmoji{Type: "emoji", Emoji: emoji},
+		},
+	})
+}
+
+// RemoveMessageReaction implements channels.MessageReactor.
+// Telegram removes all reactions on a message by setting an empty list.
+func (c *TelegramChannel) RemoveMessageReaction(ctx context.Context, chatID, messageID, emoji string) error {
+	cid, mid, err := resolveTelegramReactionTarget(chatID, messageID)
+	if err != nil {
+		return err
+	}
+	_ = emoji
+	return c.bot.SetMessageReaction(ctx, &telego.SetMessageReactionParams{
+		ChatID:    tu.ID(cid),
+		MessageID: mid,
+		Reaction:  []telego.ReactionType{},
+	})
+}
+
+// GetReactionSupport implements channels.MessageReactor.
+func (c *TelegramChannel) GetReactionSupport(ctx context.Context, chatID string) channels.ReactionSupport {
+	if c.tgCfg == nil || len(c.tgCfg.AllowedReactionEmoji) == 0 {
+		return channels.ReactionSupport{AnyUnicode: true}
+	}
+	out := make([]string, 0, len(c.tgCfg.AllowedReactionEmoji))
+	for _, value := range c.tgCfg.AllowedReactionEmoji {
+		if v := strings.TrimSpace(value); v != "" {
+			out = append(out, v)
+		}
+	}
+	return channels.ReactionSupport{Allowed: out}
+}
+
+// resolveTelegramReactionTarget accepts either a composite opaque ID
+// ("chatID:msgID" / "chatID:threadID:msgID") or a bare numeric message id
+// paired with a separate chatID. Returns the parsed (chatID, messageID).
+func resolveTelegramReactionTarget(chatID, messageID string) (int64, int, error) {
+	if cid, _, mid, err := parseTelegramOpaqueID(messageID); err == nil {
+		return cid, mid, nil
+	}
+	cid, _, err := parseTelegramChatID(chatID)
+	if err != nil {
+		return 0, 0, err
+	}
+	mid, err := strconv.Atoi(strings.TrimSpace(messageID))
+	if err != nil {
+		return 0, 0, err
+	}
+	return cid, mid, nil
 }
 
 func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
@@ -1296,7 +1372,12 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		replyID := fmt.Sprintf("%d", message.ReplyToMessage.MessageID)
 		inboundCtx.ReplyToMessageID = fmt.Sprintf("%d:%s", chatID, replyID)
 		if message.Chat.IsForum && message.ReplyToMessage.MessageThreadID != 0 {
-			inboundCtx.ReplyToMessageID = fmt.Sprintf("%d:%d:%s", chatID, message.ReplyToMessage.MessageThreadID, replyID)
+			inboundCtx.ReplyToMessageID = fmt.Sprintf(
+				"%d:%d:%s",
+				chatID,
+				message.ReplyToMessage.MessageThreadID,
+				replyID,
+			)
 		}
 	}
 

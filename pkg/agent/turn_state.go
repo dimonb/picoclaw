@@ -87,11 +87,12 @@ type turnResult struct {
 	modelName    string
 	status       TurnEndStatus
 	followUps    []bus.InboundMessage
-	// assistantMessageID is the ContextManager-internal row ID of the
-	// just-persisted assistant message in this turn (0 if no assistant
-	// message was persisted). Surfaced so the caller can stamp the
-	// delivered channel ref onto the row after PublishOutbound completes.
-	assistantMessageID int64
+	// assistantMessage is the assistant message produced this turn that the
+	// caller is expected to persist after a successful sync delivery (so
+	// the persisted row can carry the delivered channel-native ref as its
+	// MessageID). Nil when there is nothing to persist (NoHistory, empty
+	// content, or allResponsesHandled).
+	assistantMessage *providers.Message
 }
 
 // =============================================================================

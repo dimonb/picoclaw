@@ -23,7 +23,7 @@ type InboundContext struct {
 	SpaceID   string `json:"space_id,omitempty"`
 	SpaceType string `json:"space_type,omitempty"` // guild / team / workspace / tenant
 
-	SenderID  string `json:"sender_id"`
+	SenderID string `json:"sender_id"`
 
 	// MessageID is an opaque channel-native message reference.
 	// For Telegram: "chat_id:message_id" or "chat_id:topic_id:message_id"
@@ -82,6 +82,12 @@ type ContextUsage struct {
 	UsedPercent       int `json:"used_percent"`        // 0-100, relative to compressAt
 }
 
+// DeliveryResult represents the outcome of an outbound message send.
+type DeliveryResult struct {
+	IDs []string
+	Err error
+}
+
 type OutboundMessage struct {
 	Channel          string         `json:"channel"`
 	ChatID           string         `json:"chat_id"`
@@ -95,7 +101,7 @@ type OutboundMessage struct {
 
 	// Feedback is an optional channel for receiving delivered message IDs.
 	// Typically used by messaging tools with wait_delivery=true.
-	Feedback chan []string `json:"-"`
+	Feedback chan DeliveryResult `json:"-"`
 
 	// TraceCarrier propagates trace context to downstream channel sends.
 	TraceCarrier map[string]string `json:"trace_carrier,omitempty"`
@@ -112,14 +118,15 @@ type MediaPart struct {
 
 // OutboundMediaMessage carries media attachments from Agent to channels via the bus.
 type OutboundMediaMessage struct {
-	Channel      string            `json:"channel"`
-	ChatID       string            `json:"chat_id"`
-	Context      InboundContext    `json:"context"`
-	AgentID      string            `json:"agent_id,omitempty"`
-	SessionKey   string            `json:"session_key,omitempty"`
-	Scope        *OutboundScope    `json:"scope,omitempty"`
-	Parts        []MediaPart       `json:"parts"`
-	TraceCarrier map[string]string `json:"trace_carrier,omitempty"`
+	Channel      string              `json:"channel"`
+	ChatID       string              `json:"chat_id"`
+	Context      InboundContext      `json:"context"`
+	AgentID      string              `json:"agent_id,omitempty"`
+	SessionKey   string              `json:"session_key,omitempty"`
+	Scope        *OutboundScope      `json:"scope,omitempty"`
+	Parts        []MediaPart         `json:"parts"`
+	Feedback     chan DeliveryResult `json:"-"`
+	TraceCarrier map[string]string   `json:"trace_carrier,omitempty"`
 }
 
 // AudioChunk represents a chunk of streaming voice data.

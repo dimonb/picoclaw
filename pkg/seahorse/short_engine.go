@@ -309,9 +309,15 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 }
 
 // UpdateMessageChannelMessageID stamps an opaque channel-native ref onto a
-// previously ingested message. Used by the agent loop after delivery so the
-// persisted assistant row becomes addressable by its delivered ref.
-func (e *Engine) UpdateMessageChannelMessageID(ctx context.Context, sessionKey string, messageID int64, channelMessageID string) error {
+// previously ingested message. Used by deferred-delivery paths in the agent
+// loop so the persisted assistant row becomes addressable by its delivered
+// ref once the upstream PublishResponseIfNeeded captures it.
+func (e *Engine) UpdateMessageChannelMessageID(
+	ctx context.Context,
+	sessionKey string,
+	messageID int64,
+	channelMessageID string,
+) error {
 	if e.shouldIgnoreSession(sessionKey) {
 		return nil
 	}

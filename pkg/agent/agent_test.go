@@ -91,6 +91,24 @@ func (m *recordingChannelManager) DismissToolFeedback(
 	m.dismissed = append(m.dismissed, fmt.Sprintf("%s:%s", channel, chatID))
 }
 
+func (m *recordingChannelManager) GetReactionSupport(
+	ctx context.Context, channel, chatID string,
+) channels.ReactionSupport {
+	return channels.ReactionSupport{}
+}
+
+func (m *recordingChannelManager) SetMessageReaction(
+	ctx context.Context, channel, chatID, messageID, emoji string,
+) error {
+	return nil
+}
+
+func (m *recordingChannelManager) RemoveMessageReaction(
+	ctx context.Context, channel, chatID, messageID, emoji string,
+) error {
+	return nil
+}
+
 func newStartedTestChannelManager(
 	t *testing.T,
 	msgBus *bus.MessageBus,
@@ -527,8 +545,11 @@ func TestProcessMessage_IncludesCurrentSenderInDynamicContext(t *testing.T) {
 	}
 
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "hello" {
-		t.Fatalf("last provider message = %+v, want unchanged user message", lastMessage)
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Content, "hello") {
+		t.Fatalf("last provider message = %+v, want user content containing %q", lastMessage, "hello")
+	}
+	if !strings.Contains(lastMessage.Content, "from:Alice") {
+		t.Fatalf("last provider message missing sender envelope: %q", lastMessage.Content)
 	}
 }
 
@@ -1079,8 +1100,8 @@ func TestProcessMessage_UseCommandLoadsRequestedSkill(t *testing.T) {
 	}
 
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "explain how to list files" {
-		t.Fatalf("last provider message = %+v, want rewritten user message", lastMessage)
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Content, "explain how to list files") {
+		t.Fatalf("last provider message = %+v, want user content containing rewritten message", lastMessage)
 	}
 }
 
@@ -1150,8 +1171,8 @@ func TestProcessMessage_BtwCommandRunsWithoutPersistingHistory(t *testing.T) {
 	}
 
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "explain side effects" {
-		t.Fatalf("last provider message = %+v, want stripped /btw question", lastMessage)
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Content, "explain side effects") {
+		t.Fatalf("last provider message = %+v, want user content containing stripped /btw question", lastMessage)
 	}
 
 	history := al.GetRegistry().GetDefaultAgent().Sessions.GetHistory(sessionKey)
@@ -1207,8 +1228,8 @@ func TestProcessMessage_BtwCommandIncludesRequestContextAndMedia(t *testing.T) {
 	}
 
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "describe this image" {
-		t.Fatalf("last provider message = %+v, want stripped /btw question", lastMessage)
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Content, "describe this image") {
+		t.Fatalf("last provider message = %+v, want user content containing stripped /btw question", lastMessage)
 	}
 	if !reflect.DeepEqual(lastMessage.Media, []string{"media://image-1"}) {
 		t.Fatalf("last provider media = %#v, want media ref", lastMessage.Media)
@@ -1273,8 +1294,8 @@ func TestProcessMessage_BtwCommandUsesIsolatedProvider(t *testing.T) {
 
 	// Verify the question was stripped of /btw prefix
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "explain isolation" {
-		t.Fatalf("last provider message = %+v, want stripped /btw question", lastMessage)
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Content, "explain isolation") {
+		t.Fatalf("last provider message = %+v, want user content containing stripped /btw question", lastMessage)
 	}
 
 	// Verify main session history was NOT modified
@@ -1506,8 +1527,8 @@ func TestProcessMessage_UseCommandArmsSkillForNextMessage(t *testing.T) {
 		t.Fatalf("system prompt missing pending skill content:\n%s", systemPrompt)
 	}
 	lastMessage := provider.lastMessages[len(provider.lastMessages)-1]
-	if lastMessage.Role != "user" || lastMessage.Content != "explain how to list files" {
-		t.Fatalf("last provider message = %+v, want unchanged follow-up user message", lastMessage)
+	if lastMessage.Role != "user" || !strings.Contains(lastMessage.Content, "explain how to list files") {
+		t.Fatalf("last provider message = %+v, want user content containing follow-up message", lastMessage)
 	}
 }
 

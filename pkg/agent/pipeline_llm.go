@@ -10,13 +10,14 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/sipeed/picoclaw/pkg/constants"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/telemetry"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // CallLLM performs an LLM call with fallback support, hook invocation, and retry logic.
@@ -367,10 +368,12 @@ func (p *Pipeline) CallLLM(
 			)
 
 			if retry == 0 && !constants.IsInternalChannel(ts.channel) {
-				al.bus.PublishOutbound(ctx, outboundMessageForTurn(
+				pubCtx, pubCancel := context.WithTimeout(ctx, 10*time.Second)
+				_, _ = al.PublishOutboundSync(pubCtx, outboundMessageForTurn(
 					ts,
 					"Context window exceeded. Compressing history and retrying...",
 				))
+				pubCancel()
 			}
 
 			if compactErr := p.ContextManager.Compact(ctx, &CompactRequest{
@@ -547,7 +550,7 @@ func (p *Pipeline) CallLLM(
 		}
 	} else {
 		go al.handleReasoning(
-			turnCtx,
+			ctx,
 			reasoningContent,
 			ts.channel,
 			al.targetReasoningChannelID(ts.channel),
@@ -584,6 +587,10 @@ func (p *Pipeline) CallLLM(
 		responseContent := exec.response.Content
 		if responseContent == "" && exec.response.ReasoningContent != "" && ts.channel != "pico" {
 			responseContent = exec.response.ReasoningContent
+		}
+		if cleaned, stripped := stripLeadingMessageAnnotations(responseContent); stripped != "" {
+			responseContent = cleaned
+			logStrippedMessageAnnotations(stripped)
 		}
 		if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
 			cancelConfiguredStreamingLLM(turnCtx, exec)

@@ -165,7 +165,12 @@ func (m *seahorseContextManager) Ingest(ctx context.Context, req *IngestRequest)
 
 // UpdateChannelMessageID stamps a delivered channel-native ref onto a
 // previously ingested message in seahorse SQLite.
-func (m *seahorseContextManager) UpdateChannelMessageID(ctx context.Context, sessionKey string, messageID int64, channelMessageID string) error {
+func (m *seahorseContextManager) UpdateChannelMessageID(
+	ctx context.Context,
+	sessionKey string,
+	messageID int64,
+	channelMessageID string,
+) error {
 	if m.engine == nil {
 		return nil
 	}

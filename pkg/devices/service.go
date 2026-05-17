@@ -128,18 +128,42 @@ func (s *Service) sendNotification(ev *events.DeviceEvent) {
 	}
 
 	msg := ev.FormatMessage()
-	pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer pubCancel()
-	msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-		Context: bus.NewOutboundContext(platform, userID, ""),
-		Content: msg,
-	})
 
-	logger.InfoCF("devices", "Device notification sent", map[string]any{
-		"kind":   ev.Kind,
-		"action": ev.Action,
-		"to":     platform,
+	feedback := make(chan bus.DeliveryResult, 1)
+	err := msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+		Context:  bus.NewOutboundContext(platform, userID, ""),
+		Content:  msg,
+		Feedback: feedback,
 	})
+	if err != nil {
+		logger.WarnCF("devices", "Failed to publish device notification", map[string]any{
+			"kind":  ev.Kind,
+			"error": err.Error(),
+		})
+		return
+	}
+
+	select {
+	case res := <-feedback:
+		if res.Err != nil {
+			logger.WarnCF("devices", "Device notification delivery error", map[string]any{
+				"kind":  ev.Kind,
+				"error": res.Err.Error(),
+			})
+		} else {
+			logger.InfoCF("devices", "Device notification delivered", map[string]any{
+				"kind":   ev.Kind,
+				"action": ev.Action,
+				"to":     platform,
+			})
+		}
+	case <-pubCtx.Done():
+		logger.WarnCF("devices", "Device notification delivery timeout", map[string]any{
+			"kind": ev.Kind,
+		})
+	}
 }
 
 func parseLastChannel(lastChannel string) (platform, userID string) {
