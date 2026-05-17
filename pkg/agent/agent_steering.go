@@ -15,15 +15,35 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 	}
 
 	response, err := al.processMessage(ctx, msg)
-	al.publishResponseOrError(ctx, msg.Channel, msg.ChatID, msg.SessionKey, response, err)
+	if pubErr := al.publishResponseOrError(ctx, msg.Channel, msg.ChatID, msg.SessionKey, response, err); pubErr != nil {
+		logger.ErrorCF("agent", "Failed to publish response in processMessageSync",
+			map[string]any{
+				"channel":     msg.Channel,
+				"chat_id":     msg.ChatID,
+				"session_key": msg.SessionKey,
+				"error":       pubErr.Error(),
+			})
+	}
 }
 
 func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.InboundMessage) {
 	// Process the initial message
 	response, err := al.processMessage(ctx, initialMsg)
 	if err != nil {
-		if !al.maybePublishError(ctx, initialMsg.Channel, initialMsg.ChatID, initialMsg.SessionKey, err) {
-			return // context canceled
+		if pubErr := al.maybePublishError(
+			ctx,
+			initialMsg.Channel,
+			initialMsg.ChatID,
+			initialMsg.SessionKey,
+			err,
+		); pubErr != nil {
+			logger.ErrorCF("agent", "Failed to publish error in steering loop",
+				map[string]any{
+					"channel": initialMsg.Channel,
+					"chat_id": initialMsg.ChatID,
+					"error":   pubErr.Error(),
+				})
+			return
 		}
 		response = ""
 	}
@@ -77,7 +97,21 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 
 	// Publish final response
 	if finalResponse != "" {
-		al.PublishResponseIfNeeded(ctx, target.Channel, target.ChatID, target.SessionKey, finalResponse)
+		if err := al.PublishResponseIfNeeded(
+			ctx,
+			target.Channel,
+			target.ChatID,
+			target.SessionKey,
+			finalResponse,
+		); err != nil {
+			logger.ErrorCF("agent", "Failed to publish final response in steering loop",
+				map[string]any{
+					"channel":     target.Channel,
+					"chat_id":     target.ChatID,
+					"session_key": target.SessionKey,
+					"error":       err.Error(),
+				})
+		}
 	}
 }
 

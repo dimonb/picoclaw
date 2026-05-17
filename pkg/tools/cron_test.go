@@ -41,14 +41,15 @@ func (s *stubJobExecutor) ProcessDirectWithChannel(
 func (s *stubJobExecutor) PublishResponseIfNeeded(
 	_ context.Context,
 	channel, chatID, sessionKey, response string,
-) {
+) error {
 	if s.alreadySent {
-		return
+		return nil
 	}
 	s.publishedResp = response
 	s.publishedChan = channel
 	s.publishedChatID = chatID
 	s.publishedKey = sessionKey
+	return nil
 }
 
 func newTestCronToolWithExecutorAndConfig(t *testing.T, executor JobExecutor, cfg *config.Config) *CronTool {

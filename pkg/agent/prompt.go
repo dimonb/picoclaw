@@ -111,6 +111,7 @@ type PromptBuildRequest struct {
 	ChatID            string
 	SenderID          string
 	SenderDisplayName string
+	SenderUsername    string
 	MessageID         string
 	ReplyToMessageID  string
 

@@ -32,6 +32,24 @@ type ReactionCapable interface {
 	ReactToMessage(ctx context.Context, chatID, messageID string) (undo func(), err error)
 }
 
+// ReactionSupport describes which emojis a channel accepts for explicit
+// tool-driven reactions. AnyUnicode reports that the channel accepts any
+// emoji; Allowed lists the specific whitelist when AnyUnicode is false.
+type ReactionSupport struct {
+	AnyUnicode bool
+	Allowed    []string
+}
+
+// MessageReactor is implemented by channels that support setting an explicit
+// emoji reaction on a specific message and can describe their supported
+// emoji set. Distinct from ReactionCapable, which is the inbound visual
+// indicator with a hardcoded emoji and undo.
+type MessageReactor interface {
+	SetMessageReaction(ctx context.Context, chatID, messageID, emoji string) error
+	RemoveMessageReaction(ctx context.Context, chatID, messageID, emoji string) error
+	GetReactionSupport(ctx context.Context, chatID string) ReactionSupport
+}
+
 // PlaceholderCapable — channels that can send a placeholder message
 // (e.g. "Thinking... 💭") that will later be edited to the actual response.
 // The channel MUST also implement MessageEditor for the placeholder to be useful.

@@ -55,4 +55,13 @@ type ChannelManager interface {
 	// outboundCtx carries topic/thread info needed for channels that use
 	// scoped tracker keys (e.g., Telegram forum topics); may be nil.
 	DismissToolFeedback(ctx context.Context, channel, chatID string, outboundCtx *bus.InboundContext)
+
+	// SetMessageReaction sets an explicit emoji reaction on a specific message.
+	SetMessageReaction(ctx context.Context, channel, chatID, messageID, emoji string) error
+
+	// RemoveMessageReaction removes an emoji reaction from a message.
+	RemoveMessageReaction(ctx context.Context, channel, chatID, messageID, emoji string) error
+
+	// GetReactionSupport returns the emoji policy of the channel.
+	GetReactionSupport(ctx context.Context, channel, chatID string) channels.ReactionSupport
 }

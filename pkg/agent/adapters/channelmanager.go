@@ -49,3 +49,21 @@ func (a *channelManagerAdapter) DismissToolFeedback(
 ) {
 	a.inner.DismissToolFeedback(ctx, channel, chatID, outboundCtx)
 }
+
+func (a *channelManagerAdapter) SetMessageReaction(
+	ctx context.Context, channel, chatID, messageID, emoji string,
+) error {
+	return a.inner.SetMessageReaction(ctx, channel, chatID, messageID, emoji)
+}
+
+func (a *channelManagerAdapter) RemoveMessageReaction(
+	ctx context.Context, channel, chatID, messageID, emoji string,
+) error {
+	return a.inner.RemoveMessageReaction(ctx, channel, chatID, messageID, emoji)
+}
+
+func (a *channelManagerAdapter) GetReactionSupport(
+	ctx context.Context, channel, chatID string,
+) channels.ReactionSupport {
+	return a.inner.GetReactionSupport(ctx, channel, chatID)
+}

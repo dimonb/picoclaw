@@ -12,6 +12,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/cron"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -20,7 +21,7 @@ type JobExecutor interface {
 	ProcessDirectWithChannel(ctx context.Context, content, sessionKey, channel, chatID string) (string, error)
 	// PublishResponseIfNeeded sends response to the outbound bus only when the
 	// agent did not already deliver content through the message tool in this round.
-	PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string)
+	PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string) error
 }
 
 // CronTool provides scheduling capabilities for the agent
@@ -310,12 +311,26 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 	if job.Payload.Command != "" {
 		if !t.execEnabled || t.execTool == nil {
 			output := "Error executing scheduled command: command execution is disabled"
-			pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer pubCancel()
-			t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-				Context: bus.NewOutboundContext(channel, chatID, ""),
-				Content: output,
+			feedback := make(chan bus.DeliveryResult, 1)
+			_ = t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+				Context:  bus.NewOutboundContext(channel, chatID, ""),
+				Content:  output,
+				Feedback: feedback,
 			})
+			select {
+			case res := <-feedback:
+				if res.Err != nil {
+					logger.WarnCF(
+						"cron",
+						"Scheduled job error notification delivery failed",
+						map[string]any{"error": res.Err.Error()},
+					)
+				}
+			case <-pubCtx.Done():
+				logger.WarnCF("cron", "Scheduled job error notification delivery timeout", map[string]any{})
+			}
 			return "ok"
 		}
 
@@ -333,12 +348,22 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 			output = fmt.Sprintf("Scheduled command '%s' executed:\n%s", job.Payload.Command, result.ForLLM)
 		}
 
-		pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		pubCtx, pubCancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer pubCancel()
-		t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
-			Context: bus.NewOutboundContext(channel, chatID, ""),
-			Content: output,
+		feedback := make(chan bus.DeliveryResult, 1)
+		_ = t.msgBus.PublishOutbound(pubCtx, bus.OutboundMessage{
+			Context:  bus.NewOutboundContext(channel, chatID, ""),
+			Content:  output,
+			Feedback: feedback,
 		})
+		select {
+		case res := <-feedback:
+			if res.Err != nil {
+				logger.WarnCF("cron", "Scheduled job output delivery failed", map[string]any{"error": res.Err.Error()})
+			}
+		case <-pubCtx.Done():
+			logger.WarnCF("cron", "Scheduled job output delivery timeout", map[string]any{})
+		}
 		return "ok"
 	}
 
@@ -357,7 +382,9 @@ func (t *CronTool) ExecuteJob(ctx context.Context, job *cron.CronJob) string {
 	}
 
 	if response != "" {
-		t.executor.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, response)
+		if pubErr := t.executor.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, response); pubErr != nil {
+			logger.WarnCF("cron", "Scheduled job response delivery failed", map[string]any{"error": pubErr.Error()})
+		}
 	}
 	return "ok"
 }

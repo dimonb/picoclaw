@@ -147,9 +147,9 @@ func registerSharedTools(
 					waitDelivery = wd
 				}
 
-				var feedback chan []string
+				var feedback chan bus.DeliveryResult
 				if waitDelivery {
-					feedback = make(chan []string, 1)
+					feedback = make(chan bus.DeliveryResult, 1)
 				}
 
 				outboundCtx := bus.NewOutboundContext(channel, chatID, replyToMessageID)
@@ -174,11 +174,14 @@ func registerSharedTools(
 
 				if waitDelivery {
 					select {
-					case ids, ok := <-feedback:
+					case res, ok := <-feedback:
 						if !ok {
-							return nil, fmt.Errorf("delivery failed")
+							return nil, fmt.Errorf("delivery failed: feedback channel closed")
 						}
-						return ids, nil
+						if res.Err != nil {
+							return nil, fmt.Errorf("delivery failed: %w", res.Err)
+						}
+						return res.IDs, nil
 					case <-pubCtx.Done():
 						return nil, fmt.Errorf("delivery timeout")
 					}
@@ -190,20 +193,25 @@ func registerSharedTools(
 		}
 		if cfg.Tools.IsToolEnabled("reaction") {
 			reactionTool := tools.NewReactionTool()
-			reactionTool.SetReactionCallback(func(ctx context.Context, channel, chatID, messageID string) error {
+			reactionTool.SetReactionCallback(func(ctx context.Context, channel, chatID, messageID, emoji string) error {
 				if al.channelManager == nil {
 					return fmt.Errorf("channel manager not configured")
 				}
-				ch, ok := al.channelManager.GetChannel(channel)
-				if !ok {
-					return fmt.Errorf("channel %s not found", channel)
+				return al.channelManager.SetMessageReaction(ctx, channel, chatID, messageID, emoji)
+			})
+			reactionTool.SetRemoveReactionCallback(
+				func(ctx context.Context, channel, chatID, messageID, emoji string) error {
+					if al.channelManager == nil {
+						return fmt.Errorf("channel manager not configured")
+					}
+					return al.channelManager.RemoveMessageReaction(ctx, channel, chatID, messageID, emoji)
+				},
+			)
+			reactionTool.SetSupportFunc(func(ctx context.Context, channel, chatID string) channels.ReactionSupport {
+				if al.channelManager == nil {
+					return channels.ReactionSupport{}
 				}
-				rc, ok := ch.(channels.ReactionCapable)
-				if !ok {
-					return fmt.Errorf("channel %s does not support reactions", channel)
-				}
-				_, err := rc.ReactToMessage(ctx, chatID, messageID)
-				return err
+				return al.channelManager.GetReactionSupport(ctx, channel, chatID)
 			})
 			agent.Tools.Register(reactionTool)
 		}

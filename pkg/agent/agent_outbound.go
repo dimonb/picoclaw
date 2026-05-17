@@ -17,12 +17,17 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
-func (al *AgentLoop) maybePublishError(ctx context.Context, channel, chatID, sessionKey string, err error) bool {
+func (al *AgentLoop) maybePublishError(ctx context.Context, channel, chatID, sessionKey string, err error) error {
 	if errors.Is(err, context.Canceled) {
-		return false
+		return nil
 	}
-	al.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, fmt.Sprintf("Error processing message: %v", err))
-	return true
+	return al.PublishResponseIfNeeded(
+		ctx,
+		channel,
+		chatID,
+		sessionKey,
+		fmt.Sprintf("Error processing message: %v", err),
+	)
 }
 
 func (al *AgentLoop) publishResponseOrError(
@@ -30,19 +35,19 @@ func (al *AgentLoop) publishResponseOrError(
 	channel, chatID, sessionKey string,
 	response string,
 	err error,
-) {
+) error {
 	if err != nil {
-		if !al.maybePublishError(ctx, channel, chatID, sessionKey, err) {
-			return
+		if pubErr := al.maybePublishError(ctx, channel, chatID, sessionKey, err); pubErr != nil {
+			return pubErr
 		}
-		response = ""
+		return nil
 	}
-	al.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, response)
+	return al.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, response)
 }
 
-func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string) {
+func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string) error {
 	if response == "" {
-		return
+		return nil
 	}
 
 	alreadySentToSameChat := false
@@ -61,7 +66,7 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 			"Skipped outbound (message tool already sent to same chat)",
 			map[string]any{"channel": channel, "chat_id": chatID},
 		)
-		return
+		return nil
 	}
 
 	msg := bus.OutboundMessage{
@@ -71,13 +76,88 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 	if sessionKey != "" {
 		msg.ContextUsage = computeContextUsage(al.agentForSession(sessionKey), sessionKey)
 	}
-	al.bus.PublishOutbound(ctx, msg)
+
+	// Synchronous send when the destination channel is registered with the
+	// ChannelManager so we can capture the channel-native message ID and
+	// stamp it onto the previously-persisted assistant row (deferred
+	// delivery path used by processMessageSync / runTurnWithSteering).
+	// Without a registered channel there is nothing to deliver to and no
+	// ID to capture — fall back to fire-and-forget publish.
+	if al.channelManager != nil {
+		if _, ok := al.channelManager.GetChannel(channel); ok {
+			res, err := al.PublishOutboundSync(ctx, msg)
+			if err != nil {
+				logger.WarnCF("agent", "Failed to publish outbound response",
+					map[string]any{
+						"channel": channel,
+						"chat_id": chatID,
+						"error":   err.Error(),
+					})
+				return err
+			}
+			if res.Err != nil {
+				logger.WarnCF("agent", "Outbound response delivery error",
+					map[string]any{
+						"channel": channel,
+						"chat_id": chatID,
+						"error":   res.Err.Error(),
+					})
+				return res.Err
+			}
+			if len(res.IDs) > 0 && res.IDs[0] != "" && sessionKey != "" {
+				al.stampPendingAssistantRef(ctx, sessionKey, res.IDs[0])
+			}
+			logger.InfoCF("agent", "Published outbound response",
+				map[string]any{
+					"channel":     channel,
+					"chat_id":     chatID,
+					"content_len": len(response),
+				})
+			return nil
+		}
+	}
+	if err := al.bus.PublishOutbound(ctx, msg); err != nil {
+		logger.WarnCF("agent", "Failed to publish outbound response",
+			map[string]any{
+				"channel": channel,
+				"chat_id": chatID,
+				"error":   err.Error(),
+			})
+		return err
+	}
 	logger.InfoCF("agent", "Published outbound response",
 		map[string]any{
 			"channel":     channel,
 			"chat_id":     chatID,
 			"content_len": len(response),
 		})
+	return nil
+}
+
+// stampPendingAssistantRef stamps the delivered channel-native ref onto the
+// assistant row that the agent loop parked for this session in
+// pendingAssistantStamps. No-op when nothing is pending (e.g. direct
+// PublishResponseIfNeeded paths that don't go through a turn) or when the
+// ContextManager is unavailable. Best-effort: stamp failure is logged.
+func (al *AgentLoop) stampPendingAssistantRef(ctx context.Context, sessionKey, channelRef string) {
+	v, ok := al.pendingAssistantStamps.LoadAndDelete(sessionKey)
+	if !ok {
+		return
+	}
+	rowID, _ := v.(int64)
+	if rowID == 0 || al.contextManager == nil {
+		return
+	}
+	stampCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if err := al.contextManager.UpdateChannelMessageID(stampCtx, sessionKey, rowID, channelRef); err != nil {
+		logger.WarnCF("agent", "stamp assistant delivered ref failed", map[string]any{
+			"session_key":        sessionKey,
+			"message_id":         rowID,
+			"channel_message_id": channelRef,
+			"error":              err.Error(),
+		})
+	}
 }
 
 func (al *AgentLoop) targetReasoningChannelID(channelName string) (chatID string) {
@@ -258,5 +338,46 @@ func (al *AgentLoop) handleReasoning(
 				"error":   err.Error(),
 			})
 		}
+	}
+}
+
+func (al *AgentLoop) PublishOutboundSync(ctx context.Context, msg bus.OutboundMessage) (bus.DeliveryResult, error) {
+	if msg.Feedback == nil {
+		msg.Feedback = make(chan bus.DeliveryResult, 1)
+	}
+	return awaitDelivery(ctx, msg.Feedback, al.bus.PublishOutbound(ctx, msg))
+}
+
+func (al *AgentLoop) PublishOutboundMediaSync(
+	ctx context.Context,
+	msg bus.OutboundMediaMessage,
+) (bus.DeliveryResult, error) {
+	if msg.Feedback == nil {
+		msg.Feedback = make(chan bus.DeliveryResult, 1)
+	}
+	return awaitDelivery(ctx, msg.Feedback, al.bus.PublishOutboundMedia(ctx, msg))
+}
+
+// awaitDelivery is the shared blocking-on-feedback tail used by the
+// PublishOutbound*Sync helpers. publishErr is the error returned by the
+// publish call itself; when non-nil no feedback is expected. Otherwise we
+// block on the feedback channel until a result arrives, the channel is
+// closed (legacy failure signal), or ctx is canceled.
+func awaitDelivery(
+	ctx context.Context,
+	feedback <-chan bus.DeliveryResult,
+	publishErr error,
+) (bus.DeliveryResult, error) {
+	if publishErr != nil {
+		return bus.DeliveryResult{}, publishErr
+	}
+	select {
+	case res, ok := <-feedback:
+		if !ok {
+			return bus.DeliveryResult{}, fmt.Errorf("delivery failed: feedback channel closed")
+		}
+		return res, nil
+	case <-ctx.Done():
+		return bus.DeliveryResult{}, ctx.Err()
 	}
 }

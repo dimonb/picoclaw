@@ -206,9 +206,16 @@ func (s *Store) AddMessageWithReasoning(
 	metadata *protocoltypes.MessageMetadata,
 	tokenCount int,
 ) (*Message, error) {
-	result, err := s.db.ExecContext(ctx,
+	result, err := s.db.ExecContext(
+		ctx,
 		"INSERT INTO messages (conversation_id, role, content, reasoning_content, channel_message_id, metadata, token_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		convID, role, content, reasoningContent, channelMessageID, encodeMetadata(metadata), tokenCount,
+		convID,
+		role,
+		content,
+		reasoningContent,
+		channelMessageID,
+		encodeMetadata(metadata),
+		tokenCount,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("add message: %w", err)
@@ -260,7 +267,8 @@ func (s *Store) GetMessageByChannelMessageID(ctx context.Context, channelMessage
 	var m Message
 	var createdAt string
 	var metadataRaw sql.NullString
-	err := s.db.QueryRowContext(ctx,
+	err := s.db.QueryRowContext(
+		ctx,
 		"SELECT message_id, conversation_id, role, content, reasoning_content, channel_message_id, metadata, token_count, created_at FROM messages WHERE channel_message_id = ?",
 		channelMessageID,
 	).Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.ReasoningContent, &m.ChannelMessageID, &metadataRaw, &m.TokenCount, &createdAt)
@@ -314,9 +322,16 @@ func (s *Store) AddMessageWithPartsAndReasoning(
 	// Derive readable content from Parts for FTS5 indexing and summary formatting
 	readableContent := partsToReadableContent(parts)
 
-	result, err := tx.ExecContext(ctx,
+	result, err := tx.ExecContext(
+		ctx,
 		"INSERT INTO messages (conversation_id, role, content, reasoning_content, channel_message_id, metadata, token_count) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		convID, role, readableContent, reasoningContent, channelMessageID, encodeMetadata(metadata), tokenCount,
+		convID,
+		role,
+		readableContent,
+		reasoningContent,
+		channelMessageID,
+		encodeMetadata(metadata),
+		tokenCount,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("add message: %w", err)
@@ -457,8 +472,8 @@ func (s *Store) GetMessageByID(ctx context.Context, messageID int64) (*Message, 
 
 // UpdateMessageChannelMessageID stamps an opaque channel-native ref onto an
 // existing message row. Used by the agent loop after an outbound assistant
-// message is delivered, so the persisted row becomes fetchable / editable
-// by its delivered ref.
+// message is delivered out-of-band, so the persisted row becomes fetchable
+// / editable by its delivered ref.
 func (s *Store) UpdateMessageChannelMessageID(ctx context.Context, messageID int64, channelMessageID string) error {
 	result, err := s.db.ExecContext(
 		ctx,
@@ -684,7 +699,8 @@ func (s *Store) LinkSummaryToMessages(ctx context.Context, summaryID string, mes
 
 // GetSummarySourceMessages retrieves source messages for a summary.
 func (s *Store) GetSummarySourceMessages(ctx context.Context, summaryID string) ([]Message, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.db.QueryContext(
+		ctx,
 		`SELECT m.message_id, m.conversation_id, m.role, m.content, m.reasoning_content, m.channel_message_id, m.metadata, m.token_count, m.created_at
 		 FROM summary_messages sm
 		 JOIN messages m ON m.message_id = sm.message_id

@@ -10,12 +10,13 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/telemetry"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/trace"
 )
 
 // CallLLM performs an LLM call with fallback support, hook invocation, and retry logic.
@@ -355,10 +356,12 @@ func (p *Pipeline) CallLLM(
 			)
 
 			if retry == 0 && !constants.IsInternalChannel(ts.channel) {
-				al.bus.PublishOutbound(ctx, outboundMessageForTurn(
+				pubCtx, pubCancel := context.WithTimeout(ctx, 10*time.Second)
+				_, _ = al.PublishOutboundSync(pubCtx, outboundMessageForTurn(
 					ts,
 					"Context window exceeded. Compressing history and retrying...",
 				))
+				pubCancel()
 			}
 
 			if compactErr := p.ContextManager.Compact(ctx, &CompactRequest{
@@ -449,10 +452,12 @@ func (p *Pipeline) CallLLM(
 		// Pico tool-call turns publish their reasoning/content/tool summary as a
 		// structured sequence after the tool-call payload is normalized below.
 	} else if ts.channel == "pico" {
-		go al.publishPicoReasoning(turnCtx, reasoningContent, ts.chatID)
+		// Use the parent ctx (not turnCtx) so the publish goroutine can
+		// finish after runTurn returns and turnCtx is canceled.
+		go al.publishPicoReasoning(ctx, reasoningContent, ts.chatID)
 	} else {
 		go al.handleReasoning(
-			turnCtx,
+			ctx,
 			reasoningContent,
 			ts.channel,
 			al.targetReasoningChannelID(ts.channel),

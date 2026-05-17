@@ -110,6 +110,7 @@ type Message struct {
 type MessageMetadata struct {
 	SenderID          string `json:"sender_id,omitempty"`
 	SenderDisplayName string `json:"sender_display_name,omitempty"`
+	SenderUsername    string `json:"sender_username,omitempty"`
 	ReplyToMessageID  string `json:"reply_to_message_id,omitempty"`
 }
 
@@ -118,7 +119,10 @@ func (m *MessageMetadata) IsEmpty() bool {
 	if m == nil {
 		return true
 	}
-	return m.SenderID == "" && m.SenderDisplayName == "" && m.ReplyToMessageID == ""
+	return m.SenderID == "" &&
+		m.SenderDisplayName == "" &&
+		m.SenderUsername == "" &&
+		m.ReplyToMessageID == ""
 }
 
 type ToolDefinition struct {

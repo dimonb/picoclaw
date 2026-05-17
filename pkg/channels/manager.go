@@ -207,6 +207,67 @@ func (m *Manager) DismissToolFeedback(
 	dismissTrackedToolFeedbackMessage(ctx, ch, chatID, outboundCtx)
 }
 
+// SetMessageReaction delegates to the channel's MessageReactor implementation
+// if available. Returns an error if the channel does not support explicit
+// emoji reactions. On success, drops any pending inbound-reaction undo for
+// the (channel, chatID) so the inbound visual indicator does not later
+// clear the explicitly set emoji at outbound send time.
+func (m *Manager) SetMessageReaction(ctx context.Context, channelName, chatID, messageID, emoji string) error {
+	ch, ok := m.GetChannel(channelName)
+	if !ok {
+		return fmt.Errorf("channel %s not found", channelName)
+	}
+	reactor, ok := ch.(MessageReactor)
+	if !ok {
+		return fmt.Errorf("channel %s does not support explicit message reactions", channelName)
+	}
+	if err := reactor.SetMessageReaction(ctx, chatID, messageID, emoji); err != nil {
+		return err
+	}
+	m.dropInboundReactionUndo(channelName, chatID)
+	return nil
+}
+
+// RemoveMessageReaction delegates to the channel's MessageReactor. Also
+// drops any pending inbound-reaction undo so it doesn't later re-clear or
+// no-op over the explicit removal.
+func (m *Manager) RemoveMessageReaction(ctx context.Context, channelName, chatID, messageID, emoji string) error {
+	ch, ok := m.GetChannel(channelName)
+	if !ok {
+		return fmt.Errorf("channel %s not found", channelName)
+	}
+	reactor, ok := ch.(MessageReactor)
+	if !ok {
+		return fmt.Errorf("channel %s does not support explicit message reactions", channelName)
+	}
+	if err := reactor.RemoveMessageReaction(ctx, chatID, messageID, emoji); err != nil {
+		return err
+	}
+	m.dropInboundReactionUndo(channelName, chatID)
+	return nil
+}
+
+// dropInboundReactionUndo discards (without invoking) any pending undo for
+// the inbound visual reaction on the given channel/chat. Used when the
+// agent has explicitly taken over the reaction state via the reaction tool.
+func (m *Manager) dropInboundReactionUndo(channel, chatID string) {
+	m.reactionUndos.LoadAndDelete(channel + ":" + chatID)
+}
+
+// GetReactionSupport returns the emoji policy of the channel, or a zero
+// value if the channel does not implement MessageReactor.
+func (m *Manager) GetReactionSupport(ctx context.Context, channelName, chatID string) ReactionSupport {
+	ch, ok := m.GetChannel(channelName)
+	if !ok {
+		return ReactionSupport{}
+	}
+	reactor, ok := ch.(MessageReactor)
+	if !ok {
+		return ReactionSupport{}
+	}
+	return reactor.GetReactionSupport(ctx, chatID)
+}
+
 func prepareToolFeedbackMessageContent(ch Channel, content string) string {
 	prepared := strings.TrimSpace(content)
 	if prepared == "" {
@@ -994,29 +1055,39 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 				chunks = splitOutboundMessageContent(msg, maxLen)
 			}
 
-			// Step 3: Send all chunks
+			// Step 3: Send all chunks. On the first failure we stop so we
+			// don't keep hammering a degraded channel and we deliver the
+			// feedback promptly. If earlier chunks succeeded, the
+			// DeliveryResult carries both the IDs of the successful prefix
+			// AND a non-nil Err — i.e. partial delivery. Receivers should
+			// treat IDs as authoritative for the chunks that actually
+			// reached the user; whether the partial state is recoverable
+			// (resend tail, surface error, drop) is the receiver's call.
+			// Today every receiver (agent_outbound.PublishResponseIfNeeded,
+			// agent.maybeDeliverFinalResponse, integration message tool
+			// wait_delivery) treats Err != nil as a hard failure and
+			// discards IDs — acceptable because long-message splits are
+			// rare and the alternative (persist the row with a partial
+			// ref) is worse: subsequent edit/react tool calls would only
+			// target the first chunk.
 			var allMsgIDs []string
-			anyFailed := false
+			var lastSendErr error
 			for _, chunk := range chunks {
 				chunkMsg := msg
 				chunkMsg.Content = chunk
-				msgIDs, ok := m.sendWithRetry(ctx, name, w, chunkMsg)
+				msgIDs, err := m.sendWithRetry(ctx, name, w, chunkMsg)
 				allMsgIDs = append(allMsgIDs, msgIDs...)
-				if !ok {
-					anyFailed = true
+				if err != nil {
+					lastSendErr = err
+					break
 				}
 			}
 
 			if msg.Feedback != nil {
-				if anyFailed {
-					// Closing without sending signals delivery failure to the receiver.
-					close(msg.Feedback)
-				} else {
-					select {
-					case msg.Feedback <- allMsgIDs:
-					default:
-						// non-blocking if receiver is not waiting
-					}
+				select {
+				case msg.Feedback <- bus.DeliveryResult{IDs: allMsgIDs, Err: lastSendErr}:
+				default:
+					// non-blocking if receiver is not waiting
 				}
 			}
 		case <-ctx.Done():
@@ -1056,16 +1127,16 @@ func (m *Manager) sendWithRetry(
 	name string,
 	w *channelWorker,
 	msg bus.OutboundMessage,
-) ([]string, bool) {
+) ([]string, error) {
 	// Rate limit: wait for token
 	if err := w.limiter.Wait(ctx); err != nil {
 		// ctx canceled, shutting down
-		return nil, false
+		return nil, err
 	}
 
 	// Pre-send: stop typing and try to edit placeholder
 	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
-		return msgIDs, true
+		return msgIDs, nil
 	}
 
 	var lastErr error
@@ -1073,7 +1144,7 @@ func (m *Manager) sendWithRetry(
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		msgIDs, lastErr = w.ch.Send(ctx, msg)
 		if lastErr == nil {
-			return msgIDs, true
+			return msgIDs, nil
 		}
 
 		// Permanent failures — don't retry
@@ -1092,7 +1163,7 @@ func (m *Manager) sendWithRetry(
 			case <-time.After(rateLimitDelay):
 				continue
 			case <-ctx.Done():
-				return nil, false
+				return nil, ctx.Err()
 			}
 		}
 
@@ -1101,7 +1172,7 @@ func (m *Manager) sendWithRetry(
 		select {
 		case <-time.After(backoff):
 		case <-ctx.Done():
-			return nil, false
+			return nil, ctx.Err()
 		}
 	}
 
@@ -1113,7 +1184,7 @@ func (m *Manager) sendWithRetry(
 		"retries": maxRetries,
 	})
 
-	return nil, false
+	return nil, lastErr
 }
 
 func dispatchLoop[M any](
@@ -1215,7 +1286,13 @@ func (m *Manager) runMediaWorker(ctx context.Context, name string, w *channelWor
 			if !ok {
 				return
 			}
-			_, _ = m.sendMediaWithRetry(ctx, name, w, msg)
+			ids, err := m.sendMediaWithRetry(ctx, name, w, msg)
+			if msg.Feedback != nil {
+				select {
+				case msg.Feedback <- bus.DeliveryResult{IDs: ids, Err: err}:
+				default:
+				}
+			}
 		case <-ctx.Done():
 			return
 		}

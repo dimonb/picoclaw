@@ -390,6 +390,20 @@ func formatMessagesForLog(messages []providers.Message) string {
 	sb.WriteString("[\n")
 	for i, msg := range messages {
 		fmt.Fprintf(&sb, "  [%d] Role: %s\n", i, msg.Role)
+		if msg.MessageID != "" {
+			fmt.Fprintf(&sb, "  MessageID: %s\n", msg.MessageID)
+		}
+		if md := msg.Metadata; md != nil && !md.IsEmpty() {
+			if md.SenderDisplayName != "" {
+				fmt.Fprintf(&sb, "  SenderDisplayName: %s\n", md.SenderDisplayName)
+			}
+			if md.SenderID != "" {
+				fmt.Fprintf(&sb, "  SenderID: %s\n", md.SenderID)
+			}
+			if md.ReplyToMessageID != "" {
+				fmt.Fprintf(&sb, "  ReplyToMessageID: %s\n", md.ReplyToMessageID)
+			}
+		}
 		if len(msg.ToolCalls) > 0 {
 			sb.WriteString("  ToolCalls:\n")
 			for _, tc := range msg.ToolCalls {

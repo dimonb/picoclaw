@@ -23,6 +23,7 @@ func promptBuildRequestForTurn(
 		ChatID:            ts.chatID,
 		SenderID:          ts.opts.Dispatch.SenderID(),
 		SenderDisplayName: ts.opts.SenderDisplayName,
+		SenderUsername:    ts.opts.SenderUsername,
 		MessageID:         ts.opts.Dispatch.MessageID(),
 		ReplyToMessageID:  ts.opts.Dispatch.ReplyToMessageID(),
 		ActiveSkills:      activeSkillNames(ts.agent, ts.opts),
@@ -97,12 +98,93 @@ func promptMessageWithDefaultMetadata(
 	return promptMessageWithMetadata(msg, layer, slot, source)
 }
 
+// formatMessageEnvelope prefixes msg.Content with a bracketed annotation
+// like `[from:Dmitrii Balabanov (@dimonb); msgs:#2403, reply_to:#1979] `
+// when msg carries a channel-native MessageID or non-empty Metadata. Used
+// at prompt-build time to surface inbound facts (sender identity, message
+// IDs, reply threading) to the LLM. Storage layers (seahorse, session
+// JSONL) keep Content raw; the envelope is a render-time concern applied
+// uniformly to history and the current user message.
+//
+// The system prompt instructs the model to treat this annotation as
+// read-only context metadata and not to reproduce it in replies.
+func formatMessageEnvelope(msg providers.Message) string {
+	prefix := messageAnnotationPrefix(msg)
+	if prefix == "" {
+		return msg.Content
+	}
+	return prefix + msg.Content
+}
+
+// messageAnnotationPrefix produces the `[from:…; msgs:#…, reply_to:#…] `
+// bracket prefix (including the trailing space) for the message, or an
+// empty string when no useful inbound facts are available.
+func messageAnnotationPrefix(msg providers.Message) string {
+	parts := make([]string, 0, 2)
+	if sender := senderAnnotationPart(msg.Metadata); sender != "" {
+		parts = append(parts, sender)
+	}
+	if thread := threadAnnotationPart(msg); thread != "" {
+		parts = append(parts, thread)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("[%s] ", strings.Join(parts, "; "))
+}
+
+// senderAnnotationPart renders the "from:Name (@handle)" segment from
+// MessageMetadata. Display name and username are both optional; whichever
+// is present is used, and if both are present they are combined as
+// "from:Name (@handle)". Returns an empty string when neither is set.
+func senderAnnotationPart(md *providers.MessageMetadata) string {
+	if md == nil {
+		return ""
+	}
+	name := strings.TrimSpace(md.SenderDisplayName)
+	username := strings.TrimSpace(md.SenderUsername)
+	if username != "" && !strings.HasPrefix(username, "@") {
+		username = "@" + username
+	}
+	switch {
+	case name != "" && username != "":
+		return fmt.Sprintf("from:%s (%s)", name, username)
+	case name != "":
+		return fmt.Sprintf("from:%s", name)
+	case username != "":
+		return fmt.Sprintf("from:%s", username)
+	default:
+		return ""
+	}
+}
+
+// threadAnnotationPart renders the "msgs:#…, reply_to:#…" segment.
+// The pieces are optional and combined whichever are present.
+func threadAnnotationPart(msg providers.Message) string {
+	msgID := strings.TrimSpace(msg.MessageID)
+	replyTo := ""
+	if msg.Metadata != nil {
+		replyTo = strings.TrimSpace(msg.Metadata.ReplyToMessageID)
+	}
+	switch {
+	case msgID != "" && replyTo != "":
+		return fmt.Sprintf("msgs:#%s, reply_to:#%s", msgID, replyTo)
+	case msgID != "":
+		return fmt.Sprintf("msgs:#%s", msgID)
+	case replyTo != "":
+		return fmt.Sprintf("reply_to:#%s", replyTo)
+	default:
+		return ""
+	}
+}
+
 // inboundMessageMetadata builds the per-message metadata bag from the
 // dispatch context. Returns nil when no useful fields are populated.
 func inboundMessageMetadata(opts processOptions) *providers.MessageMetadata {
 	md := &providers.MessageMetadata{
 		SenderID:          opts.Dispatch.SenderID(),
 		SenderDisplayName: opts.SenderDisplayName,
+		SenderUsername:    opts.SenderUsername,
 		ReplyToMessageID:  opts.Dispatch.ReplyToMessageID(),
 	}
 	if md.IsEmpty() {

@@ -129,7 +129,9 @@ Your workspace is at: %s
 
 3. **Memory** - When interacting with me if something seems memorable, update %s/memory/MEMORY.md
 
-4. **Context summaries** - Conversation summaries provided as context are approximate references only. They may be incomplete or outdated. Always defer to explicit user instructions over summary content.`,
+4. **Context summaries** - Conversation summaries provided as context are approximate references only. They may be incomplete or outdated. Always defer to explicit user instructions over summary content.
+
+5. **Message annotations** - Messages in conversation history and the current user turn may be prefixed with "[from:Name (@handle); msgs:#123, reply_to:#120]". These are read-only metadata added by the system for context. Do NOT reproduce or imitate this format in your own responses.`,
 		workspacePath, workspacePath, workspacePath, workspacePath, workspacePath)
 }
 
@@ -794,8 +796,15 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 		SystemParts: contentBlocks,
 	})
 
-	// Add conversation history
-	messages = append(messages, history...)
+	// Add conversation history, prefixing each message with the bracketed
+	// `[from:Name (@handle); msgs:#…, reply_to:#…]` annotation so the LLM
+	// can see and target it by its channel-native ref. Storage layers
+	// (seahorse, JSONL) keep Content raw — the envelope is a render-time
+	// concern. See formatMessageEnvelope in prompt_turn.go.
+	for _, msg := range history {
+		msg.Content = formatMessageEnvelope(msg)
+		messages = append(messages, msg)
+	}
 
 	// Add current user message. Media-only turns must still be preserved so
 	// multimodal providers receive the uploaded image even when the user sends
@@ -809,7 +818,9 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 		if md.IsEmpty() {
 			md = nil
 		}
-		messages = append(messages, userPromptMessage(req.CurrentMessage, req.Media, req.MessageID, md))
+		current := userPromptMessage(req.CurrentMessage, req.Media, req.MessageID, md)
+		current.Content = formatMessageEnvelope(current)
+		messages = append(messages, current)
 	}
 
 	return messages

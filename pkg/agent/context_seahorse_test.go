@@ -1126,7 +1126,7 @@ func TestInboundMetadataRoundTrip(t *testing.T) {
 		ReplyToMessageID:  replyID,
 	}
 
-	if _, err := mgr.Ingest(ctx, &IngestRequest{
+	if _, ingestErr := mgr.Ingest(ctx, &IngestRequest{
 		SessionKey: sessionKey,
 		Message: protocoltypes.Message{
 			Role:      "user",
@@ -1134,8 +1134,8 @@ func TestInboundMetadataRoundTrip(t *testing.T) {
 			MessageID: msgID,
 			Metadata:  md,
 		},
-	}); err != nil {
-		t.Fatalf("Ingest: %v", err)
+	}); ingestErr != nil {
+		t.Fatalf("Ingest: %v", ingestErr)
 	}
 
 	store := engine.GetRetrieval().Store()
@@ -1162,27 +1162,38 @@ func TestInboundMetadataRoundTrip(t *testing.T) {
 	if resp == nil {
 		t.Fatal("Assemble returned nil")
 	}
-	wantAttrs := []string{
-		fmt.Sprintf(`id="%s"`, msgID),
-		`sender="Alice"`,
-		fmt.Sprintf(`reply_to="%s"`, replyID),
-	}
-	found := false
-	for _, h := range resp.History {
-		hit := true
-		for _, attr := range wantAttrs {
-			if !strings.Contains(h.Content, attr) {
-				hit = false
-				break
-			}
-		}
-		if hit {
-			found = true
+	// Assemble now returns raw Content with MessageID + Metadata preserved
+	// on the providers.Message; the `<msg …>` envelope is a render-time
+	// concern applied later by BuildMessages via formatMessageEnvelope.
+	var assembled *protocoltypes.Message
+	for i := range resp.History {
+		if resp.History[i].MessageID == msgID {
+			assembled = &resp.History[i]
 			break
 		}
 	}
-	if !found {
-		t.Errorf("Assemble history missing one of %v in any message; got %+v", wantAttrs, resp.History)
+	if assembled == nil {
+		t.Fatalf("Assemble history missing message with MessageID=%q; got %+v", msgID, resp.History)
+	}
+	if assembled.Content != "follow-up question" {
+		t.Errorf("Assemble returned wrapped Content; want raw %q, got %q", "follow-up question", assembled.Content)
+	}
+	if assembled.Metadata == nil ||
+		assembled.Metadata.SenderID != md.SenderID ||
+		assembled.Metadata.SenderDisplayName != md.SenderDisplayName ||
+		assembled.Metadata.ReplyToMessageID != md.ReplyToMessageID {
+		t.Errorf("Assemble metadata mismatch: got %+v want %+v", assembled.Metadata, md)
+	}
+	envelope := formatMessageEnvelope(*assembled)
+	wantAttrs := []string{
+		"from:Alice",
+		fmt.Sprintf("msgs:#%s", msgID),
+		fmt.Sprintf("reply_to:#%s", replyID),
+	}
+	for _, attr := range wantAttrs {
+		if !strings.Contains(envelope, attr) {
+			t.Errorf("formatMessageEnvelope output missing %q; got %q", attr, envelope)
+		}
 	}
 
 	fetchRes := seahorse.NewFetchMessageTool(engine.GetRetrieval()).
@@ -1198,10 +1209,10 @@ func TestInboundMetadataRoundTrip(t *testing.T) {
 }
 
 // TestAssistantDeliveredRefStamp pins the outbound assistant ingest path:
-// Pipeline.Finalize persists an assistant message without a channel ref,
-// agent.go later stamps the delivered ref via
-// ContextManager.UpdateChannelMessageID, and the row becomes fetchable by
-// that ref via fetch_message.
+// agent.deliverFinalResponse first sync-publishes the assistant content,
+// captures the delivered channel-native ref, sets it as MessageID on the
+// providers.Message and only then ingests the row, so the persisted
+// message is immediately fetchable by that ref.
 func TestAssistantDeliveredRefStamp(t *testing.T) {
 	engine, err := seahorse.NewEngine(seahorse.Config{
 		DBPath: t.TempDir() + "/test.db",
@@ -1221,8 +1232,9 @@ func TestAssistantDeliveredRefStamp(t *testing.T) {
 	resp, err := mgr.Ingest(ctx, &IngestRequest{
 		SessionKey: sessionKey,
 		Message: protocoltypes.Message{
-			Role:    "assistant",
-			Content: assistantContent,
+			Role:      "assistant",
+			Content:   assistantContent,
+			MessageID: deliveredRef,
 		},
 	})
 	if err != nil {
@@ -1234,28 +1246,18 @@ func TestAssistantDeliveredRefStamp(t *testing.T) {
 	rowID := resp.MessageIDs[0]
 
 	store := engine.GetRetrieval().Store()
-	if before, err := store.GetMessageByChannelMessageID(ctx, deliveredRef); err != nil {
-		t.Fatalf("pre-stamp lookup: %v", err)
-	} else if before != nil {
-		t.Fatalf("pre-stamp: row already addressable by %q", deliveredRef)
-	}
-
-	if err := mgr.UpdateChannelMessageID(ctx, sessionKey, rowID, deliveredRef); err != nil {
-		t.Fatalf("UpdateChannelMessageID: %v", err)
-	}
-
 	got, err := store.GetMessageByChannelMessageID(ctx, deliveredRef)
 	if err != nil {
-		t.Fatalf("post-stamp lookup: %v", err)
+		t.Fatalf("post-ingest lookup: %v", err)
 	}
 	if got == nil {
 		t.Fatalf("assistant row not addressable by delivered ref %q", deliveredRef)
 	}
 	if got.ID != rowID {
-		t.Errorf("post-stamp row ID = %d, want %d", got.ID, rowID)
+		t.Errorf("post-ingest row ID = %d, want %d", got.ID, rowID)
 	}
 	if got.Role != "assistant" || got.Content != assistantContent {
-		t.Errorf("post-stamp row mismatch: role=%q content=%q", got.Role, got.Content)
+		t.Errorf("post-ingest row mismatch: role=%q content=%q", got.Role, got.Content)
 	}
 
 	fetchRes := seahorse.NewFetchMessageTool(engine.GetRetrieval()).
@@ -1297,15 +1299,15 @@ func TestDispatchMessageIDPersists(t *testing.T) {
 
 	// userPromptMessage stamps Dispatch.MessageID() onto providers.Message.MessageID.
 	// Simulate that by ingesting the same shape Pipeline.SetupTurn would produce.
-	if _, err := mgr.Ingest(ctx, &IngestRequest{
+	if _, ingestErr := mgr.Ingest(ctx, &IngestRequest{
 		SessionKey: sessionKey,
 		Message: protocoltypes.Message{
 			Role:      "user",
 			Content:   wantContent,
 			MessageID: wantMsgID,
 		},
-	}); err != nil {
-		t.Fatalf("Ingest: %v", err)
+	}); ingestErr != nil {
+		t.Fatalf("Ingest: %v", ingestErr)
 	}
 
 	store := engine.GetRetrieval().Store()
@@ -1332,16 +1334,26 @@ func TestDispatchMessageIDPersists(t *testing.T) {
 		t.Fatal("Assemble returned nil")
 	}
 
-	wantTag := fmt.Sprintf(`<msg id="%s">`, wantMsgID)
-	found := false
-	for _, h := range resp.History {
-		if strings.Contains(h.Content, wantTag) && strings.Contains(h.Content, wantContent) {
-			found = true
+	// Assemble returns raw Content with MessageID preserved; the agent
+	// layer (BuildMessages → formatMessageEnvelope) is responsible for the
+	// `<msg id="…">…</msg>` wrap. Verify both halves of the contract.
+	var assembled *protocoltypes.Message
+	for i := range resp.History {
+		if resp.History[i].MessageID == wantMsgID {
+			assembled = &resp.History[i]
 			break
 		}
 	}
-	if !found {
-		t.Errorf("Assemble history missing %q wrapping %q; got %+v", wantTag, wantContent, resp.History)
+	if assembled == nil {
+		t.Fatalf("Assemble history missing message with MessageID=%q; got %+v", wantMsgID, resp.History)
+	}
+	if assembled.Content != wantContent {
+		t.Errorf("Assemble Content = %q, want raw %q", assembled.Content, wantContent)
+	}
+	envelope := formatMessageEnvelope(*assembled)
+	wantTag := fmt.Sprintf("msgs:#%s", wantMsgID)
+	if !strings.Contains(envelope, wantTag) || !strings.Contains(envelope, wantContent) {
+		t.Errorf("formatMessageEnvelope missing %q wrapping %q; got %q", wantTag, wantContent, envelope)
 	}
 
 	fetchRes := seahorse.NewFetchMessageTool(engine.GetRetrieval()).
