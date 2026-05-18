@@ -67,3 +67,9 @@ func (a *channelManagerAdapter) GetReactionSupport(
 ) channels.ReactionSupport {
 	return a.inner.GetReactionSupport(ctx, channel, chatID)
 }
+
+func (a *channelManagerAdapter) EditMessage(
+	ctx context.Context, channel, chatID, messageID, content string,
+) error {
+	return a.inner.EditMessage(ctx, channel, chatID, messageID, content)
+}

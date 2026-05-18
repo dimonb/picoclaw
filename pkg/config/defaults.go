@@ -421,6 +421,9 @@ func DefaultConfig() *Config {
 			EditFile: ToolConfig{
 				Enabled: true,
 			},
+			EditMessage: ToolConfig{
+				Enabled: true,
+			},
 			FindSkills: ToolConfig{
 				Enabled: true,
 			},

@@ -254,6 +254,20 @@ func (m *Manager) dropInboundReactionUndo(channel, chatID string) {
 	m.reactionUndos.LoadAndDelete(channel + ":" + chatID)
 }
 
+// EditMessage delegates to the channel's MessageEditor implementation if
+// available. Returns an error if the channel does not support editing.
+func (m *Manager) EditMessage(ctx context.Context, channelName, chatID, messageID, content string) error {
+	ch, ok := m.GetChannel(channelName)
+	if !ok {
+		return fmt.Errorf("channel %s not found", channelName)
+	}
+	editor, ok := ch.(MessageEditor)
+	if !ok {
+		return fmt.Errorf("channel %s does not support message editing", channelName)
+	}
+	return editor.EditMessage(ctx, chatID, messageID, content)
+}
+
 // GetReactionSupport returns the emoji policy of the channel, or a zero
 // value if the channel does not implement MessageReactor.
 func (m *Manager) GetReactionSupport(ctx context.Context, channelName, chatID string) ReactionSupport {
