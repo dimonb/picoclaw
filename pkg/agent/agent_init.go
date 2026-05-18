@@ -268,6 +268,16 @@ func registerSharedTools(
 			})
 			agent.Tools.Register(reactionTool)
 		}
+		if cfg.Tools.IsToolEnabled("edit_message") {
+			editMessageTool := tools.NewEditMessageTool()
+			editMessageTool.SetEditCallback(func(ctx context.Context, channel, chatID, messageID, content string) error {
+				if al.channelManager == nil {
+					return fmt.Errorf("channel manager not configured")
+				}
+				return al.channelManager.EditMessage(ctx, channel, chatID, messageID, content)
+			})
+			agent.Tools.Register(editMessageTool)
+		}
 
 		// Send file tool (outbound media via MediaStore — store injected later by SetMediaStore)
 		if cfg.Tools.IsToolEnabled("send_file") {

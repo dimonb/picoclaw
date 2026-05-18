@@ -114,6 +114,12 @@ func (m *recordingChannelManager) RemoveMessageReaction(
 	return nil
 }
 
+func (m *recordingChannelManager) EditMessage(
+	ctx context.Context, channel, chatID, messageID, content string,
+) error {
+	return nil
+}
+
 func newStartedTestChannelManager(
 	t *testing.T,
 	msgBus *bus.MessageBus,

@@ -67,4 +67,7 @@ type ChannelManager interface {
 
 	// GetReactionSupport returns the emoji policy of the channel.
 	GetReactionSupport(ctx context.Context, channel, chatID string) channels.ReactionSupport
+
+	// EditMessage edits a previously-sent message via the channel's editor.
+	EditMessage(ctx context.Context, channel, chatID, messageID, content string) error
 }

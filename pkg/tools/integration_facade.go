@@ -13,12 +13,14 @@ import (
 type (
 	SendCallbackWithContext  = integrationtools.SendCallbackWithContext
 	ReactionCallback         = integrationtools.ReactionCallback
+	EditMessageCallback      = integrationtools.EditMessageCallback
 	MCPManager               = integrationtools.MCPManager
 	MCPTool                  = integrationtools.MCPTool
 	FindSkillsTool           = integrationtools.FindSkillsTool
 	InstallSkillTool         = integrationtools.InstallSkillTool
 	MessageTool              = integrationtools.MessageTool
 	ReactionTool             = integrationtools.ReactionTool
+	EditMessageTool          = integrationtools.EditMessageTool
 	SendTTSTool              = integrationtools.SendTTSTool
 	APIKeyPool               = integrationtools.APIKeyPool
 	APIKeyIterator           = integrationtools.APIKeyIterator
@@ -56,6 +58,10 @@ func NewMessageTool() *MessageTool {
 
 func NewReactionTool() *ReactionTool {
 	return integrationtools.NewReactionTool()
+}
+
+func NewEditMessageTool() *EditMessageTool {
+	return integrationtools.NewEditMessageTool()
 }
 
 func NewSendTTSTool(provider tts.TTSProvider, store media.MediaStore) *SendTTSTool {
