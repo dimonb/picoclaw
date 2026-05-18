@@ -495,6 +495,10 @@ func (p *Pipeline) CallLLM(
 		if responseContent == "" && exec.response.ReasoningContent != "" && ts.channel != "pico" {
 			responseContent = exec.response.ReasoningContent
 		}
+		if cleaned, stripped := stripLeadingMessageAnnotations(responseContent); stripped != "" {
+			responseContent = cleaned
+			logStrippedMessageAnnotations(stripped)
+		}
 		if steerMsgs := al.dequeueSteeringMessagesForScope(ts.sessionKey); len(steerMsgs) > 0 {
 			logger.InfoCF("agent", "Steering arrived after direct LLM response; continuing turn",
 				map[string]any{
