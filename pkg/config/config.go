@@ -376,6 +376,11 @@ type TelegramSettings struct {
 	Streaming            StreamingConfig     `json:"streaming,omitempty"              yaml:"-"`
 	UseMarkdownV2        bool                `json:"use_markdown_v2"                  yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_USE_MARKDOWN_V2"`
 	AllowedReactionEmoji FlexibleStringSlice `json:"allowed_reaction_emoji,omitempty" yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOWED_REACTION_EMOJI"`
+	// DisableInboundReaction suppresses the automatic 👀 reaction the channel
+	// places on every inbound message via the ReactionCapable hook. Explicit
+	// reactions from the LLM `reaction` tool go through a separate path and
+	// are not affected.
+	DisableInboundReaction bool `json:"disable_inbound_reaction" yaml:"-" env:"PICOCLAW_CHANNELS_TELEGRAM_DISABLE_INBOUND_REACTION"`
 }
 
 type FeishuSettings struct {

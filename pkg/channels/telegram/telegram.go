@@ -30,6 +30,12 @@ import (
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
+// errInboundReactionDisabled is returned by ReactToMessage when the channel
+// is configured with DisableInboundReaction=true. The base receive path drops
+// the error (it only registers an undo when err == nil), so no further effort
+// is wasted on the suppressed auto-👀.
+var errInboundReactionDisabled = errors.New("telegram: inbound auto-reaction disabled by config")
+
 var (
 	reHeading    = regexp.MustCompile(`(?m)^#{1,6}\s+([^\n]+)`)
 	reBlockquote = regexp.MustCompile(`^>\s*(.*)$`)
@@ -530,8 +536,20 @@ func (c *TelegramChannel) DeleteMessage(ctx context.Context, chatID string, mess
 	})
 }
 
-// ReactToMessage implements channels.ReactionCapable.
+// ReactToMessage implements channels.ReactionCapable. The Telegram channel uses
+// this capability only to place the automatic 👀 reaction on inbound messages
+// (called from pkg/channels/base.go's receive path). Explicit reactions from
+// the LLM tool go through SetMessageReaction with a caller-supplied emoji and
+// are unaffected by DisableInboundReaction.
 func (c *TelegramChannel) ReactToMessage(ctx context.Context, chatID, messageID string) (undo func(), err error) {
+	if c.tgCfg != nil && c.tgCfg.DisableInboundReaction {
+		logger.DebugCF("telegram", "Skipping auto inbound reaction (disabled by config)",
+			map[string]any{
+				"chat_id":    chatID,
+				"message_id": messageID,
+			})
+		return nil, errInboundReactionDisabled
+	}
 	// Try parsing messageID as opaque reference
 	cid, _, mid, err := parseTelegramOpaqueID(messageID)
 	if err != nil {
