@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -370,6 +371,26 @@ func (s *SessionConfig) ApplyDmScope() {
 	case "global":
 		s.Dimensions = nil
 	}
+}
+
+// DeriveDmScope sets DmScope based on Dimensions when DmScope is empty.
+// This handles legacy/fresh configs that only have explicit Dimensions
+// without a corresponding DmScope value, ensuring the API response always
+// includes a dm_scope that matches the actual runtime dimensions.
+func (s *SessionConfig) DeriveDmScope() {
+	if s.DmScope != "" || len(s.Dimensions) == 0 {
+		return
+	}
+	switch {
+	case slices.Equal(s.Dimensions, []string{"chat", "sender"}):
+		s.DmScope = "per-channel-peer"
+	case slices.Equal(s.Dimensions, []string{"chat"}):
+		s.DmScope = "per-channel"
+	case slices.Equal(s.Dimensions, []string{"sender"}):
+		s.DmScope = "per-peer"
+	}
+	// Dimensions not matching any known scope mapping (custom array)
+	// is fine — DmScope stays empty and the UI can handle it.
 }
 
 // RoutingConfig controls the intelligent model routing feature.
@@ -1498,6 +1519,7 @@ func LoadConfig(path string) (*Config, error) {
 	}
 
 	cfg.Session.ApplyDmScope()
+	cfg.Session.DeriveDmScope()
 
 	return cfg, nil
 }
@@ -1720,6 +1742,8 @@ func ResetToDefaults(configPath string) error {
 		return fmt.Errorf("backup before reset: %w", err)
 	}
 	cfg := DefaultConfig()
+	cfg.Session.ApplyDmScope()
+	cfg.Session.DeriveDmScope()
 	if err := cfg.SecurityCopyFrom(configPath); err != nil {
 		logger.WarnF("could not preserve security config", map[string]any{"error": err})
 	}
