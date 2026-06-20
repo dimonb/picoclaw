@@ -321,6 +321,17 @@ var modelProviderOptionsByName = map[string]ModelProviderOption{
 		Priority:            52,
 		Aliases:             []string{"codexcli"},
 	},
+	"codex-ws": {
+		ID:                  "codex-ws",
+		DisplayName:         "Codex (WebSocket)",
+		IconSlug:            "openai",
+		Domain:              "openai.com",
+		EmptyAPIKeyAllowed:  true,
+		DefaultModelAllowed: true,
+		DefaultAuthMethod:   "oauth",
+		Priority:            51,
+		Aliases:             []string{"codexws"},
+	},
 	"ollama": {
 		ID:                  "ollama",
 		DisplayName:         "Ollama",
