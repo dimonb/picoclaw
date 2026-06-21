@@ -22,6 +22,12 @@ type Config struct {
 	DBPath                   string   `json:"dbPath"`
 	IgnoreSessionPatterns    []string `json:"ignoreSessionPatterns,omitempty"`
 	StatelessSessionPatterns []string `json:"statelessSessionPatterns,omitempty"`
+	// LeafSummaryCompression controls how aggressively leaf summaries are
+	// compressed. "relaxed" (default, empty) keeps any LLM summary smaller than
+	// its source segment, preserving detail. "strict" enforces the hard token
+	// target and escalates to the aggressive prompt / truncation on overshoot.
+	// See LeafCompressionRelaxed / LeafCompressionStrict.
+	LeafSummaryCompression string `json:"leafSummaryCompression,omitempty"`
 }
 
 // CompleteFn is the LLM completion function type.

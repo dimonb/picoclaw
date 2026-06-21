@@ -602,8 +602,8 @@ func (e *CompactionEngine) generateLeafSummary(
 		}
 	}
 
-	// Level 1 only succeeds if it actually reaches the requested target size.
-	if content != "" && tokenizer.EstimateMessageTokens(providers.Message{Content: content}) <= targetTokens {
+	// Accept level 1 per the configured compression policy.
+	if e.acceptLeafSummary(content, targetTokens, inputTokens) {
 		return content, nil
 	}
 
@@ -627,12 +627,28 @@ func (e *CompactionEngine) generateLeafSummary(
 			return "", err
 		}
 	}
-	if content != "" && tokenizer.EstimateMessageTokens(providers.Message{Content: content}) <= aggressiveTarget {
+	if e.acceptLeafSummary(content, aggressiveTarget, inputTokens) {
 		return content, nil
 	}
 
 	// Level 3: deterministic truncation
 	return truncateSummary(messages), nil
+}
+
+// acceptLeafSummary reports whether a generated leaf summary is good enough to
+// keep at the current escalation level. In strict mode the summary must fit
+// under the requested token target (upstream behavior); in relaxed mode
+// (default) it only needs to be smaller than its source segment, which keeps
+// richer summaries instead of escalating to the aggressive prompt or truncation.
+func (e *CompactionEngine) acceptLeafSummary(content string, target, inputTokens int) bool {
+	if content == "" {
+		return false
+	}
+	est := tokenizer.EstimateMessageTokens(providers.Message{Content: content})
+	if e.config.LeafSummaryCompression == LeafCompressionStrict {
+		return est <= target
+	}
+	return est < inputTokens
 }
 
 // generateCondensedSummary calls the LLM to generate a condensed summary with 3-level escalation.

@@ -28,3 +28,14 @@ const (
 	// for any realistic scenario. If exceeded, the issue is logged as a warning.
 	MaxCompactIterations int = 20
 )
+
+// Leaf summary compression modes for Config.LeafSummaryCompression.
+const (
+	// LeafCompressionRelaxed (default) accepts any leaf summary smaller than its
+	// source segment, preserving richer summaries. Empty string maps here.
+	LeafCompressionRelaxed = "relaxed"
+	// LeafCompressionStrict enforces the hard token target for leaf summaries
+	// (upstream behavior), escalating to the aggressive prompt or deterministic
+	// truncation whenever the LLM overshoots the target.
+	LeafCompressionStrict = "strict"
+)

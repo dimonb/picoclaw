@@ -23,10 +23,25 @@ type seahorseContextManager struct {
 	sessions session.SessionStore // for startup bootstrap
 }
 
+// seahorseManagerConfig is the optional context_manager_config block for the
+// seahorse backend (PICOCLAW_AGENTS_DEFAULTS_CONTEXT_MANAGER_CONFIG).
+type seahorseManagerConfig struct {
+	// LeafSummaryCompression: "relaxed" (default) or "strict". See seahorse.Config.
+	LeafSummaryCompression string `json:"leafSummaryCompression,omitempty"`
+}
+
 // newSeahorseContextManager creates a seahorse-backed ContextManager.
-func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager, error) {
+func newSeahorseContextManager(cfg json.RawMessage, al *AgentLoop) (ContextManager, error) {
 	if al == nil {
 		return nil, fmt.Errorf("seahorse: AgentLoop is required")
+	}
+
+	// Parse optional manager config (leafSummaryCompression, ...)
+	var mgrCfg seahorseManagerConfig
+	if len(cfg) > 0 {
+		if err := json.Unmarshal(cfg, &mgrCfg); err != nil {
+			return nil, fmt.Errorf("seahorse: parse context_manager_config: %w", err)
+		}
 	}
 
 	// Resolve workspace for DB path
@@ -39,7 +54,8 @@ func newSeahorseContextManager(_ json.RawMessage, al *AgentLoop) (ContextManager
 
 	// Create engine
 	engine, err := seahorse.NewEngine(seahorse.Config{
-		DBPath: dbPath,
+		DBPath:                 dbPath,
+		LeafSummaryCompression: mgrCfg.LeafSummaryCompression,
 	}, completeFn)
 	if err != nil {
 		return nil, fmt.Errorf("seahorse: create engine: %w", err)

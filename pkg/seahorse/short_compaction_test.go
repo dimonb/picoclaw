@@ -743,7 +743,41 @@ func TestGenerateLeafSummaryEscalationToAggressive(t *testing.T) {
 	}
 }
 
-func TestGenerateLeafSummaryEscalatesWhenLevel1MissesTarget(t *testing.T) {
+func TestGenerateLeafSummaryRelaxedKeepsAboveTargetSummary(t *testing.T) {
+	// Default (relaxed) mode: a level-1 summary that overshoots the token target
+	// but is still smaller than its source must be kept as-is, without escalating
+	// to the aggressive prompt.
+	normalContent := strings.Repeat("n", 1000) // ~404 tokens: above target (350), below input (1000)
+	var aggressiveCalled bool
+	complete := func(ctx context.Context, prompt string, opts CompleteOptions) (string, error) {
+		if contains(prompt, "Aggressive summary policy") {
+			aggressiveCalled = true
+			return "aggressive", nil
+		}
+		return normalContent, nil
+	}
+
+	s := openTestStore(t)
+	ce, _ := newTestCompactionEngineWithStore(s, complete)
+
+	msgs := []Message{
+		{Role: "user", Content: "hello world", TokenCount: 500},
+		{Role: "assistant", Content: "response", TokenCount: 500},
+	}
+
+	content, err := ce.generateLeafSummary(context.Background(), msgs, "")
+	if err != nil {
+		t.Fatalf("generateLeafSummary: %v", err)
+	}
+	if content != normalContent {
+		t.Fatalf("expected relaxed mode to keep the level-1 summary, got len=%d", len(content))
+	}
+	if aggressiveCalled {
+		t.Fatal("did not expect aggressive retry in relaxed mode when level 1 beats input size")
+	}
+}
+
+func TestGenerateLeafSummaryStrictEscalatesWhenLevel1MissesTarget(t *testing.T) {
 	var calls []string
 	normalContent := strings.Repeat("n", 1000)    // ~404 tokens: below input, above target
 	aggressiveContent := strings.Repeat("a", 450) // ~184 tokens: within aggressive target
@@ -758,6 +792,7 @@ func TestGenerateLeafSummaryEscalatesWhenLevel1MissesTarget(t *testing.T) {
 
 	s := openTestStore(t)
 	ce, _ := newTestCompactionEngineWithStore(s, escalateComplete)
+	ce.config.LeafSummaryCompression = LeafCompressionStrict
 
 	msgs := []Message{
 		{Role: "user", Content: "hello world", TokenCount: 500},
@@ -776,7 +811,7 @@ func TestGenerateLeafSummaryEscalatesWhenLevel1MissesTarget(t *testing.T) {
 	}
 }
 
-func TestGenerateLeafSummaryAcceptsContentAtTargetBoundary(t *testing.T) {
+func TestGenerateLeafSummaryStrictAcceptsContentAtTargetBoundary(t *testing.T) {
 	exactTargetContent := strings.Repeat("x", 488) // (488 + 12) * 2 / 5 = 200 tokens
 	var aggressiveCalled bool
 	complete := func(ctx context.Context, prompt string, opts CompleteOptions) (string, error) {
@@ -788,6 +823,7 @@ func TestGenerateLeafSummaryAcceptsContentAtTargetBoundary(t *testing.T) {
 
 	s := openTestStore(t)
 	ce, _ := newTestCompactionEngineWithStore(s, complete)
+	ce.config.LeafSummaryCompression = LeafCompressionStrict
 
 	msgs := []Message{
 		{Role: "user", Content: "hello world", TokenCount: 286},
