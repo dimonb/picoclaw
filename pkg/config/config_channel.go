@@ -748,7 +748,7 @@ func InitChannelList(channels ChannelsConfig) error {
 				return fmt.Errorf("channel %q failed to decode settings: %w", name, err)
 			}
 			// Apply env overrides for channel-specific fields via struct tags
-			if err := env.Parse(target); err != nil {
+			if err := env.ParseWithOptions(target, envParseOptions()); err != nil {
 				// Non-fatal: some env vars may not apply
 			}
 			applyTelegramStreamingEnvCompat(target)

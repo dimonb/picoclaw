@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,31 @@ import (
 	"github.com/sipeed/picoclaw/pkg/logger"
 	providercommon "github.com/sipeed/picoclaw/pkg/providers/common"
 )
+
+// rawMessageType is json.RawMessage's reflect type, used to register a custom
+// env parser below.
+var rawMessageType = reflect.TypeOf(json.RawMessage{})
+
+// envParseOptions returns env.Options with custom parsers for types the
+// caarlos0/env loader cannot decode from a string on its own. Without this,
+// a json.RawMessage field carrying an env tag (e.g. ContextManagerConfig)
+// makes env.Parse fail with "strconv.ParseUint ... invalid syntax", because it
+// treats the field as a []uint8 slice rather than a raw JSON blob.
+func envParseOptions() env.Options {
+	return env.Options{
+		FuncMap: map[reflect.Type]env.ParserFunc{
+			rawMessageType: func(v string) (interface{}, error) {
+				if v == "" {
+					return json.RawMessage(nil), nil
+				}
+				if !json.Valid([]byte(v)) {
+					return nil, fmt.Errorf("invalid JSON: %q", v)
+				}
+				return json.RawMessage(v), nil
+			},
+		},
+	}
+}
 
 // rrCounter is a global counter for round-robin load balancing across models.
 var rrCounter atomic.Uint64
@@ -1543,7 +1569,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	gatewayHostBeforeEnv := cfg.Gateway.Host
 
-	if err = env.Parse(cfg); err != nil {
+	if err = env.ParseWithOptions(cfg, envParseOptions()); err != nil {
 		return nil, err
 	}
 	applySkillsRegistryEnvCompat(cfg)
