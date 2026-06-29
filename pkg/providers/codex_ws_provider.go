@@ -24,6 +24,12 @@ const (
 	wsSessionIdleTimeout     = 10 * time.Minute
 	wsSessionCleanupInterval = 2 * time.Minute
 	wsRetryTimeout           = 30 * time.Second
+	// wsWriteTimeout bounds a single WriteMessage. Without it a wedged
+	// connection (peer stopped reading, TCP send buffer full) blocks the
+	// write — and the whole agent turn — forever: socket I/O does not observe
+	// ctx, and the only other deadline (the read deadline below) never applies
+	// because we never reach the read phase.
+	wsWriteTimeout = 30 * time.Second
 )
 
 // ---------- request structs ----------
@@ -260,6 +266,9 @@ func (p *CodexWSProvider) cleanupIdleSessions() {
 
 func (p *CodexWSProvider) closeSession(sess *wsSessionState) {
 	if sess != nil && sess.conn != nil {
+		// Best-effort close frame, bounded so a wedged connection can't block
+		// teardown forever.
+		_ = sess.conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		_ = sess.conn.WriteMessage(websocket.CloseMessage,
 			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""))
 		_ = sess.conn.Close()
@@ -369,6 +378,11 @@ func (p *CodexWSProvider) sendToSession(sess *wsSessionState, req wsRequest) err
 	if err != nil {
 		return err
 	}
+	// Bound the write so a wedged connection can't hang the turn indefinitely.
+	// On timeout the connection is unusable; the caller's retry loop closes it
+	// and reconnects.
+	_ = sess.conn.SetWriteDeadline(time.Now().Add(wsWriteTimeout))
+	defer sess.conn.SetWriteDeadline(time.Time{})
 	return sess.conn.WriteMessage(websocket.TextMessage, data)
 }
 
