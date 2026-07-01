@@ -164,6 +164,21 @@ func ClassifyError(err error, provider, model string) *FailoverError {
 		}
 	}
 
+	// Usage/rate limit reported as a typed error (e.g. codex-ws 429). Classify as
+	// a retriable rate limit and carry the server reset time so the fallback
+	// chain can cool this provider down for exactly that long.
+	var usageLimit *UsageLimitError
+	if errors.As(err, &usageLimit) {
+		return &FailoverError{
+			Reason:   FailoverRateLimit,
+			Provider: provider,
+			Model:    model,
+			Status:   429,
+			ResetsAt: usageLimit.ResetsAt,
+			Wrapped:  err,
+		}
+	}
+
 	msg := strings.ToLower(err.Error())
 
 	// Concrete transport errors should continue the fallback chain even when

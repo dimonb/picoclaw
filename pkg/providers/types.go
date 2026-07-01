@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 )
@@ -102,6 +103,11 @@ type FailoverError struct {
 	Provider string
 	Model    string
 	Status   int
+	// ResetsAt, when non-zero, is the server-provided time at which the limit is
+	// expected to reset (from a 429/usage-limit response). The fallback chain
+	// uses it to cool the provider down for exactly that long instead of the
+	// computed backoff curve.
+	ResetsAt time.Time
 	Wrapped  error
 }
 
@@ -119,6 +125,36 @@ func (e *FailoverError) Unwrap() error {
 func (e *FailoverError) IsRetriable() bool {
 	return e.Reason != FailoverFormat && e.Reason != FailoverContextOverflow
 }
+
+// UsageLimitError indicates a provider rejected a request because a usage or
+// rate limit was reached (HTTP 429). Providers should return this (wrapped with
+// %w) so callers can (a) fail fast to a fallback instead of retrying the same
+// provider, and (b) honor the server-provided reset time for cooldown.
+//
+// Its Error() string intentionally contains "usage limit reached (429)" so that
+// even text-based classification matches when errors.As is not used.
+type UsageLimitError struct {
+	Provider string
+	Message  string
+	// ResetsAt is the time the limit is expected to reset; zero if the server
+	// did not provide one.
+	ResetsAt time.Time
+	Wrapped  error
+}
+
+func (e *UsageLimitError) Error() string {
+	msg := e.Message
+	if msg == "" {
+		msg = "usage limit reached"
+	}
+	if !e.ResetsAt.IsZero() {
+		return fmt.Sprintf("usage limit reached (429): %s (resets_at=%s)",
+			msg, e.ResetsAt.UTC().Format(time.RFC3339))
+	}
+	return fmt.Sprintf("usage limit reached (429): %s", msg)
+}
+
+func (e *UsageLimitError) Unwrap() error { return e.Wrapped }
 
 // ModelConfig holds primary model and fallback list.
 type ModelConfig struct {

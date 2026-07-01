@@ -310,7 +310,13 @@ func (fc *FallbackChain) ExecuteCandidate(
 		}
 
 		// Retriable error: mark failure and continue to next candidate.
-		fc.cooldown.MarkFailure(cooldownKey, failErr.Reason)
+		// When the provider told us when the limit resets (429/usage limit),
+		// cool it down for exactly that long instead of the backoff curve.
+		if !failErr.ResetsAt.IsZero() {
+			fc.cooldown.MarkUnavailableUntil(cooldownKey, failErr.ResetsAt, failErr.Reason)
+		} else {
+			fc.cooldown.MarkFailure(cooldownKey, failErr.Reason)
+		}
 		subSpan.RecordError(failErr)
 		subSpan.SetStatus(codes.Error, failErr.Error())
 		subSpan.End()

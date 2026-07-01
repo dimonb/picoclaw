@@ -8,6 +8,9 @@ import (
 
 const (
 	defaultFailureWindow = 24 * time.Hour
+	// maxExplicitCooldown caps a server-provided reset time so a bogus/huge
+	// resets_at cannot disable a provider for an unreasonable amount of time.
+	maxExplicitCooldown = 6 * time.Hour
 )
 
 // CooldownTracker manages per-provider cooldown state for the fallback chain.
@@ -63,6 +66,39 @@ func (ct *CooldownTracker) MarkFailure(provider string, reason FailoverReason) {
 	} else {
 		entry.CooldownEnd = now.Add(calculateStandardCooldown(entry.ErrorCount))
 	}
+}
+
+// MarkUnavailableUntil records a failure but sets the cooldown to an explicit
+// time (e.g. a server-provided 429 reset), rather than the computed backoff
+// curve. Failure counters still advance so escalation/observability keep
+// working. A reset time in the past falls back to the standard curve, and a
+// far-future one is capped at maxExplicitCooldown.
+func (ct *CooldownTracker) MarkUnavailableUntil(provider string, until time.Time, reason FailoverReason) {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+
+	now := ct.nowFunc()
+	entry := ct.getOrCreate(provider)
+
+	// 24h failure window reset: if no failure in failureWindow, reset counters.
+	if !entry.LastFailure.IsZero() && now.Sub(entry.LastFailure) > ct.failureWindow {
+		entry.ErrorCount = 0
+		entry.FailureCounts = make(map[FailoverReason]int)
+	}
+
+	entry.ErrorCount++
+	entry.FailureCounts[reason]++
+	entry.LastFailure = now
+
+	cooldownUntil := until
+	if !cooldownUntil.After(now) {
+		// No usable reset time — fall back to the standard escalating curve.
+		cooldownUntil = now.Add(calculateStandardCooldown(entry.ErrorCount))
+	}
+	if capUntil := now.Add(maxExplicitCooldown); cooldownUntil.After(capUntil) {
+		cooldownUntil = capUntil
+	}
+	entry.CooldownEnd = cooldownUntil
 }
 
 // MarkSuccess resets all counters and cooldowns for a provider.

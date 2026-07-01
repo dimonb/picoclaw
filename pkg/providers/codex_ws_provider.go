@@ -3,6 +3,7 @@ package providers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -124,13 +125,114 @@ type wsEvent struct {
 	OutputIndex int            `json:"output_index"`
 	ItemID      string         `json:"item_id,omitempty"`
 	Delta       string         `json:"delta,omitempty"`
+	Error       *wsErrorObj    `json:"error,omitempty"`
+	StatusCode  int            `json:"status_code,omitempty"`
 }
 
 type wsResponseObj struct {
-	ID     string        `json:"id"`
-	Status string        `json:"status"`
+	ID     string         `json:"id"`
+	Status string         `json:"status"`
 	Output []wsOutputItem `json:"output"`
-	Usage  wsUsage       `json:"usage"`
+	Usage  wsUsage        `json:"usage"`
+	Error  *wsErrorObj    `json:"error,omitempty"`
+}
+
+// wsErrorObj is the server's error payload, delivered either as a top-level
+// {"type":"error", ...} event or nested inside a failed response. Example:
+//
+//	{"type":"error","status_code":429,
+//	 "error":{"type":"usage_limit_reached","message":"The usage limit has been reached",
+//	          "plan_type":"plus","resets_at":1782926326,"resets_in_seconds":5238}}
+type wsErrorObj struct {
+	Type            string `json:"type"`
+	Message         string `json:"message"`
+	PlanType        string `json:"plan_type,omitempty"`
+	ResetsAt        int64  `json:"resets_at,omitempty"`         // epoch seconds
+	ResetsInSeconds int64  `json:"resets_in_seconds,omitempty"` // relative fallback
+}
+
+// wsServerError marks an application-level rejection from the Codex server (as
+// opposed to a transport/connection failure). Reconnecting does not help, so
+// chatStream must fail fast to the fallback chain rather than retry.
+type wsServerError struct {
+	StatusCode int
+	Msg        string
+}
+
+func (e *wsServerError) Error() string {
+	if e.StatusCode > 0 {
+		return fmt.Sprintf("codex ws: server error (status %d): %s", e.StatusCode, e.Msg)
+	}
+	return fmt.Sprintf("codex ws: server error: %s", e.Msg)
+}
+
+// isTerminalServerError reports whether err is a server-side rejection that a
+// reconnect+retry cannot fix (usage limit or a failed response).
+func isTerminalServerError(err error) bool {
+	var ule *UsageLimitError
+	if errors.As(err, &ule) {
+		return true
+	}
+	var wse *wsServerError
+	return errors.As(err, &wse)
+}
+
+// isUsageLimit reports whether an error payload / status is a 429 usage limit.
+func isUsageLimit(e *wsErrorObj, statusCode int) bool {
+	if statusCode == 429 {
+		return true
+	}
+	if e == nil {
+		return false
+	}
+	t := strings.ToLower(e.Type)
+	return strings.Contains(t, "usage_limit") || strings.Contains(t, "rate_limit")
+}
+
+// usageLimitResetsAt derives an absolute reset time from the payload, preferring
+// the absolute resets_at epoch, then the relative resets_in_seconds.
+func usageLimitResetsAt(e *wsErrorObj) time.Time {
+	if e == nil {
+		return time.Time{}
+	}
+	if e.ResetsAt > 0 {
+		return time.Unix(e.ResetsAt, 0)
+	}
+	if e.ResetsInSeconds > 0 {
+		return time.Now().Add(time.Duration(e.ResetsInSeconds) * time.Second)
+	}
+	return time.Time{}
+}
+
+// wsErrorToGoError converts a top-level {"type":"error"} event into a typed Go
+// error: *UsageLimitError for 429/usage limits, *wsServerError otherwise.
+func wsErrorToGoError(e *wsErrorObj, statusCode int) error {
+	if isUsageLimit(e, statusCode) {
+		ule := &UsageLimitError{Provider: "codex-ws", ResetsAt: usageLimitResetsAt(e)}
+		if e != nil {
+			ule.Message = e.Message
+		}
+		return ule
+	}
+	msg := "unknown"
+	if e != nil {
+		if e.Message != "" {
+			msg = e.Message
+		} else if e.Type != "" {
+			msg = e.Type
+		}
+	}
+	return &wsServerError{StatusCode: statusCode, Msg: msg}
+}
+
+// responseFailedToGoError converts a failed response carrying an error object
+// into a typed Go error. Returns nil when there is no error payload, so a plain
+// failed response keeps its previous (non-erroring) behavior.
+func responseFailedToGoError(r *wsResponseObj) error {
+	if r == nil || r.Error == nil {
+		return nil
+	}
+	return wsErrorToGoError(r.Error, 0)
 }
 
 type wsOutputItem struct {
@@ -477,13 +579,32 @@ func (p *CodexWSProvider) drainStream(
 				onItem(item)
 			}
 
-		case "response.completed", "response.failed", "response.incomplete":
+		case "error":
+			// Top-level server error (e.g. 429 usage_limit_reached). Surface it
+			// immediately instead of blocking on the read deadline.
+			err = wsErrorToGoError(evt.Error, evt.StatusCode)
+			return
+
+		case "response.completed", "response.incomplete":
 			if evt.Response != nil {
 				if evt.Response.ID != "" {
 					responseID = evt.Response.ID
 				}
 				usage = evt.Response.Usage
 			}
+			return
+
+		case "response.failed":
+			if evt.Response != nil {
+				if evt.Response.ID != "" {
+					responseID = evt.Response.ID
+				}
+				usage = evt.Response.Usage
+			}
+			// Only turn a failed response into an error when it carries an error
+			// payload (e.g. a usage limit delivered this way); otherwise keep the
+			// prior behavior of returning whatever was already streamed.
+			err = responseFailedToGoError(evt.Response)
 			return
 		}
 	}
@@ -700,6 +821,12 @@ func (p *CodexWSProvider) chatStream(
 		}
 		respID, usage, lastErr = p.drainStream(sess, onText, onItem)
 		if lastErr == nil {
+			break
+		}
+		// Server-side rejection (usage limit / failed response): reconnecting
+		// would just hit the same error. Fail fast so the fallback chain can
+		// switch providers immediately instead of burning the retry deadline.
+		if isTerminalServerError(lastErr) {
 			break
 		}
 	}
