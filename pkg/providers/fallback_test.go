@@ -696,3 +696,212 @@ func TestFallbackExhaustedError_Message(t *testing.T) {
 		t.Error("expected non-empty error message")
 	}
 }
+
+// Primary times out once, then succeeds on the in-place retry — the fallback
+// must never be reached.
+func TestFallback_PrimaryTimeout_RetriedInPlaceThenSucceeds(t *testing.T) {
+	ct := NewCooldownTracker()
+	fc := NewFallbackChain(ct, nil)
+	fc.SetPrimaryTimeoutRetries(1)
+
+	candidates := []FallbackCandidate{
+		makeCandidate("codex-ws", "gpt-5.5"),
+		makeCandidate("openai", "glm-5.2"),
+	}
+
+	var primaryCalls, fallbackCalls int
+	run := func(ctx context.Context, provider, model string) (*LLMResponse, error) {
+		switch provider {
+		case "codex-ws":
+			primaryCalls++
+			if primaryCalls == 1 {
+				return nil, errors.New("codex ws: write tcp ...: i/o timeout")
+			}
+			return &LLMResponse{Content: "from primary", FinishReason: "stop"}, nil
+		default:
+			fallbackCalls++
+			return &LLMResponse{Content: "from fallback", FinishReason: "stop"}, nil
+		}
+	}
+
+	result, err := fc.Execute(context.Background(), candidates, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Provider != "codex-ws" {
+		t.Errorf("provider = %q, want codex-ws", result.Provider)
+	}
+	if result.Response.Content != "from primary" {
+		t.Errorf("content = %q, want 'from primary'", result.Response.Content)
+	}
+	if primaryCalls != 2 {
+		t.Errorf("primaryCalls = %d, want 2 (initial + in-place retry)", primaryCalls)
+	}
+	if fallbackCalls != 0 {
+		t.Errorf("fallbackCalls = %d, want 0 (fallback must not be reached)", fallbackCalls)
+	}
+	if len(result.Attempts) != 1 {
+		t.Errorf("attempts = %d, want 1 (the timed-out attempt)", len(result.Attempts))
+	}
+	// Success resets cooldown; the in-place retry must not have escalated it.
+	if got := ct.FailureCount(ModelKey("codex-ws", "gpt-5.5"), FailoverTimeout); got != 0 {
+		t.Errorf("primary FailureCount = %d, want 0 after success", got)
+	}
+}
+
+// Primary keeps timing out; after exhausting in-place retries it advances to the
+// fallback. The primary must be marked failed exactly once (not once per retry).
+func TestFallback_PrimaryTimeout_ExhaustsThenFallback(t *testing.T) {
+	ct := NewCooldownTracker()
+	fc := NewFallbackChain(ct, nil)
+	fc.SetPrimaryTimeoutRetries(2)
+
+	candidates := []FallbackCandidate{
+		makeCandidate("codex-ws", "gpt-5.5"),
+		makeCandidate("openai", "glm-5.2"),
+	}
+
+	var primaryCalls, fallbackCalls int
+	run := func(ctx context.Context, provider, model string) (*LLMResponse, error) {
+		switch provider {
+		case "codex-ws":
+			primaryCalls++
+			return nil, errors.New("request timeout")
+		default:
+			fallbackCalls++
+			return &LLMResponse{Content: "from fallback", FinishReason: "stop"}, nil
+		}
+	}
+
+	result, err := fc.Execute(context.Background(), candidates, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Provider != "openai" {
+		t.Errorf("provider = %q, want openai", result.Provider)
+	}
+	if primaryCalls != 3 {
+		t.Errorf("primaryCalls = %d, want 3 (initial + 2 in-place retries)", primaryCalls)
+	}
+	if fallbackCalls != 1 {
+		t.Errorf("fallbackCalls = %d, want 1", fallbackCalls)
+	}
+	// 3 primary attempts recorded before advancing.
+	if len(result.Attempts) != 3 {
+		t.Errorf("attempts = %d, want 3", len(result.Attempts))
+	}
+	// Cooldown marked once, not once per in-place retry.
+	if got := ct.FailureCount(ModelKey("codex-ws", "gpt-5.5"), FailoverTimeout); got != 1 {
+		t.Errorf("primary FailureCount = %d, want 1", got)
+	}
+}
+
+// A non-timeout retriable error on the primary advances immediately — in-place
+// retry is timeout-specific.
+func TestFallback_PrimaryNonTimeout_NotRetriedInPlace(t *testing.T) {
+	ct := NewCooldownTracker()
+	fc := NewFallbackChain(ct, nil)
+	fc.SetPrimaryTimeoutRetries(2)
+
+	candidates := []FallbackCandidate{
+		makeCandidate("codex-ws", "gpt-5.5"),
+		makeCandidate("openai", "glm-5.2"),
+	}
+
+	var primaryCalls, fallbackCalls int
+	run := func(ctx context.Context, provider, model string) (*LLMResponse, error) {
+		switch provider {
+		case "codex-ws":
+			primaryCalls++
+			return nil, errors.New("rate limit exceeded")
+		default:
+			fallbackCalls++
+			return &LLMResponse{Content: "from fallback", FinishReason: "stop"}, nil
+		}
+	}
+
+	result, err := fc.Execute(context.Background(), candidates, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Provider != "openai" {
+		t.Errorf("provider = %q, want openai", result.Provider)
+	}
+	if primaryCalls != 1 {
+		t.Errorf("primaryCalls = %d, want 1 (no in-place retry on non-timeout)", primaryCalls)
+	}
+	if fallbackCalls != 1 {
+		t.Errorf("fallbackCalls = %d, want 1", fallbackCalls)
+	}
+}
+
+// A timeout on a fallback (non-primary) candidate must not be retried in place —
+// only the primary gets in-place retries.
+func TestFallback_FallbackTimeout_NotRetriedInPlace(t *testing.T) {
+	ct := NewCooldownTracker()
+	fc := NewFallbackChain(ct, nil)
+	fc.SetPrimaryTimeoutRetries(2)
+
+	candidates := []FallbackCandidate{
+		makeCandidate("codex-ws", "gpt-5.5"),
+		makeCandidate("openai", "glm-5.2"),
+	}
+
+	var primaryCalls, fallbackCalls int
+	run := func(ctx context.Context, provider, model string) (*LLMResponse, error) {
+		switch provider {
+		case "codex-ws":
+			primaryCalls++
+			return nil, errors.New("rate limit exceeded") // advance immediately
+		default:
+			fallbackCalls++
+			return nil, errors.New("request timeout")
+		}
+	}
+
+	_, err := fc.Execute(context.Background(), candidates, run)
+	if err == nil {
+		t.Fatal("expected error when all candidates fail")
+	}
+	if primaryCalls != 1 {
+		t.Errorf("primaryCalls = %d, want 1", primaryCalls)
+	}
+	if fallbackCalls != 1 {
+		t.Errorf("fallbackCalls = %d, want 1 (fallback timeout must not retry in place)", fallbackCalls)
+	}
+}
+
+// With retries disabled (default 0), a primary timeout advances immediately —
+// preserving the pre-change behavior.
+func TestFallback_PrimaryTimeout_DisabledAdvancesImmediately(t *testing.T) {
+	ct := NewCooldownTracker()
+	fc := NewFallbackChain(ct, nil) // primaryTimeoutRetries defaults to 0
+
+	candidates := []FallbackCandidate{
+		makeCandidate("codex-ws", "gpt-5.5"),
+		makeCandidate("openai", "glm-5.2"),
+	}
+
+	var primaryCalls, fallbackCalls int
+	run := func(ctx context.Context, provider, model string) (*LLMResponse, error) {
+		switch provider {
+		case "codex-ws":
+			primaryCalls++
+			return nil, errors.New("i/o timeout")
+		default:
+			fallbackCalls++
+			return &LLMResponse{Content: "from fallback", FinishReason: "stop"}, nil
+		}
+	}
+
+	result, err := fc.Execute(context.Background(), candidates, run)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if primaryCalls != 1 {
+		t.Errorf("primaryCalls = %d, want 1 (retries disabled)", primaryCalls)
+	}
+	if result.Provider != "openai" {
+		t.Errorf("provider = %q, want openai", result.Provider)
+	}
+}

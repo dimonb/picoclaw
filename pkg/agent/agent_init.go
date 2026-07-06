@@ -42,6 +42,7 @@ func NewAgentLoop(
 		}
 	}
 	fallbackChain := providers.NewFallbackChain(cooldown, rl)
+	fallbackChain.SetPrimaryTimeoutRetries(cfg.Agents.Defaults.LLMPrimaryTimeoutRetries)
 
 	// Create state manager using default agent's workspace for channel recording
 	defaultAgent := registry.GetDefaultAgent()

@@ -484,6 +484,12 @@ type AgentDefaults struct {
 	TurnProfile               TurnProfileConfig  `json:"turn_profile,omitempty"`
 	MaxLLMRetries             int                `json:"max_llm_retries,omitempty"        env:"PICOCLAW_AGENTS_DEFAULTS_MAX_LLM_RETRIES"`
 	LLMRetryBackoffSecs       int                `json:"llm_retry_backoff_secs,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_RETRY_BACKOFF_SECS"`
+	// LLMPrimaryTimeoutRetries is how many extra times the primary (first)
+	// candidate is retried in place when it fails with a timeout, before the
+	// fallback chain advances to the next candidate. Only the primary is
+	// retried; slower fallbacks advance immediately so they can't double their
+	// own latency. 0 disables in-place retry (advance on first timeout).
+	LLMPrimaryTimeoutRetries int `json:"llm_primary_timeout_retries,omitempty" env:"PICOCLAW_AGENTS_DEFAULTS_LLM_PRIMARY_TIMEOUT_RETRIES"`
 }
 
 const DefaultMaxMediaSize = 20 * 1024 * 1024 // 20 MB

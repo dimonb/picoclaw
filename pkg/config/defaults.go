@@ -39,9 +39,10 @@ func DefaultConfig() *Config {
 					MaxArgsLength:    300,
 					SeparateMessages: false,
 				},
-				SplitOnMarker:       false,
-				MaxLLMRetries:       2,
-				LLMRetryBackoffSecs: 2,
+				SplitOnMarker:            false,
+				MaxLLMRetries:            2,
+				LLMRetryBackoffSecs:      2,
+				LLMPrimaryTimeoutRetries: 1,
 			},
 		},
 		Session: SessionConfig{

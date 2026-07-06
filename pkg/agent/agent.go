@@ -464,6 +464,7 @@ func (al *AgentLoop) ReloadProviderAndConfig(
 		}
 	}
 	al.fallback = providers.NewFallbackChain(providers.NewCooldownTracker(), newRL)
+	al.fallback.SetPrimaryTimeoutRetries(cfg.Agents.Defaults.LLMPrimaryTimeoutRetries)
 
 	al.mu.Unlock()
 	al.refreshRuntimeEventLogger(cfg)

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -16,6 +17,10 @@ import (
 type FallbackChain struct {
 	cooldown *CooldownTracker
 	rl       *RateLimiterRegistry
+	// primaryTimeoutRetries is how many extra times the primary (first)
+	// candidate is retried in place on a timeout before advancing to the next
+	// candidate. Only the primary is retried; fallbacks advance immediately.
+	primaryTimeoutRetries int
 }
 
 // FallbackCandidate represents one model/provider to try.
@@ -59,6 +64,16 @@ type FallbackAttempt struct {
 // and rate limiter registry.
 func NewFallbackChain(cooldown *CooldownTracker, rl *RateLimiterRegistry) *FallbackChain {
 	return &FallbackChain{cooldown: cooldown, rl: rl}
+}
+
+// SetPrimaryTimeoutRetries configures how many extra times the primary (first)
+// candidate is retried in place when it fails with a timeout, before the chain
+// advances to the next candidate. Negative values are clamped to 0.
+func (fc *FallbackChain) SetPrimaryTimeoutRetries(n int) {
+	if n < 0 {
+		n = 0
+	}
+	fc.primaryTimeoutRetries = n
 }
 
 // ResolveCandidates parses model config into a deduplicated candidate list.
@@ -225,101 +240,147 @@ func (fc *FallbackChain) ExecuteCandidate(
 			baseCtx, fallbackSpan = tr.Start(baseCtx, "Fallback")
 		}
 
-		// Execute the run function under an LLMAttempt span.
-		start := time.Now()
-		attemptCtx, subSpan := tr.Start(baseCtx, "LLMAttempt",
-			trace.WithAttributes(
-				attribute.String("provider", candidate.Provider),
-				attribute.String("model", candidate.Model),
-			),
+		// Execute the run function under an LLMAttempt span. When the primary
+		// (first) candidate fails with a timeout, retry it in place up to
+		// primaryTimeoutRetries times before advancing — a transient timeout on
+		// a fast primary should not immediately hand off to a slower fallback.
+		timeoutRetries := 0
+		if i == 0 {
+			timeoutRetries = fc.primaryTimeoutRetries
+		}
+
+		var (
+			failErr *FailoverError
+			elapsed time.Duration
 		)
-		resp, err := run(attemptCtx, candidate)
-		elapsed := time.Since(start)
-
-		if err == nil {
-			// Success.
-			if resp != nil && resp.Usage != nil {
-				subSpan.SetAttributes(
-					attribute.Int("prompt_tokens", resp.Usage.PromptTokens),
-					attribute.Int("completion_tokens", resp.Usage.CompletionTokens),
-				)
+		for attempt := 0; ; attempt++ {
+			// Check context before each in-place attempt.
+			if baseCtx.Err() == context.Canceled {
+				endFallbackSpan(context.Canceled)
+				return nil, context.Canceled
 			}
-			subSpan.End()
-			endFallbackSpan(nil)
 
-			fc.cooldown.MarkSuccess(cooldownKey)
-			result.Response = resp
-			result.Provider = candidate.Provider
-			result.Model = candidate.Model
-			result.IdentityKey = candidate.StableKey()
-			return result, nil
-		}
+			start := time.Now()
+			attemptCtx, subSpan := tr.Start(baseCtx, "LLMAttempt",
+				trace.WithAttributes(
+					attribute.String("provider", candidate.Provider),
+					attribute.String("model", candidate.Model),
+				),
+			)
+			resp, err := run(attemptCtx, candidate)
+			elapsed = time.Since(start)
 
-		// Context cancellation: abort immediately, no fallback.
-		if attemptCtx.Err() == context.Canceled {
-			subSpan.RecordError(err)
-			subSpan.SetStatus(codes.Error, err.Error())
-			subSpan.End()
+			if err == nil {
+				// Success.
+				if resp != nil && resp.Usage != nil {
+					subSpan.SetAttributes(
+						attribute.Int("prompt_tokens", resp.Usage.PromptTokens),
+						attribute.Int("completion_tokens", resp.Usage.CompletionTokens),
+					)
+				}
+				subSpan.End()
+				endFallbackSpan(nil)
 
-			result.Attempts = append(result.Attempts, FallbackAttempt{
-				Provider: candidate.Provider,
-				Model:    candidate.Model,
-				Error:    err,
-				Duration: elapsed,
-			})
-			endFallbackSpan(context.Canceled)
-			return nil, context.Canceled
-		}
+				fc.cooldown.MarkSuccess(cooldownKey)
+				result.Response = resp
+				result.Provider = candidate.Provider
+				result.Model = candidate.Model
+				result.IdentityKey = candidate.StableKey()
+				return result, nil
+			}
 
-		// Classify the error.
-		failErr := ClassifyError(err, candidate.Provider, candidate.Model)
+			// Context cancellation: abort immediately, no fallback.
+			if attemptCtx.Err() == context.Canceled {
+				subSpan.RecordError(err)
+				subSpan.SetStatus(codes.Error, err.Error())
+				subSpan.End()
 
-		if failErr == nil {
-			// Unclassifiable error: do not fallback, return immediately.
-			subSpan.RecordError(err)
-			subSpan.SetStatus(codes.Error, err.Error())
-			subSpan.End()
+				result.Attempts = append(result.Attempts, FallbackAttempt{
+					Provider: candidate.Provider,
+					Model:    candidate.Model,
+					Error:    err,
+					Duration: elapsed,
+				})
+				endFallbackSpan(context.Canceled)
+				return nil, context.Canceled
+			}
 
-			result.Attempts = append(result.Attempts, FallbackAttempt{
-				Provider: candidate.Provider,
-				Model:    candidate.Model,
-				Error:    err,
-				Duration: elapsed,
-			})
-			retErr := fmt.Errorf("fallback: unclassified error from %s/%s: %w",
-				candidate.Provider, candidate.Model, err)
-			endFallbackSpan(retErr)
-			return nil, retErr
-		}
+			// Classify the error.
+			failErr = ClassifyError(err, candidate.Provider, candidate.Model)
 
-		// Non-retriable error: abort immediately.
-		if !failErr.IsRetriable() {
+			if failErr == nil {
+				// Unclassifiable error: do not fallback, return immediately.
+				subSpan.RecordError(err)
+				subSpan.SetStatus(codes.Error, err.Error())
+				subSpan.End()
+
+				result.Attempts = append(result.Attempts, FallbackAttempt{
+					Provider: candidate.Provider,
+					Model:    candidate.Model,
+					Error:    err,
+					Duration: elapsed,
+				})
+				retErr := fmt.Errorf("fallback: unclassified error from %s/%s: %w",
+					candidate.Provider, candidate.Model, err)
+				endFallbackSpan(retErr)
+				return nil, retErr
+			}
+
+			// Non-retriable error: abort immediately.
+			if !failErr.IsRetriable() {
+				subSpan.RecordError(failErr)
+				subSpan.SetStatus(codes.Error, failErr.Error())
+				subSpan.End()
+
+				result.Attempts = append(result.Attempts, FallbackAttempt{
+					Provider: candidate.Provider,
+					Model:    candidate.Model,
+					Error:    failErr,
+					Reason:   failErr.Reason,
+					Duration: elapsed,
+				})
+				endFallbackSpan(failErr)
+				return nil, failErr
+			}
+
 			subSpan.RecordError(failErr)
 			subSpan.SetStatus(codes.Error, failErr.Error())
 			subSpan.End()
 
-			result.Attempts = append(result.Attempts, FallbackAttempt{
-				Provider: candidate.Provider,
-				Model:    candidate.Model,
-				Error:    failErr,
-				Reason:   failErr.Reason,
-				Duration: elapsed,
-			})
-			endFallbackSpan(failErr)
-			return nil, failErr
+			// Primary timed out: retry the same candidate in place before
+			// advancing to a (likely slower) fallback. Don't mark cooldown yet
+			// — that would push the primary out of the retry and future turns.
+			if failErr.Reason == FailoverTimeout && attempt < timeoutRetries {
+				logger.WarnCF("provider.fallback", "primary timed out, retrying in place", map[string]any{
+					"provider": candidate.Provider,
+					"model":    candidate.Model,
+					"attempt":  attempt + 1,
+					"max":      timeoutRetries,
+					"elapsed":  elapsed.Round(time.Millisecond).String(),
+				})
+				result.Attempts = append(result.Attempts, FallbackAttempt{
+					Provider: candidate.Provider,
+					Model:    candidate.Model,
+					Error:    failErr,
+					Reason:   failErr.Reason,
+					Duration: elapsed,
+				})
+				continue
+			}
+
+			// Give up on this candidate; advance to the next one.
+			break
 		}
 
-		// Retriable error: mark failure and continue to next candidate.
-		// When the provider told us when the limit resets (429/usage limit),
-		// cool it down for exactly that long instead of the backoff curve.
+		// Retriable error with no in-place retry left: mark failure and advance
+		// to the next candidate. When the provider told us when the limit resets
+		// (429/usage limit), cool it down for exactly that long instead of the
+		// backoff curve.
 		if !failErr.ResetsAt.IsZero() {
 			fc.cooldown.MarkUnavailableUntil(cooldownKey, failErr.ResetsAt, failErr.Reason)
 		} else {
 			fc.cooldown.MarkFailure(cooldownKey, failErr.Reason)
 		}
-		subSpan.RecordError(failErr)
-		subSpan.SetStatus(codes.Error, failErr.Error())
-		subSpan.End()
 
 		result.Attempts = append(result.Attempts, FallbackAttempt{
 			Provider: candidate.Provider,
