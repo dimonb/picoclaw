@@ -769,7 +769,7 @@ func (p *CodexWSProvider) chatStream(
 
 	// Build the initial request with only NEW messages since the last turn.
 	newMsgs := convMsgs[sess.sentMsgCount:]
-	req := p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(newMsgs), wsTools, resolvedModel, options)
+	req := p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(ensureToolOutputs(newMsgs)), wsTools, resolvedModel, options)
 	sess.sentMsgCount = len(convMsgs)
 
 	// Send + drain with reconnect backoff.
@@ -812,7 +812,7 @@ func (p *CodexWSProvider) chatStream(
 			}
 			// Replay full history after reconnect.
 			sess.sentMsgCount = len(convMsgs)
-			req = p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(convMsgs), wsTools, resolvedModel, options)
+			req = p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(ensureToolOutputs(convMsgs)), wsTools, resolvedModel, options)
 		}
 
 		if err := p.sendToSession(sess, req); err != nil {
@@ -845,6 +845,64 @@ func normalizeCodexWSReplayCursor(sentMsgCount, historyLen int) (int, bool) {
 		return 0, true
 	}
 	return sentMsgCount, false
+}
+
+// ensureToolOutputs guarantees that every assistant function_call in msgs has a
+// matching tool result. Context compaction (seahorse leaf-summaries) can drop a
+// tool result while keeping its assistant tool_call, which makes the Codex
+// server reject the whole turn with "No tool output found for function call
+// <id>". For each such orphaned call we synthesize a placeholder tool result so
+// the request stays well-formed. It is a no-op (returning the input slice
+// unchanged) when every tool_call is already paired, so healthy turns pay no
+// cost and are not mutated.
+func ensureToolOutputs(msgs []Message) []Message {
+	haveOutput := make(map[string]bool)
+	for _, m := range msgs {
+		// Tool results arrive as role "tool", or role "user" carrying a
+		// ToolCallID (see buildWSInput) — both become function_call_output.
+		if m.ToolCallID != "" && (m.Role == "tool" || m.Role == "user") {
+			haveOutput[m.ToolCallID] = true
+		}
+	}
+
+	orphaned := false
+	for _, m := range msgs {
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID != "" && !haveOutput[tc.ID] {
+				orphaned = true
+				break
+			}
+		}
+		if orphaned {
+			break
+		}
+	}
+	if !orphaned {
+		return msgs
+	}
+
+	out := make([]Message, 0, len(msgs)+2)
+	for _, m := range msgs {
+		out = append(out, m)
+		if m.Role != "assistant" {
+			continue
+		}
+		for _, tc := range m.ToolCalls {
+			if tc.ID == "" || haveOutput[tc.ID] {
+				continue
+			}
+			out = append(out, Message{
+				Role:       "tool",
+				ToolCallID: tc.ID,
+				Content:    "[tool output unavailable: omitted during context compaction]",
+			})
+			haveOutput[tc.ID] = true
+		}
+	}
+	return out
 }
 
 // buildWSInput converts picoclaw Messages to wsInputItems.

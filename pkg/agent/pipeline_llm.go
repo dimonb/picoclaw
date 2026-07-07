@@ -91,6 +91,11 @@ func (p *Pipeline) CallLLM(
 		"max_tokens":       ts.agent.MaxTokens,
 		"temperature":      ts.agent.Temperature,
 		"prompt_cache_key": ts.agent.ID,
+		// Conversation identity for stateful providers (e.g. codex-ws), so each
+		// logical conversation gets its own session/connection instead of
+		// collapsing onto a shared "default" one and cross-contaminating the
+		// previous_response_id chain / replay cursor.
+		"session_key": ts.sessionKey,
 	}
 	if exec.useNativeSearch {
 		exec.llmOpts["native_search"] = true

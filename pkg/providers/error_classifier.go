@@ -179,6 +179,29 @@ func ClassifyError(err error, provider, model string) *FailoverError {
 		}
 	}
 
+	// Codex-ws (and similar) application-level server rejections: the request
+	// reached the backend but was refused — often a stateful-protocol desync such
+	// as "No tool output found for function call ..." caused by context
+	// compaction splitting a tool_call/tool_result pair. A stateless fallback
+	// provider rebuilds the request from the full history and typically succeeds,
+	// so classify these as retriable to trigger failover instead of surfacing a
+	// hard error to the user. Never let such a rejection fall through as Format
+	// (non-retriable), which would strand the turn.
+	var serverErr *wsServerError
+	if errors.As(err, &serverErr) {
+		reason := classifyByStatus(serverErr.StatusCode)
+		if reason == "" || reason == FailoverFormat || reason == FailoverContextOverflow {
+			reason = FailoverTimeout
+		}
+		return &FailoverError{
+			Reason:   reason,
+			Provider: provider,
+			Model:    model,
+			Status:   serverErr.StatusCode,
+			Wrapped:  err,
+		}
+	}
+
 	msg := strings.ToLower(err.Error())
 
 	// Concrete transport errors should continue the fallback chain even when
