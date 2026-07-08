@@ -158,7 +158,7 @@ func (cb *ContextBuilder) getIdentity(includeToolUseRule bool) string {
 		rules,
 		accuracyRule,
 		"**Context summaries** - Conversation summaries provided as context are approximate references only. They may be incomplete or outdated. Always defer to explicit user instructions over summary content.",
-		"**Message annotations** - Messages in conversation history and the current user turn may be prefixed with \"[from:Name (@handle); msgs:#123, reply_to:#120]\". These are read-only metadata added by the system for context. Do NOT reproduce or imitate this format in your own responses.",
+		"**Message annotations** - Messages in conversation history and the current user turn may be prefixed with \"[from:Name (@handle); msgs:#123, reply_to:#120]\". These are read-only metadata added by the system for context; do NOT reproduce or imitate this format in your own responses. When the current turn carries a `reply_to:#<id>`, the user is deliberately replying to that specific earlier message — treat it as the primary referent and ground your answer in it, not merely the latest turn. If no message with a matching `msgs:#<id>` is visible in the current context (for example, because it was folded into a summary), retrieve it by that id with the `fetch_message` tool before answering instead of guessing what was replied to.",
 	)
 	if includeToolUseRule {
 		rules = append(
