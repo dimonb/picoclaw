@@ -119,6 +119,8 @@ var (
 	contextOverflowPatterns = []errorPattern{
 		rxp(`context[_ ]?length[_ ]?exceeded`),
 		rxp(`context[_ ]?window[_ ]?exceeded`),
+		// codex-ws phrasing: "Your input exceeds the context window of this model."
+		rxp(`exceeds?\b.*context[_ ]?window`),
 		substr("maximum context length"),
 		substr("token limit"),
 		substr("too many tokens"),
@@ -189,6 +191,23 @@ func ClassifyError(err error, provider, model string) *FailoverError {
 	// (non-retriable), which would strand the turn.
 	var serverErr *wsServerError
 	if errors.As(err, &serverErr) {
+		// A genuine context-window overflow (e.g. codex-ws "Your input exceeds
+		// the context window of this model") must stay classified as context
+		// overflow. Downgrading it to timeout cools the provider down and, once
+		// the agent compresses the history and retries, the now-smaller request
+		// is skipped because the provider is still cooling down — stranding the
+		// turn. Context overflow is non-retriable at the fallback layer, so the
+		// chain returns immediately without cooldown and the agent's compression
+		// retry can reuse the same provider.
+		if matchesAny(strings.ToLower(err.Error()), contextOverflowPatterns) {
+			return &FailoverError{
+				Reason:   FailoverContextOverflow,
+				Provider: provider,
+				Model:    model,
+				Status:   serverErr.StatusCode,
+				Wrapped:  err,
+			}
+		}
 		reason := classifyByStatus(serverErr.StatusCode)
 		if reason == "" || reason == FailoverFormat || reason == FailoverContextOverflow {
 			reason = FailoverTimeout

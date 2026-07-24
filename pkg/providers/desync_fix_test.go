@@ -34,6 +34,40 @@ func TestClassifyError_WSServerError_TriggersFailover(t *testing.T) {
 	}
 }
 
+// A codex-ws context-window overflow ("Your input exceeds the context window of
+// this model") must be classified as FailoverContextOverflow, NOT a retriable
+// timeout. Downgrading it to timeout cools the provider down; when the agent
+// then compresses the history and retries, the now-smaller request is skipped
+// because the provider is still cooling down, stranding the turn. Context
+// overflow is non-retriable at the fallback layer, so the chain returns
+// immediately without cooldown and the compression retry can reuse the provider.
+func TestClassifyError_WSServerError_ContextOverflow(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		err  error
+	}{
+		{"status 0 codex phrasing", &wsServerError{StatusCode: 0, Msg: "Your input exceeds the context window of this model. Please adjust your input and try again."}},
+		{"wrapped", fmt.Errorf("codex ws: %w", &wsServerError{Msg: "Your input exceeds the context window of this model."})},
+		{"explicit exceeded phrasing", &wsServerError{StatusCode: 0, Msg: "context window exceeded"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fe := ClassifyError(tc.err, "codex-ws", "gpt-5.5")
+			if fe == nil {
+				t.Fatalf("ClassifyError returned nil; want a FailoverError")
+			}
+			if fe.Reason != FailoverContextOverflow {
+				t.Errorf("Reason=%s, want context_overflow so the agent compresses instead of cooling the provider down", fe.Reason)
+			}
+			if fe.IsRetriable() {
+				t.Errorf("context overflow must be non-retriable at the fallback layer (no cooldown), got retriable")
+			}
+		})
+	}
+}
+
 func TestClassifyError_WSServerError_AuthPreserved(t *testing.T) {
 	t.Parallel()
 
