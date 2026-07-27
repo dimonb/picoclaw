@@ -1375,6 +1375,54 @@ func assertHandleMessageQuotedUserReply(
 	assert.Equal(t, expectedContent, inbound.Content)
 }
 
+func TestHandleMessage_ForumTopicRootReply_DoesNotSetReplyTo(t *testing.T) {
+	messageBus := bus.NewMessageBus()
+	ch := &TelegramChannel{
+		BaseChannel: channels.NewBaseChannel("telegram", nil, messageBus, nil),
+		chatIDs:     make(map[string]int64),
+		ctx:         context.Background(),
+	}
+
+	msg := &telego.Message{
+		Text:            "иду домой",
+		MessageID:       5970,
+		MessageThreadID: 2508,
+		Chat: telego.Chat{
+			ID:      -1003717341079,
+			Type:    "supergroup",
+			IsForum: true,
+		},
+		From: &telego.User{
+			ID:        35243507,
+			FirstName: "Dmitrii",
+		},
+		ReplyToMessage: &telego.Message{
+			MessageID:       2508,
+			MessageThreadID: 2508,
+			Chat: telego.Chat{
+				ID:      -1003717341079,
+				Type:    "supergroup",
+				IsForum: true,
+			},
+			From: &telego.User{
+				ID:        35243507,
+				FirstName: "Dmitrii",
+			},
+			ForumTopicCreated: &telego.ForumTopicCreated{Name: "Иврит"},
+		},
+	}
+
+	err := ch.handleMessage(context.Background(), msg)
+	require.NoError(t, err)
+
+	inbound, ok := <-messageBus.InboundChan()
+	require.True(t, ok)
+	assert.Equal(t, "-1003717341079/2508", inbound.ChatID)
+	assert.Equal(t, "2508", inbound.Context.TopicID)
+	assert.Empty(t, inbound.Context.ReplyToMessageID)
+	assert.Equal(t, "иду домой", inbound.Content)
+}
+
 func TestHandleMessage_ReplyToMessage_PrependsQuotedTextAndMetadata(t *testing.T) {
 	assertHandleMessageQuotedUserReply(
 		t,

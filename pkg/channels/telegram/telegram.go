@@ -1319,7 +1319,8 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		content = cleaned
 	}
 
-	if message.ReplyToMessage != nil {
+	replyToTopicRoot := isTelegramForumTopicRootReply(message)
+	if message.ReplyToMessage != nil && !replyToTopicRoot {
 		quotedMedia := quotedTelegramMediaRefs(
 			message.ReplyToMessage,
 			func(fileID, ext, filename string) string {
@@ -1386,7 +1387,7 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		inboundCtx.TopicID = fmt.Sprintf("%d", threadID)
 		inboundCtx.MessageID = fmt.Sprintf("%d:%d:%s", chatID, threadID, messageID)
 	}
-	if message.ReplyToMessage != nil {
+	if message.ReplyToMessage != nil && !replyToTopicRoot {
 		replyID := fmt.Sprintf("%d", message.ReplyToMessage.MessageID)
 		inboundCtx.ReplyToMessageID = fmt.Sprintf("%d:%s", chatID, replyID)
 		if message.Chat.IsForum && message.ReplyToMessage.MessageThreadID != 0 {
@@ -1483,6 +1484,17 @@ func indexedMediaFilename(prefix, ext string, index int, total int) string {
 		return prefix + ext
 	}
 	return fmt.Sprintf("%s-%d%s", prefix, index+1, ext)
+}
+
+func isTelegramForumTopicRootReply(message *telego.Message) bool {
+	if message == nil || !message.Chat.IsForum || message.MessageThreadID == 0 || message.ReplyToMessage == nil {
+		return false
+	}
+	reply := message.ReplyToMessage
+	if reply.ForumTopicCreated != nil {
+		return true
+	}
+	return reply.MessageID == message.MessageThreadID && strings.TrimSpace(telegramQuotedContent(reply)) == "" && len(quotedTelegramMediaRefs(reply, nil)) == 0
 }
 
 func (c *TelegramChannel) prependTelegramQuotedReply(content string, reply *telego.Message) string {
