@@ -3,6 +3,8 @@ package seahorse
 import (
 	"context"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -237,4 +239,85 @@ func TestCompactSkipsLeafWellUnderBudget(t *testing.T) {
 			t.Error("LeafSummaries = 0 with no budget given; unbounded growth is the worse failure")
 		}
 	})
+}
+
+// TestCompactLeafGuardSerializesConcurrentPasses covers the concurrency the
+// background end-of-turn call introduces.
+//
+// Compaction now runs off the turn, so a second turn can arrive while the
+// first one's pass is still walking. Both would pick the same oldest chunk and
+// summarize it twice — duplicate summaries over identical source messages, and
+// double the LLM spend. Only one pass per conversation may be in flight.
+func TestCompactLeafGuardSerializesConcurrentPasses(t *testing.T) {
+	ctx := context.Background()
+
+	release := make(chan struct{})
+	entered := make(chan struct{}, 8)
+	var calls int64
+
+	blocking := func(ctx context.Context, prompt string, opts CompleteOptions) (string, error) {
+		atomic.AddInt64(&calls, 1)
+		entered <- struct{}{}
+		<-release
+		return "Mock summary of the conversation segment.", nil
+	}
+
+	db := openTestDB(t)
+	if err := runSchema(db); err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	s := &Store{db: db}
+	conv, err := s.GetOrCreateConversation(ctx, "test:leaf-guard")
+	if err != nil {
+		t.Fatalf("GetOrCreateConversation: %v", err)
+	}
+	convID := conv.ConversationID
+	ce, cancel := newTestCompactionEngineWithStore(s, blocking)
+	defer cancel()
+
+	for i := 0; i < FreshTailCount+LeafMinFanout*3; i++ {
+		m, err := s.AddMessage(ctx, convID, "user", "message body", 100)
+		if err != nil {
+			t.Fatalf("AddMessage: %v", err)
+		}
+		if err := s.AppendContextMessage(ctx, convID, m.ID); err != nil {
+			t.Fatalf("AppendContextMessage: %v", err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	results := make([]int, 4)
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Force so only the guard, not the budget check, can hold a pass back.
+			r, err := ce.Compact(ctx, convID, CompactInput{Force: true})
+			if err == nil && r != nil {
+				results[i] = r.LeafSummaries
+			}
+		}(i)
+	}
+
+	// Let the first pass reach the summarization call, then release everyone.
+	<-entered
+	close(release)
+	wg.Wait()
+
+	if got := atomic.LoadInt64(&calls); got != 1 {
+		t.Errorf("summarization ran %d times, want 1: concurrent passes duplicate "+
+			"summaries over the same source messages", got)
+	}
+	total := 0
+	for _, n := range results {
+		total += n
+	}
+	if total != 1 {
+		t.Errorf("LeafSummaries across callers = %d, want 1", total)
+	}
+
+	// The guard must be released, or leaf compaction is dead until restart.
+	if _, stuck := ce.leafCompacting.Load(convID); stuck {
+		t.Error("guard left set after the pass finished; leaf compaction is now wedged")
+	}
 }

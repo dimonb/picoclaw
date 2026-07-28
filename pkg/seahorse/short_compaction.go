@@ -60,6 +60,14 @@ func (e *CompactionEngine) shouldCompactLeaf(ctx context.Context, convID int64, 
 	return tokens > int(float64(*input.Budget)*ContextThreshold)
 }
 
+// compactLeafOnce runs a leaf pass and always releases the per-conversation
+// guard, including on error or panic — a leaked entry would silently disable
+// leaf compaction for that conversation until restart.
+func (e *CompactionEngine) compactLeafOnce(ctx context.Context, convID int64) (*string, error) {
+	defer e.leafCompacting.Delete(convID)
+	return e.compactLeaf(ctx, convID)
+}
+
 // Compact runs leaf compaction (sync) and optionally condensed compaction.
 func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input CompactInput) (*CompactResult, error) {
 	result := &CompactResult{}
@@ -79,18 +87,27 @@ func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input Comp
 	// A leaf pass removes a whole LeafChunkTokens-sized chunk at once, so
 	// triggering at the threshold is self-hysteretic: one pass drops the
 	// conversation well clear of it and the next is many turns away.
+	// The guard matters because callers run this off the turn: without it a
+	// second turn arriving mid-pass would start its own walk from the same
+	// oldest chunk and summarize it twice.
 	if e.shouldCompactLeaf(ctx, convID, input) {
-		summaryID, err := e.compactLeaf(ctx, convID)
-		if err != nil {
-			return nil, fmt.Errorf("compact leaf: %w", err)
-		}
-		if summaryID != nil {
-			result.SummariesCreated = append(result.SummariesCreated, *summaryID)
-			result.LeafSummaries++
-			logger.InfoCF("seahorse", "compact: leaf", map[string]any{
-				"conv_id":    convID,
-				"summary_id": *summaryID,
+		if _, busy := e.leafCompacting.LoadOrStore(convID, struct{}{}); busy {
+			logger.DebugCF("seahorse", "compact: leaf already running, skipping", map[string]any{
+				"conv_id": convID,
 			})
+		} else {
+			summaryID, err := e.compactLeafOnce(ctx, convID)
+			if err != nil {
+				return nil, fmt.Errorf("compact leaf: %w", err)
+			}
+			if summaryID != nil {
+				result.SummariesCreated = append(result.SummariesCreated, *summaryID)
+				result.LeafSummaries++
+				logger.InfoCF("seahorse", "compact: leaf", map[string]any{
+					"conv_id":    convID,
+					"summary_id": *summaryID,
+				})
+			}
 		}
 	}
 

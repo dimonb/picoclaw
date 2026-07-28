@@ -95,6 +95,7 @@ type CompactionEngine struct {
 	config         Config
 	complete       CompleteFn
 	condensing     sync.Map // map[int64]struct{} — dedup for async condensed goroutines
+	leafCompacting sync.Map // map[int64]struct{} — one leaf pass per conversation at a time
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 }
