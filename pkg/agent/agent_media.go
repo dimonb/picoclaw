@@ -104,6 +104,10 @@ func resolveMediaRefs(
 					"ref":   ref,
 					"error": err.Error(),
 				})
+				// Say the attachment existed. Dropping it silently leaves the
+				// model answering as though nothing was ever sent, which reads
+				// as the model ignoring the user rather than as a lost file.
+				pathTags = append(pathTags, unavailableMediaTag)
 				continue
 			}
 
@@ -113,6 +117,7 @@ func resolveMediaRefs(
 					"path":  localPath,
 					"error": err.Error(),
 				})
+				pathTags = append(pathTags, unavailableMediaTag)
 				continue
 			}
 
@@ -236,6 +241,11 @@ func detectMIME(localPath string, meta media.MediaMeta) string {
 
 // buildPathTag creates a structured tag exposing the local file path.
 // Tag type is derived from MIME: [image:/path], [audio:/path], [video:/path], or [file:/path].
+// unavailableMediaTag stands in for an attachment whose file could not be
+// reached. It carries no path on purpose — there is nothing for the model to
+// open, and inventing one would send it chasing a missing file.
+const unavailableMediaTag = "[media unavailable: the attachment is no longer stored]"
+
 func buildPathTag(mime, localPath string) string {
 	switch {
 	case strings.HasPrefix(mime, "image/"):

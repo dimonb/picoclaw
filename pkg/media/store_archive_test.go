@@ -84,10 +84,19 @@ func TestStore_WithArchive_ReleaseAllKeepsArchiveFile(t *testing.T) {
 		t.Error("archive index entry should still exist after ReleaseAll")
 	}
 
-	// Store ref is gone, future Resolve via store fails — that's fine,
-	// scope is over.
-	if _, err := store.Resolve(ref); err == nil {
-		t.Error("expected Resolve to fail after ReleaseAll")
+	// The in-memory ref is gone, but the archive deliberately kept both the
+	// file and the index entry — so Resolve still finds it through the archive
+	// fallback. That is the point: conversation history outlives any one scope
+	// (and any one process), and refusing to resolve media the archive is
+	// still holding is what dropped attachments out of prompts after every
+	// restart. ReleaseAll frees store-managed disk; it does not retract
+	// archived content.
+	resolvedAfterRelease, err := store.Resolve(ref)
+	if err != nil {
+		t.Errorf("Resolve after ReleaseAll: %v — archived media must stay reachable", err)
+	}
+	if resolvedAfterRelease != resolved {
+		t.Errorf("resolved %q after ReleaseAll, want the archived path %q", resolvedAfterRelease, resolved)
 	}
 }
 

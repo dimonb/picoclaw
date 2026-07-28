@@ -203,12 +203,7 @@ func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (
 
 // Resolve returns the local path for the given ref.
 func (s *FileMediaStore) Resolve(ref string) (string, error) {
-	s.mu.RLock()
-	entry, ok := s.refs[ref]
-	archive := s.archive
-	archived := s.archived[ref]
-	s.mu.RUnlock()
-
+	entry, archive, archived, ok := s.lookupRef(ref)
 	if !ok {
 		return "", fmt.Errorf("media store: unknown ref: %s", ref)
 	}
@@ -220,12 +215,7 @@ func (s *FileMediaStore) Resolve(ref string) (string, error) {
 
 // ResolveWithMeta returns the local path and metadata for the given ref.
 func (s *FileMediaStore) ResolveWithMeta(ref string) (string, MediaMeta, error) {
-	s.mu.RLock()
-	entry, ok := s.refs[ref]
-	archive := s.archive
-	archived := s.archived[ref]
-	s.mu.RUnlock()
-
+	entry, archive, archived, ok := s.lookupRef(ref)
 	if !ok {
 		return "", MediaMeta{}, fmt.Errorf("media store: unknown ref: %s", ref)
 	}
@@ -233,6 +223,74 @@ func (s *FileMediaStore) ResolveWithMeta(ref string) (string, MediaMeta, error) 
 		archive.MarkResolved(ref)
 	}
 	return entry.path, entry.meta, nil
+}
+
+// lookupRef finds a ref in memory, falling back to the archive index.
+//
+// The in-memory map only holds what this process registered, so every restart
+// used to orphan every ref sent before it — conversation history kept the
+// media:// refs, the files kept sitting in the archive for their full
+// retention, and resolution failed anyway. Archived entries are the durable
+// record, so consult them before declaring a ref unknown.
+func (s *FileMediaStore) lookupRef(ref string) (mediaEntry, MediaArchive, bool, bool) {
+	s.mu.RLock()
+	entry, ok := s.refs[ref]
+	archive := s.archive
+	archived := s.archived[ref]
+	s.mu.RUnlock()
+
+	if ok {
+		return entry, archive, archived, true
+	}
+	if archive == nil {
+		return mediaEntry{}, nil, false, false
+	}
+
+	// Deliberately outside the lock: LookupByRef hits SQLite.
+	archiveEntry, found := archive.LookupByRef(ref)
+	if !found {
+		return mediaEntry{}, archive, false, false
+	}
+	// An index row whose file is gone is worse than a miss — the caller would
+	// take the path and fail later, further from the cause.
+	if _, err := os.Stat(archiveEntry.ArchivePath); err != nil {
+		logger.WarnCF("media", "archive entry has no file on disk", map[string]any{
+			"ref":   ref,
+			"path":  archiveEntry.ArchivePath,
+			"error": err.Error(),
+		})
+		return mediaEntry{}, archive, false, false
+	}
+
+	rehydrated := mediaEntry{
+		path: archiveEntry.ArchivePath,
+		meta: MediaMeta{
+			Filename:       archiveEntry.Filename,
+			ContentType:    archiveEntry.ContentType,
+			Source:         archiveEntry.Source,
+			CleanupPolicy:  archiveEntry.CleanupPolicy,
+			RetentionClass: archiveEntry.RetentionClass,
+		},
+		storedAt: archiveEntry.StoredAt,
+	}
+
+	s.mu.Lock()
+	// Store() may have registered this ref while the lookup was in flight; its
+	// entry is the live one, so it wins.
+	if existing, raced := s.refs[ref]; raced {
+		existingArchived := s.archived[ref]
+		s.mu.Unlock()
+		return existing, archive, existingArchived, true
+	}
+	s.refs[ref] = rehydrated
+	s.refToPath[ref] = rehydrated.path
+	s.archived[ref] = true
+	// No scope bookkeeping and no pathStates entry on purpose: disk lifecycle
+	// for an archived file belongs to archive retention, and registering it as
+	// store-managed would expose it to cleanup that must never touch it.
+	s.mu.Unlock()
+
+	return rehydrated, archive, true, true
 }
 
 // ReleaseAll removes all files under the given scope and cleans up mappings.
