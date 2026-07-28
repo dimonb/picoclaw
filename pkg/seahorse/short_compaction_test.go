@@ -683,7 +683,7 @@ func TestGenerateLeafSummary(t *testing.T) {
 		{Role: "assistant", Content: "hi there", TokenCount: 5},
 	}
 
-	content, err := ce.generateLeafSummary(ctx, msgs, "")
+	content, err := ce.generateLeafSummary(ctx, 1, msgs, "")
 	if err != nil {
 		t.Fatalf("generateLeafSummary: %v", err)
 	}
@@ -717,7 +717,7 @@ func TestGenerateLeafSummaryEscalationToAggressive(t *testing.T) {
 		{Role: "assistant", Content: "response", TokenCount: 10},
 	}
 
-	content, err := ce.generateLeafSummary(context.Background(), msgs, "")
+	content, err := ce.generateLeafSummary(context.Background(), 1, msgs, "")
 	if err != nil {
 		t.Fatalf("generateLeafSummary: %v", err)
 	}
@@ -765,7 +765,7 @@ func TestGenerateLeafSummaryRelaxedKeepsAboveTargetSummary(t *testing.T) {
 		{Role: "assistant", Content: "response", TokenCount: 500},
 	}
 
-	content, err := ce.generateLeafSummary(context.Background(), msgs, "")
+	content, err := ce.generateLeafSummary(context.Background(), 1, msgs, "")
 	if err != nil {
 		t.Fatalf("generateLeafSummary: %v", err)
 	}
@@ -799,7 +799,7 @@ func TestGenerateLeafSummaryStrictEscalatesWhenLevel1MissesTarget(t *testing.T) 
 		{Role: "assistant", Content: "response", TokenCount: 500},
 	}
 
-	content, err := ce.generateLeafSummary(context.Background(), msgs, "")
+	content, err := ce.generateLeafSummary(context.Background(), 1, msgs, "")
 	if err != nil {
 		t.Fatalf("generateLeafSummary: %v", err)
 	}
@@ -830,7 +830,7 @@ func TestGenerateLeafSummaryStrictAcceptsContentAtTargetBoundary(t *testing.T) {
 		{Role: "assistant", Content: "response", TokenCount: 286},
 	}
 
-	content, err := ce.generateLeafSummary(context.Background(), msgs, "")
+	content, err := ce.generateLeafSummary(context.Background(), 1, msgs, "")
 	if err != nil {
 		t.Fatalf("generateLeafSummary: %v", err)
 	}
@@ -856,7 +856,7 @@ func TestGenerateLeafSummaryEscalationToTruncation(t *testing.T) {
 		{Role: "assistant", Content: "response text here", TokenCount: 10},
 	}
 
-	content, err := ce.generateLeafSummary(context.Background(), msgs, "")
+	content, err := ce.generateLeafSummary(context.Background(), 1, msgs, "")
 	if err != nil {
 		t.Fatalf("generateLeafSummary: %v", err)
 	}
@@ -878,7 +878,7 @@ func TestGenerateCondensedSummary(t *testing.T) {
 		{SummaryID: "sum_b", Content: "second summary", TokenCount: 100},
 	}
 
-	content, err := ce.generateCondensedSummary(ctx, summaries)
+	content, err := ce.generateCondensedSummary(ctx, 1, summaries)
 	if err != nil {
 		t.Fatalf("generateCondensedSummary: %v", err)
 	}
@@ -901,7 +901,7 @@ func TestGenerateCondensedSummaryEscalation(t *testing.T) {
 		{SummaryID: "sum_b", Content: "second summary text", TokenCount: 50},
 	}
 
-	content, err := ce.generateCondensedSummary(context.Background(), summaries)
+	content, err := ce.generateCondensedSummary(context.Background(), 1, summaries)
 	if err != nil {
 		t.Fatalf("generateCondensedSummary: %v", err)
 	}

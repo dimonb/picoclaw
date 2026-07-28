@@ -381,10 +381,11 @@ func (p *Pipeline) CallLLM(
 				pubCancel()
 			}
 
+			retryBudget := agentHistoryBudget(ts.agent, exec.providerToolDefs, ts.activeSkills)
 			if compactErr := p.ContextManager.Compact(ctx, &CompactRequest{
-				SessionKey: ts.sessionKey,
-				Reason:     ContextCompressReasonRetry,
-				Budget:     ts.agent.ContextWindow,
+				SessionKey:    ts.sessionKey,
+				Reason:        ContextCompressReasonRetry,
+				HistoryBudget: retryBudget,
 			}); compactErr != nil {
 				logger.WarnCF("agent", "Context overflow compact failed", map[string]any{
 					"session_key": ts.sessionKey,
@@ -393,9 +394,8 @@ func (p *Pipeline) CallLLM(
 			}
 			ts.refreshRestorePointFromSession(ts.agent)
 			if asmResp, asmErr := p.ContextManager.Assemble(ctx, &AssembleRequest{
-				SessionKey: ts.sessionKey,
-				Budget:     ts.agent.ContextWindow,
-				MaxTokens:  ts.agent.MaxTokens,
+				SessionKey:    ts.sessionKey,
+				HistoryBudget: retryBudget,
 			}); asmErr == nil && asmResp != nil {
 				exec.history = asmResp.History
 				exec.summary = asmResp.Summary

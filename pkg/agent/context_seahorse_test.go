@@ -510,12 +510,11 @@ func TestSeahorseAdapterAssembleSubtractsMaxTokens(t *testing.T) {
 		})
 	}
 
-	// Call adapter Assemble with Budget=5000, MaxTokens=2000
-	// Should use effective budget = 5000 - 2000 = 3000
+	// Call adapter Assemble with a history budget of 3000: the caller has
+	// already subtracted the system prompt, tools and output reserve.
 	resp, err := mgr.Assemble(ctx, &AssembleRequest{
-		SessionKey: "budget-sub",
-		Budget:     5000,
-		MaxTokens:  2000,
+		SessionKey:    "budget-sub",
+		HistoryBudget: 3000,
 	})
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -575,9 +574,9 @@ func TestSeahorseCompactRetryUsesCompactUntilUnder(t *testing.T) {
 
 	// Compact with retry reason and budget should succeed
 	err = mgr.Compact(ctx, &CompactRequest{
-		SessionKey: "compact-test",
-		Reason:     ContextCompressReasonRetry,
-		Budget:     5000,
+		SessionKey:    "compact-test",
+		Reason:        ContextCompressReasonRetry,
+		HistoryBudget: 5000,
 	})
 	if err != nil {
 		t.Fatalf("Compact retry: %v", err)
@@ -754,9 +753,8 @@ func TestSeahorseAssembleReturnsAllSummaries(t *testing.T) {
 
 	// Assemble and check summaries
 	resp, err := mgr.Assemble(ctx, &AssembleRequest{
-		SessionKey: sessionKey,
-		Budget:     50000,
-		MaxTokens:  4096,
+		SessionKey:    sessionKey,
+		HistoryBudget: 50000,
 	})
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -921,9 +919,8 @@ func TestSeahorseAssembleSummaryNotInMessages(t *testing.T) {
 
 	// Assemble
 	resp, err := mgr.Assemble(ctx, &AssembleRequest{
-		SessionKey: sessionKey,
-		Budget:     50000,
-		MaxTokens:  4096,
+		SessionKey:    sessionKey,
+		HistoryBudget: 50000,
 	})
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
@@ -1232,7 +1229,7 @@ func TestInboundMetadataRoundTrip(t *testing.T) {
 		t.Errorf("metadata round-trip mismatch: got %+v want %+v", got.Metadata, md)
 	}
 
-	resp, err := mgr.Assemble(ctx, &AssembleRequest{SessionKey: sessionKey, Budget: 4096})
+	resp, err := mgr.Assemble(ctx, &AssembleRequest{SessionKey: sessionKey, HistoryBudget: 4096})
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}
@@ -1403,7 +1400,7 @@ func TestDispatchMessageIDPersists(t *testing.T) {
 		t.Errorf("Content = %q, want %q", got.Content, wantContent)
 	}
 
-	resp, err := mgr.Assemble(ctx, &AssembleRequest{SessionKey: sessionKey, Budget: 4096})
+	resp, err := mgr.Assemble(ctx, &AssembleRequest{SessionKey: sessionKey, HistoryBudget: 4096})
 	if err != nil {
 		t.Fatalf("Assemble: %v", err)
 	}

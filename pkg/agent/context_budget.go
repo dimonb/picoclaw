@@ -6,6 +6,9 @@
 package agent
 
 import (
+	"strings"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tokenizer"
 )
@@ -94,6 +97,85 @@ func EstimateMessageTokens(msg providers.Message) int {
 // as they appear in the LLM request. Delegates to the shared tokenizer package.
 func EstimateToolDefsTokens(defs []providers.ToolDefinition) int {
 	return tokenizer.EstimateToolDefsTokens(defs)
+}
+
+// contextBudgetSafetyMargin absorbs the error of the char-based token
+// estimator plus provider-side overhead (envelope wrapping, tool-call
+// serialization) so a history that "just fits" our estimate does not overflow
+// the real context window.
+const contextBudgetSafetyMargin = 4096
+
+// historyTokenBudget returns the token budget available for stored context —
+// assembled history messages plus the summary embedded into the system prompt.
+//
+// The context window has to hold four things: the system prompt, the tool
+// definitions, the conversation, and the reserved output. Only the third is
+// negotiable, so the budget handed to the ContextManager must be the window
+// minus everything else:
+//
+//	historyBudget = contextWindow - systemTokens - toolTokens - maxTokens - margin
+//
+// systemTokens must be measured *without* the summary: the summary is produced
+// by the ContextManager and is paid for out of the returned budget, so counting
+// it here as well would make the two sides disagree by the summary size and
+// re-trigger compaction on every turn.
+func historyTokenBudget(contextWindow, maxTokens, systemTokensWithoutSummary, toolTokens int) int {
+	budget := contextWindow - maxTokens - systemTokensWithoutSummary - toolTokens - contextBudgetSafetyMargin
+
+	// Floor: a pathological system prompt or output reserve must not reduce the
+	// conversation to nothing — the caller's trim fallback handles the overflow,
+	// and the operator gets a loud hint about the real problem.
+	if minBudget := contextWindow / 10; budget < minBudget {
+		logger.WarnCF("agent", "History budget squeezed by system prompt and output reserve", map[string]any{
+			"context_window": contextWindow,
+			"max_tokens":     maxTokens,
+			"system_tokens":  systemTokensWithoutSummary,
+			"tool_tokens":    toolTokens,
+			"computed":       budget,
+			"floor":          minBudget,
+		})
+		budget = minBudget
+	}
+	if budget < 0 {
+		budget = 0
+	}
+	return budget
+}
+
+// agentHistoryBudget computes the history budget for an upcoming request from
+// the agent's window and an estimate of the summary-free system prompt.
+// Used before the prompt exists; once real messages are built, callers refine
+// the number with the measured system-token count.
+func agentHistoryBudget(
+	agent *AgentInstance,
+	toolDefs []providers.ToolDefinition,
+	activeSkills []string,
+) int {
+	if agent == nil {
+		return 0
+	}
+	systemTokens := 0
+	if agent.ContextBuilder != nil {
+		// Summary-free by design: the ContextManager pays for its own summary
+		// out of the returned budget.
+		systemTokens = agent.ContextBuilder.EstimateSystemTokens("", activeSkills)
+	}
+	return historyTokenBudget(
+		agent.ContextWindow,
+		agent.MaxTokens,
+		systemTokens,
+		EstimateToolDefsTokens(toolDefs),
+	)
+}
+
+// estimateSummaryTokens estimates what a summary string contributes to the
+// system message, so a measured system-token count can be reduced to the
+// summary-free number historyTokenBudget expects.
+func estimateSummaryTokens(summary string) int {
+	if strings.TrimSpace(summary) == "" {
+		return 0
+	}
+	return tokenizer.EstimateMessageTokens(providers.Message{Content: summary})
 }
 
 type contextBudgetStats struct {

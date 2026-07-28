@@ -400,8 +400,8 @@ func (al *AgentLoop) askSideQuestion(
 	if opts != nil && !opts.NoHistory {
 		if resp, err := al.contextManager.Assemble(ctx, &AssembleRequest{
 			SessionKey: opts.SessionKey,
-			Budget:     agent.ContextWindow,
-			MaxTokens:  agent.MaxTokens,
+			// Side questions run without tools.
+			HistoryBudget: agentHistoryBudget(agent, nil, nil),
 		}); err == nil && resp != nil {
 			history = resp.History
 			summary = resp.Summary
@@ -448,6 +448,11 @@ func (al *AgentLoop) askSideQuestion(
 		"max_tokens":       agent.MaxTokens,
 		"temperature":      agent.Temperature,
 		"prompt_cache_key": agent.ID + ":btw",
+		// A side question borrows the chat's history but is not a turn in it:
+		// it must not be appended to the chat's provider session, where it
+		// would desync the incremental replay cursor of the real conversation.
+		"session_key": agent.ID + ":btw",
+		"stateless":   true,
 	}
 
 	hookModelChanged := false

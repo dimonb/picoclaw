@@ -250,9 +250,8 @@ func TestLegacyAssemble_Passthrough(t *testing.T) {
 	agent.Sessions.SetHistory("test-session", history)
 
 	resp, err := al.contextManager.Assemble(context.Background(), &AssembleRequest{
-		SessionKey: "test-session",
-		Budget:     8000,
-		MaxTokens:  4096,
+		SessionKey:    "test-session",
+		HistoryBudget: 8000,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -272,9 +271,8 @@ func TestLegacyAssemble_EmptyHistory(t *testing.T) {
 	al := newCMTestAgentLoop(cfg)
 
 	resp, err := al.contextManager.Assemble(context.Background(), &AssembleRequest{
-		SessionKey: "test-session",
-		Budget:     8000,
-		MaxTokens:  4096,
+		SessionKey:    "test-session",
+		HistoryBudget: 8000,
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -573,9 +571,8 @@ func TestAgentLoop_UsesCustomContextManager(t *testing.T) {
 
 	// Direct method calls
 	_, err := mock.Assemble(context.Background(), &AssembleRequest{
-		SessionKey: "s1",
-		Budget:     8000,
-		MaxTokens:  4096,
+		SessionKey:    "s1",
+		HistoryBudget: 8000,
 	})
 	if err != nil {
 		t.Fatalf("Assemble error: %v", err)

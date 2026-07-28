@@ -17,13 +17,21 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	cfg := p.Cfg
 	maxMediaSize := cfg.Agents.Defaults.GetMaxMediaSize()
 
+	contextualSkills := ts.activeSkills
+	if ts.agent.ContextBuilder != nil {
+		contextualSkills = ts.agent.ContextBuilder.ResolveActiveSkillsForContext(ts.activeSkills)
+	}
+	var toolDefs []providers.ToolDefinition
+	if ts.agent.Tools != nil {
+		toolDefs = filterToolsByTurnProfile(ts.agent.Tools.ToProviderDefs(), ts.profile)
+	}
+
 	var history []providers.Message
 	var summary string
 	if !ts.opts.NoHistory {
 		if resp, err := p.ContextManager.Assemble(ctx, &AssembleRequest{
-			SessionKey: ts.sessionKey,
-			Budget:     ts.agent.ContextWindow,
-			MaxTokens:  ts.agent.MaxTokens,
+			SessionKey:    ts.sessionKey,
+			HistoryBudget: agentHistoryBudget(ts.agent, toolDefs, contextualSkills),
 		}); err == nil && resp != nil {
 			history = resp.History
 			summary = resp.Summary
@@ -31,10 +39,6 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	}
 	ts.captureRestorePoint(history, summary)
 
-	contextualSkills := ts.activeSkills
-	if ts.agent.ContextBuilder != nil {
-		contextualSkills = ts.agent.ContextBuilder.ResolveActiveSkillsForContext(ts.activeSkills)
-	}
 	ts.recordSkillContextSnapshot(skillContextTriggerInitialBuild, contextualSkills)
 	initialPromptReq := promptBuildRequestForTurn(ts, history, summary, ts.userMessage, ts.media, cfg)
 	initialPromptReq.ActiveSkills = append([]string(nil), contextualSkills...)
@@ -47,18 +51,28 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	messages = resolveMediaRefs(messages, p.MediaStore, maxMediaSize, currentTurnStart)
 
 	if !ts.opts.NoHistory {
-		toolDefs := filterToolsByTurnProfile(ts.agent.Tools.ToProviderDefs(), ts.profile)
 		initialBudgetStats := estimateContextBudgetStats(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens)
 		if initialBudgetStats.OverBudget {
+			// The estimate that produced the assemble budget was too optimistic
+			// (usually a summary-heavy or skill-heavy system prompt). Recompute
+			// the budget from what the prompt actually costs, so compaction and
+			// the next assemble aim at a number that really fits.
+			measuredBudget := historyTokenBudget(
+				ts.agent.ContextWindow,
+				ts.agent.MaxTokens,
+				initialBudgetStats.SystemTokens-estimateSummaryTokens(summary),
+				initialBudgetStats.ToolTokens,
+			)
 			fields := contextBudgetStatsFields(initialBudgetStats)
 			fields["session_key"] = ts.sessionKey
 			fields["history_msgs"] = len(history)
 			fields["summary_chars"] = len(summary)
+			fields["history_budget"] = measuredBudget
 			logger.WarnCF("agent", "Proactive compression: context budget exceeded before LLM call", fields)
 			if err := p.ContextManager.Compact(ctx, &CompactRequest{
-				SessionKey: ts.sessionKey,
-				Reason:     ContextCompressReasonProactive,
-				Budget:     ts.agent.ContextWindow,
+				SessionKey:    ts.sessionKey,
+				Reason:        ContextCompressReasonProactive,
+				HistoryBudget: measuredBudget,
 			}); err != nil {
 				logger.WarnCF("agent", "Proactive compact failed", map[string]any{
 					"session_key": ts.sessionKey,
@@ -67,9 +81,8 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 			}
 			ts.refreshRestorePointFromSession(ts.agent)
 			if resp, err := p.ContextManager.Assemble(ctx, &AssembleRequest{
-				SessionKey: ts.sessionKey,
-				Budget:     ts.agent.ContextWindow,
-				MaxTokens:  ts.agent.MaxTokens,
+				SessionKey:    ts.sessionKey,
+				HistoryBudget: measuredBudget,
 			}); err == nil && resp != nil {
 				history = resp.History
 				summary = resp.Summary

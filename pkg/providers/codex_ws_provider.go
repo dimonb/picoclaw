@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -36,22 +38,22 @@ const (
 // ---------- request structs ----------
 
 type wsRequest struct {
-	Type               string          `json:"type"`
-	Model              string          `json:"model"`
-	Instructions       string          `json:"instructions,omitempty"`
-	PreviousResponseID string          `json:"previous_response_id,omitempty"`
-	Input              []wsInputItem   `json:"input"`
-	Tools              []wsToolDef     `json:"tools,omitempty"`
-	ToolChoice         string          `json:"tool_choice"`
-	ParallelToolCalls  bool            `json:"parallel_tool_calls"`
-	Reasoning          *wsReasoning    `json:"reasoning,omitempty"`
-	Store              bool            `json:"store"`
-	Stream             bool            `json:"stream"`
-	Include            []string        `json:"include,omitempty"`
-	PromptCacheKey     string          `json:"prompt_cache_key,omitempty"`
-	Text               *wsText         `json:"text,omitempty"`
-	Generate           *bool           `json:"generate,omitempty"`
-	ClientMetadata     map[string]any  `json:"client_metadata,omitempty"`
+	Type               string         `json:"type"`
+	Model              string         `json:"model"`
+	Instructions       string         `json:"instructions,omitempty"`
+	PreviousResponseID string         `json:"previous_response_id,omitempty"`
+	Input              []wsInputItem  `json:"input"`
+	Tools              []wsToolDef    `json:"tools,omitempty"`
+	ToolChoice         string         `json:"tool_choice"`
+	ParallelToolCalls  bool           `json:"parallel_tool_calls"`
+	Reasoning          *wsReasoning   `json:"reasoning,omitempty"`
+	Store              bool           `json:"store"`
+	Stream             bool           `json:"stream"`
+	Include            []string       `json:"include,omitempty"`
+	PromptCacheKey     string         `json:"prompt_cache_key,omitempty"`
+	Text               *wsText        `json:"text,omitempty"`
+	Generate           *bool          `json:"generate,omitempty"`
+	ClientMetadata     map[string]any `json:"client_metadata,omitempty"`
 }
 
 type wsReasoning struct {
@@ -236,13 +238,13 @@ func responseFailedToGoError(r *wsResponseObj) error {
 }
 
 type wsOutputItem struct {
-	ID        string            `json:"id"`
-	Type      string            `json:"type"`
-	Role      string            `json:"role,omitempty"`
-	Content   []wsContentPart   `json:"content,omitempty"`
-	Name      string            `json:"name,omitempty"`
-	CallID    string            `json:"call_id,omitempty"`
-	Arguments string            `json:"arguments,omitempty"`
+	ID        string          `json:"id"`
+	Type      string          `json:"type"`
+	Role      string          `json:"role,omitempty"`
+	Content   []wsContentPart `json:"content,omitempty"`
+	Name      string          `json:"name,omitempty"`
+	CallID    string          `json:"call_id,omitempty"`
+	Arguments string          `json:"arguments,omitempty"`
 }
 
 type wsContentPart struct {
@@ -267,7 +269,14 @@ type wsSessionState struct {
 	// sentMsgCount tracks how many non-system messages we've already sent
 	// in this WS session so we only transmit new ones each turn.
 	sentMsgCount int
-	sessionID    string
+	// sentDigest fingerprints the messages already sent. Sending only the tail
+	// past sentMsgCount is correct exactly while the conversation stays
+	// append-only; when the prefix changes underneath us (compaction rewriting
+	// history, or an unrelated one-shot prompt landing on the same session key)
+	// the count alone cannot tell, and the server would answer against a
+	// conversation we no longer have. See historyPrefixDigest.
+	sentDigest string
+	sessionID  string
 	// lastUsed is stored as Unix nanoseconds for atomic access — the cleanup
 	// goroutine reads it under p.mu (not sess.mu), so plain time.Time would race.
 	lastUsedNs atomic.Int64
@@ -279,7 +288,7 @@ type wsSessionState struct {
 // own WebSocket connection to avoid cross-session state contamination.
 // Concurrent sessions run in parallel — the global mu only guards the map.
 type CodexWSProvider struct {
-	tokenSource     func() (string, string, error)
+	tokenSource func() (string, string, error)
 	// accountID is written by concurrent connectSession calls (each under their
 	// own sess.mu), so use atomic to avoid data races.
 	accountID       atomic.Pointer[string]
@@ -438,6 +447,7 @@ func (p *CodexWSProvider) connectSession(sess *wsSessionState, instructions stri
 	sess.conn = conn
 	sess.previousResponseID = ""
 	sess.sentMsgCount = 0
+	sess.sentDigest = ""
 
 	logger.DebugCF("provider.codex_ws", "WebSocket connected, sending prewarm", map[string]any{"url": wsURL})
 	// Prewarm: send generate=false to let the server load context.
@@ -730,9 +740,34 @@ func (p *CodexWSProvider) chatStream(
 	if sessionKey == "" {
 		sessionKey = "default"
 	}
+	stateless, _ := options["stateless"].(bool)
 
 	// Phase A: look up (or allocate) the session struct — global lock, map only.
-	sess := p.getSession(sessionKey)
+	//
+	// Stateless callers (context compaction and other one-shot prompts) get a
+	// private, throwaway connection instead: their prompts are unrelated to each
+	// other and to any chat, so joining a shared session would chain them onto a
+	// foreign previous_response_id, serialize them behind that chat's turns, and
+	// leave the conversation the chat resumes from polluted.
+	var sess *wsSessionState
+	if stateless {
+		sess = &wsSessionState{sessionID: uuid.New().String()}
+		defer func() {
+			sess.mu.Lock()
+			p.closeSession(sess)
+			sess.mu.Unlock()
+		}()
+	} else {
+		sess = p.getSession(sessionKey)
+	}
+	// Dropping a shared session from the map on failure forces the next turn to
+	// start clean; a throwaway session is not in the map to begin with, and
+	// deleting by key here would evict an unrelated live chat session.
+	dropSession := func() {
+		if !stateless {
+			p.deleteSession(sessionKey)
+		}
+	}
 
 	// Phase B: all WS I/O under the per-session lock so different sessions
 	// proceed in parallel while turns within the same session are serialized.
@@ -744,19 +779,33 @@ func (p *CodexWSProvider) chatStream(
 	// Connect if first use or the connection was closed by the cleanup routine.
 	if sess.conn == nil {
 		if err := p.connectSession(sess, instructions, wsTools, resolvedModel, options); err != nil {
-			p.deleteSession(sessionKey)
+			dropSession()
 			return wsUsage{}, fmt.Errorf("codex ws connect: %w", err)
 		}
 	}
 
-	// If history was compacted (summarized), the message array shrinks below
-	// sentMsgCount. Reconnect and replay the full (compressed) history.
-	if len(convMsgs) < sess.sentMsgCount {
-		logger.DebugCF("provider.codex_ws", "History compacted, reconnecting session",
-			map[string]any{"session_key": sessionKey, "old_sent": sess.sentMsgCount, "new_len": len(convMsgs)})
+	// Replaying only the tail past sentMsgCount is valid while the conversation
+	// grows append-only. History compaction shrinks it, and a rewritten prefix
+	// can even keep the same length, so verify the prefix we already sent still
+	// matches before trusting the cursor. On any mismatch, reconnect and replay
+	// the full (compressed) history.
+	if reason := codexWSReplayResetReason(sess.sentMsgCount, sess.sentDigest, convMsgs); reason != "" {
+		// Warn, not debug: every occurrence throws away the server-side prefix
+		// cache and replays the whole conversation, so this is the signal to
+		// look at when latency climbs. reason says which invariant broke and
+		// replayed_msgs says what it cost.
+		logger.WarnCF("provider.codex_ws", "History changed under the session, restarting and replaying",
+			map[string]any{
+				"session_key":   sessionKey,
+				"reason":        reason,
+				"old_sent":      sess.sentMsgCount,
+				"new_len":       len(convMsgs),
+				"dropped_msgs":  max(0, sess.sentMsgCount-len(convMsgs)),
+				"replayed_msgs": len(convMsgs),
+			})
 		p.closeSession(sess)
 		if err := p.connectSession(sess, instructions, wsTools, resolvedModel, options); err != nil {
-			p.deleteSession(sessionKey)
+			dropSession()
 			return wsUsage{}, fmt.Errorf("codex ws reconnect after compaction: %w", err)
 		}
 	}
@@ -771,6 +820,7 @@ func (p *CodexWSProvider) chatStream(
 	newMsgs := convMsgs[sess.sentMsgCount:]
 	req := p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(ensureToolOutputs(newMsgs)), wsTools, resolvedModel, options)
 	sess.sentMsgCount = len(convMsgs)
+	sess.sentDigest = historyPrefixDigest(convMsgs)
 
 	// Send + drain with reconnect backoff.
 	// On any connection error (send failure or mid-stream drop) we reconnect
@@ -801,7 +851,7 @@ func (p *CodexWSProvider) chatStream(
 				map[string]any{"error": lastErr.Error(), "backoff": sleep.String(), "session_key": sessionKey})
 			select {
 			case <-ctx.Done():
-				p.deleteSession(sessionKey)
+				dropSession()
 				return wsUsage{}, ctx.Err()
 			case <-time.After(sleep):
 			}
@@ -812,6 +862,7 @@ func (p *CodexWSProvider) chatStream(
 			}
 			// Replay full history after reconnect.
 			sess.sentMsgCount = len(convMsgs)
+			sess.sentDigest = historyPrefixDigest(convMsgs)
 			req = p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(ensureToolOutputs(convMsgs)), wsTools, resolvedModel, options)
 		}
 
@@ -833,7 +884,7 @@ func (p *CodexWSProvider) chatStream(
 
 	if lastErr != nil {
 		p.closeSession(sess)
-		p.deleteSession(sessionKey)
+		dropSession()
 		return wsUsage{}, fmt.Errorf("codex ws: %w", lastErr)
 	}
 	sess.previousResponseID = respID
@@ -845,6 +896,63 @@ func normalizeCodexWSReplayCursor(sentMsgCount, historyLen int) (int, bool) {
 		return 0, true
 	}
 	return sentMsgCount, false
+}
+
+// historyPrefixDigest fingerprints a conversation slice. It covers everything
+// that identifies a message to the server (role, text, tool calls and results)
+// so any rewrite of already-sent history is detected.
+func historyPrefixDigest(msgs []Message) string {
+	h := fnv.New64a()
+	var sep = []byte{0}
+	for _, m := range msgs {
+		_, _ = h.Write([]byte(m.Role))
+		_, _ = h.Write(sep)
+		_, _ = h.Write([]byte(m.Content))
+		_, _ = h.Write(sep)
+		_, _ = h.Write([]byte(m.ToolCallID))
+		for _, tc := range m.ToolCalls {
+			_, _ = h.Write([]byte(tc.ID))
+			if tc.Function != nil {
+				_, _ = h.Write([]byte(tc.Function.Name))
+				_, _ = h.Write([]byte(tc.Function.Arguments))
+			}
+		}
+		_, _ = h.Write(sep)
+	}
+	return strconv.FormatUint(h.Sum64(), 16)
+}
+
+// codexWSReplayResetReason reports why the incremental replay cursor can no
+// longer be trusted, or "" when appending the tail is still correct.
+//
+// Sending only convMsgs[sentMsgCount:] assumes the conversation is the one the
+// server already holds, extended at the end. Two things break that assumption:
+// history compaction (which shrinks or rewrites the prefix) and unrelated
+// prompts reusing the same session key (a one-shot summarization request looks
+// like "1 message" turn after turn, so the count matches while the content is
+// entirely different — the server would then receive an empty delta and answer
+// the *previous* prompt again).
+func codexWSReplayResetReason(sentMsgCount int, sentDigest string, convMsgs []Message) string {
+	if sentMsgCount <= 0 {
+		return ""
+	}
+	if len(convMsgs) < sentMsgCount {
+		return "history_shrank"
+	}
+	if sentDigest == "" {
+		// No fingerprint recorded for this connection (older state): fall back
+		// to the length check alone.
+		return ""
+	}
+	if historyPrefixDigest(convMsgs[:sentMsgCount]) != sentDigest {
+		return "prefix_rewritten"
+	}
+	if len(convMsgs) == sentMsgCount {
+		// Nothing new to say: replaying is the only way to get a fresh answer
+		// instead of an empty-input continuation of the previous response.
+		return "no_new_messages"
+	}
+	return ""
 }
 
 // ensureToolOutputs guarantees that every assistant function_call in msgs has a

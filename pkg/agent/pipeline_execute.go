@@ -859,11 +859,16 @@ toolLoop:
 			}
 		}
 		if !ts.opts.NoHistory && ts.opts.EnableSummary {
-			al.contextManager.Compact(turnCtx, &CompactRequest{
-				SessionKey: ts.sessionKey,
-				Reason:     ContextCompressReasonSummarize,
-				Budget:     ts.agent.ContextWindow,
-			})
+			if err := al.contextManager.Compact(turnCtx, &CompactRequest{
+				SessionKey:    ts.sessionKey,
+				Reason:        ContextCompressReasonSummarize,
+				HistoryBudget: agentHistoryBudget(ts.agent, exec.providerToolDefs, ts.activeSkills),
+			}); err != nil {
+				logger.WarnCF("agent", "End-of-turn compaction failed", map[string]any{
+					"session_key": ts.sessionKey,
+					"error":       err.Error(),
+				})
+			}
 		}
 		ts.setPhase(TurnPhaseCompleted)
 		ts.setFinalContent("")

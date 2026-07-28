@@ -46,8 +46,15 @@ type ContextManager interface {
 // AssembleRequest is the input to Assemble.
 type AssembleRequest struct {
 	SessionKey string // session identifier
-	Budget     int    // context window in tokens
-	MaxTokens  int    // max response tokens
+
+	// HistoryBudget is the token budget for everything the ContextManager
+	// returns — assembled history messages *and* the summary it embeds into
+	// the system prompt. The caller has already subtracted the rest of the
+	// request (static system prompt, tool definitions, output reserve and a
+	// safety margin) from the model's context window, so a manager that fills
+	// this budget exactly still produces a request that fits.
+	// See historyTokenBudget.
+	HistoryBudget int
 }
 
 // AssembleResponse is the output of Assemble.
@@ -60,7 +67,11 @@ type AssembleResponse struct {
 type CompactRequest struct {
 	SessionKey string                // session identifier
 	Reason     ContextCompressReason // proactive_budget | llm_retry | summarize
-	Budget     int                   // context window budget (used for retry aggressive compaction)
+
+	// HistoryBudget carries the same meaning as AssembleRequest.HistoryBudget:
+	// the token budget the stored context must fit into so the next Assemble
+	// can return everything without dropping messages on the floor.
+	HistoryBudget int
 }
 
 // IngestRequest is the input to Ingest.

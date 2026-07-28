@@ -311,6 +311,10 @@ func (m *legacyContextManager) retryLLMCall(
 					"max_tokens":       agent.MaxTokens,
 					"temperature":      llmTemperature,
 					"prompt_cache_key": agent.ID,
+					// One-shot summarization prompt: keep it out of any chat's
+					// provider session (see providerToCompleteFn).
+					"session_key": agent.ID + ":summarize",
+					"stateless":   true,
 				},
 			)
 		}()

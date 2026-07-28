@@ -106,21 +106,15 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 		// All evictable fit
 		selected = append(selected, evictable...)
 	} else {
-		// Walk from newest to oldest, keep while fits
-		var kept []resolvedItem
-		accum := 0
-		for i := len(evictable) - 1; i >= 0; i-- {
-			if accum+evictable[i].tokenCount <= remainingBudget {
-				kept = append(kept, evictable[i])
-				accum += evictable[i].tokenCount
-			} else {
-				break
-			}
-		}
-		// Reverse to restore chronological order
-		for i, j := 0, len(kept)-1; i < j; i, j = i+1, j-1 {
-			kept[i], kept[j] = kept[j], kept[i]
-		}
+		kept := selectEvictableWithinBudget(evictable, remainingBudget)
+		logger.WarnCF("seahorse", "assemble: context exceeds budget, evicting stored items", map[string]any{
+			"budget":           input.Budget,
+			"remaining_budget": remainingBudget,
+			"evictable_items":  len(evictable),
+			"evictable_tokens": evictableTokens,
+			"kept_items":       len(kept),
+			"kept_tokens":      resolvedItemsTokenCount(kept),
+		})
 		selected = append(selected, kept...)
 	}
 
@@ -200,6 +194,57 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 		Messages: messages,
 		Summary:  summary,
 	}, nil
+}
+
+// selectEvictableWithinBudget picks which evictable items survive when the
+// stored context no longer fits the assemble budget.
+//
+// Summaries are reserved first. They are the compacted record of the messages
+// that compaction already replaced, they cost roughly an order of magnitude
+// less than the history they cover, and a plain oldest-first walk drops them
+// first (they are the oldest items by construction) — silently discarding the
+// result of every compaction that ever ran on the conversation.
+//
+// Raw messages then fill whatever is left, newest-first and contiguous, so no
+// assistant tool-call is separated from its tool result.
+// Chronological order is preserved in the returned slice.
+func selectEvictableWithinBudget(evictable []resolvedItem, budget int) []resolvedItem {
+	keep := make([]bool, len(evictable))
+	used := 0
+
+	// Pass 1: summaries, newest-first so the most recent compressed context
+	// wins when even the summaries alone do not fit.
+	for i := len(evictable) - 1; i >= 0; i-- {
+		if evictable[i].itemType != "summary" {
+			continue
+		}
+		if used+evictable[i].tokenCount > budget {
+			continue
+		}
+		keep[i] = true
+		used += evictable[i].tokenCount
+	}
+
+	// Pass 2: raw messages, newest-first, stopping at the first one that does
+	// not fit to keep the surviving run contiguous.
+	for i := len(evictable) - 1; i >= 0; i-- {
+		if evictable[i].itemType == "summary" {
+			continue
+		}
+		if used+evictable[i].tokenCount > budget {
+			break
+		}
+		keep[i] = true
+		used += evictable[i].tokenCount
+	}
+
+	kept := make([]resolvedItem, 0, len(evictable))
+	for i, k := range keep {
+		if k {
+			kept = append(kept, evictable[i])
+		}
+	}
+	return kept
 }
 
 func trimFreshTailToSafeBudget(tail []resolvedItem, budget int) ([]resolvedItem, int, bool) {

@@ -38,6 +38,9 @@ type CompleteOptions struct {
 	Model       string
 	MaxTokens   int
 	Temperature float64
+	// SessionKey identifies the compaction work to stateful providers so a
+	// summarization prompt never joins the chat's own provider session.
+	SessionKey string
 }
 
 // IngestResult is the result of message ingestion.
@@ -384,8 +387,15 @@ func (e *Engine) Compact(ctx context.Context, sessionKey string, input CompactIn
 }
 
 // CompactUntilUnder aggressively compacts until context is under budget.
-// Used for emergency compaction after LLM overflow (retry reason).
-func (e *Engine) CompactUntilUnder(ctx context.Context, sessionKey string, budget int) (*CompactResult, error) {
+// Used for emergency compaction after LLM overflow (retry reason) and for
+// proactive compaction when the assembled context no longer fits.
+// maxIterations optionally caps the inline work (default MaxCompactIterations).
+func (e *Engine) CompactUntilUnder(
+	ctx context.Context,
+	sessionKey string,
+	budget int,
+	maxIterations ...int,
+) (*CompactResult, error) {
 	if e.shouldIgnoreSession(sessionKey) || e.isStatelessSession(sessionKey) {
 		return &CompactResult{}, nil
 	}
@@ -396,7 +406,7 @@ func (e *Engine) CompactUntilUnder(ctx context.Context, sessionKey string, budge
 	}
 
 	e.initCompactionOnce()
-	return e.compaction.CompactUntilUnder(ctx, conv.ConversationID, budget)
+	return e.compaction.CompactUntilUnder(ctx, conv.ConversationID, budget, maxIterations...)
 }
 
 // initCompactionOnce lazily initializes the compaction engine.

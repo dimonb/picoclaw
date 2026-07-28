@@ -6,6 +6,7 @@ import (
 	"context"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
@@ -51,14 +52,22 @@ func (p *Pipeline) Finalize(
 	}
 
 	if !ts.opts.NoHistory && ts.opts.EnableSummary {
-		al.contextManager.Compact(
+		// A failure here is not fatal for the turn, but it is why a conversation
+		// silently stops being compacted and grows until every turn goes over
+		// budget — so it must not be swallowed.
+		if err := al.contextManager.Compact(
 			turnCtx,
 			&CompactRequest{
-				SessionKey: ts.sessionKey,
-				Reason:     ContextCompressReasonSummarize,
-				Budget:     ts.agent.ContextWindow,
+				SessionKey:    ts.sessionKey,
+				Reason:        ContextCompressReasonSummarize,
+				HistoryBudget: agentHistoryBudget(ts.agent, exec.providerToolDefs, ts.activeSkills),
 			},
-		)
+		); err != nil {
+			logger.WarnCF("agent", "End-of-turn compaction failed", map[string]any{
+				"session_key": ts.sessionKey,
+				"error":       err.Error(),
+			})
+		}
 	}
 
 	contextUsage := computeContextUsage(ts.agent, ts.sessionKey)

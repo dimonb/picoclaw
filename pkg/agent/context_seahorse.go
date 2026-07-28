@@ -86,6 +86,10 @@ func newSeahorseContextManager(cfg json.RawMessage, al *AgentLoop) (ContextManag
 // providerToCompleteFn wraps providers.LLMProvider as a seahorse.CompleteFn.
 func providerToCompleteFn(provider providers.LLMProvider, model string) seahorse.CompleteFn {
 	return func(ctx context.Context, prompt string, opts seahorse.CompleteOptions) (string, error) {
+		sessionKey := opts.SessionKey
+		if sessionKey == "" {
+			sessionKey = "seahorse"
+		}
 		resp, err := provider.Chat(
 			ctx,
 			[]providers.Message{{Role: "user", Content: prompt}},
@@ -95,6 +99,13 @@ func providerToCompleteFn(provider providers.LLMProvider, model string) seahorse
 				"max_tokens":       opts.MaxTokens,
 				"temperature":      opts.Temperature,
 				"prompt_cache_key": "seahorse",
+				// Summarization is a self-contained prompt, not a turn in any
+				// conversation: it must not land in a chat's provider session.
+				// "stateless" additionally tells session-based providers
+				// (codex-ws) to use a throwaway connection instead of chaining
+				// these one-shot prompts onto each other.
+				"session_key": sessionKey,
+				"stateless":   true,
 			},
 		)
 		if err != nil {
@@ -110,23 +121,16 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 		return nil, fmt.Errorf("seahorse assemble: nil request")
 	}
 
-	budget := req.Budget
+	// HistoryBudget already excludes the system prompt, tool definitions and
+	// the output reserve — it is exactly what the assembled messages plus the
+	// summary may cost.
+	budget := req.HistoryBudget
 	if budget <= 0 {
 		budget = 100000
 	}
 
-	// Reserve space for model response (spec lines 1400-1410)
-	effectiveBudget := budget - req.MaxTokens
-	if effectiveBudget <= 0 {
-		// MaxTokens >= budget is a configuration problem
-		// Use 50% as minimum to avoid guaranteed overflow
-		logger.WarnCF("agent", "MaxTokens >= budget, using 50% fallback",
-			map[string]any{"budget": budget, "max_tokens": req.MaxTokens})
-		effectiveBudget = budget / 2
-	}
-
 	result, err := m.engine.Assemble(ctx, req.SessionKey, seahorse.AssembleInput{
-		Budget: effectiveBudget,
+		Budget: budget,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("seahorse assemble: %w", err)
@@ -134,13 +138,11 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 
 	history := seahorseToProviderMessages(result)
 	logger.DebugCF("agent", "Seahorse assemble result", map[string]any{
-		"session_key":      req.SessionKey,
-		"budget":           budget,
-		"max_tokens":       req.MaxTokens,
-		"effective_budget": effectiveBudget,
-		"history_msgs":     len(history),
-		"summary_chars":    len(result.Summary),
-		"summary_tokens":   tokenizer.EstimateMessageTokens(providers.Message{Content: result.Summary}),
+		"session_key":    req.SessionKey,
+		"history_budget": budget,
+		"history_msgs":   len(history),
+		"summary_chars":  len(result.Summary),
+		"summary_tokens": tokenizer.EstimateMessageTokens(providers.Message{Content: result.Summary}),
 	})
 
 	// Summary is already formatted as XML with system prompt addition by assembler
@@ -150,22 +152,46 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 	}, nil
 }
 
+// proactiveCompactIterations caps how much summarization work a single
+// over-budget turn performs inline. Each iteration is an LLM call the user is
+// waiting on, so a badly overgrown conversation converges across a few turns
+// (the caller's trim fallback keeps the current request valid) instead of
+// stalling one turn for minutes.
+const proactiveCompactIterations = 6
+
 // Compact compresses conversation history via seahorse summarization.
 func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactRequest) error {
 	if req == nil {
 		return nil
 	}
 
-	// For retry (LLM overflow), use aggressive CompactUntilUnder to guarantee
-	// context shrinks below budget (spec lines ~1410).
-	if req.Reason == ContextCompressReasonRetry && req.Budget > 0 {
-		_, err := m.engine.CompactUntilUnder(ctx, req.SessionKey, req.Budget)
-		return err
+	switch req.Reason {
+	case ContextCompressReasonProactive, ContextCompressReasonRetry:
+		// Both mean "the request does not fit". Leaf compaction alone compresses
+		// one chunk per call, which cannot catch up with an already-overgrown
+		// conversation, so drive compaction until the stored context is actually
+		// under budget.
+		//
+		// The target sits below the budget on purpose: compacting to exactly the
+		// budget puts the conversation back over it after a single message, and
+		// every re-compaction rewrites the prompt prefix (dropping provider-side
+		// prefix cache and forcing a codex-ws session replay).
+		if req.HistoryBudget > 0 {
+			target := int(float64(req.HistoryBudget) * seahorse.ContextThreshold)
+			iterations := proactiveCompactIterations
+			if req.Reason == ContextCompressReasonRetry {
+				// The provider already rejected the request; there is no valid
+				// request to fall back to, so run to completion.
+				iterations = seahorse.MaxCompactIterations
+			}
+			_, err := m.engine.CompactUntilUnder(ctx, req.SessionKey, target, iterations)
+			return err
+		}
 	}
 
+	budget := req.HistoryBudget
 	_, err := m.engine.Compact(ctx, req.SessionKey, seahorse.CompactInput{
-		Force:  req.Reason == ContextCompressReasonRetry,
-		Budget: &req.Budget,
+		Budget: &budget,
 	})
 	return err
 }

@@ -93,12 +93,28 @@ func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input Comp
 }
 
 // CompactUntilUnder aggressively compacts until context is under budget.
-func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, budget int) (*CompactResult, error) {
+// maxIterations optionally bounds the work performed by this call; the caller
+// resumes on a later turn when the cap is hit.
+func (e *CompactionEngine) CompactUntilUnder(
+	ctx context.Context,
+	convID int64,
+	budget int,
+	maxIterations ...int,
+) (*CompactResult, error) {
 	result := &CompactResult{}
 	prevTokens := 0
-	logger.InfoCF("seahorse", "compact_until_under: start", map[string]any{"conv_id": convID, "budget": budget})
+	iterationCap := MaxCompactIterations
+	if len(maxIterations) > 0 && maxIterations[0] > 0 && maxIterations[0] < iterationCap {
+		iterationCap = maxIterations[0]
+	}
+	logger.InfoCF("seahorse", "compact_until_under: start", map[string]any{
+		"conv_id":        convID,
+		"budget":         budget,
+		"iteration_cap":  iterationCap,
+		"context_tokens": contextTokenCountOrZero(ctx, e, convID),
+	})
 
-	for iter := 0; iter < MaxCompactIterations; iter++ {
+	for iter := 0; iter < iterationCap; iter++ {
 		tokens, err := e.store.GetContextTokenCount(ctx, convID)
 		if err != nil {
 			return result, fmt.Errorf("get tokens: %w", err)
@@ -156,14 +172,25 @@ func (e *CompactionEngine) CompactUntilUnder(ctx context.Context, convID int64, 
 		prevTokens = newTokens
 	}
 
-	// Safety cap exceeded — see MaxCompactIterations doc for rationale.
+	// Iteration cap reached. For a bounded (proactive) call this is expected:
+	// the caller trims locally for this turn and compaction resumes next turn.
 	logger.WarnCF("seahorse", "compact_until_under: exceeded max iterations", map[string]any{
 		"conv_id":    convID,
 		"budget":     budget,
-		"iterations": MaxCompactIterations,
-		"tokens":     prevTokens,
+		"iterations": iterationCap,
+		"tokens":     contextTokenCountOrZero(ctx, e, convID),
 	})
 	return result, nil
+}
+
+// contextTokenCountOrZero reports the stored context size for logging without
+// turning a read error into a compaction failure.
+func contextTokenCountOrZero(ctx context.Context, e *CompactionEngine, convID int64) int {
+	tokens, err := e.store.GetContextTokenCount(ctx, convID)
+	if err != nil {
+		return 0
+	}
+	return tokens
 }
 
 // compactLeaf compresses the oldest contiguous message chunk into a leaf summary.
@@ -256,7 +283,7 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 	}
 
 	// Generate summary
-	content, err := e.generateLeafSummary(ctx, messages, priorSummary)
+	content, err := e.generateLeafSummary(ctx, convID, messages, priorSummary)
 	if err != nil {
 		return nil, err
 	}
@@ -337,7 +364,7 @@ func (e *CompactionEngine) compactCondensed(ctx context.Context, convID int64) (
 	}
 
 	// Generate condensed summary
-	content, err := e.generateCondensedSummary(ctx, candidates)
+	content, err := e.generateCondensedSummary(ctx, convID, candidates)
 	if err != nil {
 		return nil, err
 	}
@@ -567,10 +594,20 @@ func (e *CompactionEngine) selectOldestChunkAtDepth(
 	return chunk, nil
 }
 
+// compactionSessionKey names the provider-side session used for this
+// conversation's summarization prompts. Compaction talks to the same model as
+// the chat it compresses, so it needs a session identity of its own — sharing
+// the chat's session would splice summarization turns into the conversation the
+// user is having.
+func compactionSessionKey(convID int64) string {
+	return fmt.Sprintf("seahorse:compact:%d", convID)
+}
+
 // generateLeafSummary calls the LLM to generate a leaf summary with 3-level escalation.
 // Level 1: normal LLM prompt. Level 2: aggressive prompt. Level 3: deterministic truncation.
 func (e *CompactionEngine) generateLeafSummary(
 	ctx context.Context,
+	convID int64,
 	messages []Message,
 	previousSummary string,
 ) (string, error) {
@@ -587,6 +624,7 @@ func (e *CompactionEngine) generateLeafSummary(
 	content, err := e.complete(ctx, prompt, CompleteOptions{
 		MaxTokens:   LeafTargetTokens * 2,
 		Temperature: 0.3,
+		SessionKey:  compactionSessionKey(convID),
 	})
 	if err != nil {
 		return "", err
@@ -596,6 +634,7 @@ func (e *CompactionEngine) generateLeafSummary(
 		content, err = e.complete(ctx, prompt, CompleteOptions{
 			MaxTokens:   LeafTargetTokens * 2,
 			Temperature: 0,
+			SessionKey:  compactionSessionKey(convID),
 		})
 		if err != nil {
 			return "", err
@@ -613,6 +652,7 @@ func (e *CompactionEngine) generateLeafSummary(
 	content, err = e.complete(ctx, aggressivePrompt, CompleteOptions{
 		MaxTokens:   aggressiveTarget * 2,
 		Temperature: 0.3,
+		SessionKey:  compactionSessionKey(convID),
 	})
 	if err != nil {
 		return "", err
@@ -622,6 +662,7 @@ func (e *CompactionEngine) generateLeafSummary(
 		content, err = e.complete(ctx, aggressivePrompt, CompleteOptions{
 			MaxTokens:   aggressiveTarget * 2,
 			Temperature: 0,
+			SessionKey:  compactionSessionKey(convID),
 		})
 		if err != nil {
 			return "", err
@@ -652,7 +693,11 @@ func (e *CompactionEngine) acceptLeafSummary(content string, target, inputTokens
 }
 
 // generateCondensedSummary calls the LLM to generate a condensed summary with 3-level escalation.
-func (e *CompactionEngine) generateCondensedSummary(ctx context.Context, summaries []Summary) (string, error) {
+func (e *CompactionEngine) generateCondensedSummary(
+	ctx context.Context,
+	convID int64,
+	summaries []Summary,
+) (string, error) {
 	if e.complete == nil {
 		return truncateCondensedSummaries(summaries), nil
 	}
@@ -666,6 +711,7 @@ func (e *CompactionEngine) generateCondensedSummary(ctx context.Context, summari
 	content, err := e.complete(ctx, prompt, CompleteOptions{
 		MaxTokens:   CondensedTargetTokens * 2,
 		Temperature: 0.3,
+		SessionKey:  compactionSessionKey(convID),
 	})
 	if err != nil {
 		return "", err
@@ -674,6 +720,7 @@ func (e *CompactionEngine) generateCondensedSummary(ctx context.Context, summari
 		content, err = e.complete(ctx, prompt, CompleteOptions{
 			MaxTokens:   CondensedTargetTokens * 2,
 			Temperature: 0,
+			SessionKey:  compactionSessionKey(convID),
 		})
 		if err != nil {
 			return "", err
@@ -689,6 +736,7 @@ func (e *CompactionEngine) generateCondensedSummary(ctx context.Context, summari
 	content, err = e.complete(ctx, aggressivePrompt, CompleteOptions{
 		MaxTokens:   aggressiveTarget * 2,
 		Temperature: 0.3,
+		SessionKey:  compactionSessionKey(convID),
 	})
 	if err != nil {
 		return "", err
