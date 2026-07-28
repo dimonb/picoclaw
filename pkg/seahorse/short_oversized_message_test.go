@@ -161,3 +161,80 @@ func TestCapToolResultForStorage(t *testing.T) {
 		}
 	})
 }
+
+// TestCompactSkipsLeafWellUnderBudget pins the end-of-turn leaf trigger to the
+// budget.
+//
+// Phase 1 used to run on every turn no matter how small the conversation was.
+// That costs a summarization LLM call per turn, folds live conversation into
+// summaries long before anything needs compressing, and — because it shrinks
+// the history — makes codex-ws replay the whole session every turn
+// (reason=history_shrank), which is the provider-cache thrash the compaction
+// design explicitly tries to avoid. It also never stopped: on the beta bot it
+// took the Pico chat from 226k tokens to 57k against a 181k budget and was
+// still going, heading for the ~40 messages that FreshTailCount and
+// LeafMinFanout leave it.
+func TestCompactSkipsLeafWellUnderBudget(t *testing.T) {
+	ctx := context.Background()
+
+	// Plenty of compactable messages, so only the budget check can hold leaf back.
+	seed := func(ce *CompactionEngine, s *Store, convID int64) int {
+		total := 0
+		for i := 0; i < FreshTailCount+LeafMinFanout*3; i++ {
+			m, err := s.AddMessage(ctx, convID, "user", "message body", 100)
+			if err != nil {
+				t.Fatalf("AddMessage: %v", err)
+			}
+			if err := s.AppendContextMessage(ctx, convID, m.ID); err != nil {
+				t.Fatalf("AppendContextMessage: %v", err)
+			}
+			total += 100
+		}
+		return total
+	}
+
+	t.Run("skips leaf when the context fits comfortably", func(t *testing.T) {
+		ce, s, convID := newTestCompactionEngine(t)
+		total := seed(ce, s, convID)
+
+		// Three times the stored size: nothing needs compressing.
+		budget := total * 3
+		result, err := ce.Compact(ctx, convID, CompactInput{Budget: &budget})
+		if err != nil {
+			t.Fatalf("Compact: %v", err)
+		}
+		if result.LeafSummaries != 0 {
+			t.Errorf("LeafSummaries = %d, want 0: compacting a conversation that fits "+
+				"burns an LLM call and forces a full provider session replay every turn",
+				result.LeafSummaries)
+		}
+	})
+
+	t.Run("compacts once over the threshold", func(t *testing.T) {
+		ce, s, convID := newTestCompactionEngine(t)
+		total := seed(ce, s, convID)
+
+		// Stored context sits above ContextThreshold of the budget.
+		budget := int(float64(total) / ContextThreshold * 0.9)
+		result, err := ce.Compact(ctx, convID, CompactInput{Budget: &budget})
+		if err != nil {
+			t.Fatalf("Compact: %v", err)
+		}
+		if result.LeafSummaries == 0 {
+			t.Error("LeafSummaries = 0 while over the threshold; the conversation would grow unbounded")
+		}
+	})
+
+	t.Run("compacts when the caller gives no budget", func(t *testing.T) {
+		ce, s, convID := newTestCompactionEngine(t)
+		seed(ce, s, convID)
+
+		result, err := ce.Compact(ctx, convID, CompactInput{})
+		if err != nil {
+			t.Fatalf("Compact: %v", err)
+		}
+		if result.LeafSummaries == 0 {
+			t.Error("LeafSummaries = 0 with no budget given; unbounded growth is the worse failure")
+		}
+	})
+}

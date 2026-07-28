@@ -42,22 +42,56 @@ func (e *CompactionEngine) Close() {
 	}
 }
 
+// shouldCompactLeaf reports whether an end-of-turn leaf pass is warranted.
+//
+// Force bypasses the check (CompactUntilUnder drives its own target). So does a
+// missing or zero budget: the caller could not say what "too big" means, and
+// declining to compact on an unknown budget would let a conversation grow
+// unbounded — the failure this whole path exists to prevent.
+func (e *CompactionEngine) shouldCompactLeaf(ctx context.Context, convID int64, input CompactInput) bool {
+	if input.Force || input.Budget == nil || *input.Budget <= 0 {
+		return true
+	}
+	tokens, err := e.store.GetContextTokenCount(ctx, convID)
+	if err != nil {
+		// Unknown size: compact rather than risk unbounded growth.
+		return true
+	}
+	return tokens > int(float64(*input.Budget)*ContextThreshold)
+}
+
 // Compact runs leaf compaction (sync) and optionally condensed compaction.
 func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input CompactInput) (*CompactResult, error) {
 	result := &CompactResult{}
 
-	// Phase 1: leaf compaction (synchronous, every turn)
-	summaryID, err := e.compactLeaf(ctx, convID)
-	if err != nil {
-		return nil, fmt.Errorf("compact leaf: %w", err)
-	}
-	if summaryID != nil {
-		result.SummariesCreated = append(result.SummariesCreated, *summaryID)
-		result.LeafSummaries++
-		logger.InfoCF("seahorse", "compact: leaf", map[string]any{
-			"conv_id":    convID,
-			"summary_id": *summaryID,
-		})
+	// Phase 1: leaf compaction, once the stored context has actually outgrown
+	// its budget.
+	//
+	// This used to run on every turn regardless of size, which is not free:
+	// each pass is a summarization LLM call the user waits on, it folds live
+	// conversation into a summary long before anything needs compressing, and
+	// — because it shrinks the history — it forces codex-ws to replay the whole
+	// session and throw away its server-side prefix cache (reason=history_shrank).
+	// Left ungated it never stops either: it keeps eating until fewer than
+	// LeafMinFanout messages remain outside the fresh tail, so a conversation
+	// using a third of its budget still gets summarized down to nothing.
+	//
+	// A leaf pass removes a whole LeafChunkTokens-sized chunk at once, so
+	// triggering at the threshold is self-hysteretic: one pass drops the
+	// conversation well clear of it and the next is many turns away.
+	if e.shouldCompactLeaf(ctx, convID, input) {
+		summaryID, err := e.compactLeaf(ctx, convID)
+		if err != nil {
+			return nil, fmt.Errorf("compact leaf: %w", err)
+		}
+		if summaryID != nil {
+			result.SummariesCreated = append(result.SummariesCreated, *summaryID)
+			result.LeafSummaries++
+			logger.InfoCF("seahorse", "compact: leaf", map[string]any{
+				"conv_id":    convID,
+				"summary_id": *summaryID,
+			})
+		}
 	}
 
 	// Phase 2: condensed compaction if over threshold
