@@ -98,6 +98,17 @@ type CompactionEngine struct {
 	leafCompacting sync.Map // map[int64]struct{} — one leaf pass per conversation at a time
 	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
+	// condensedTimeout bounds one rollup pass; zero means CondensedCompactTimeout.
+	// Tests shorten it so the wedge path can be exercised in milliseconds.
+	condensedTimeout time.Duration
+}
+
+// condensedPassTimeout is the deadline applied to a single rollup pass.
+func (e *CompactionEngine) condensedPassTimeout() time.Duration {
+	if e.condensedTimeout > 0 {
+		return e.condensedTimeout
+	}
+	return CondensedCompactTimeout
 }
 
 // Assembler handles budget-aware context assembly (defined in short_assembler.go).

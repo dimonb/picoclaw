@@ -203,3 +203,58 @@ func TestCompactRollsUpWhenSummaryBlockOverShare(t *testing.T) {
 		t.Errorf("summary tokens %d -> %d; rollup must reduce the block", summaryTokens, after)
 	}
 }
+
+// Rollup is the only compaction that runs detached, and it holds a
+// per-conversation guard for its whole run. A provider call that never returns
+// therefore does not merely stall one pass: the goroutine never returns, so its
+// deferred release never runs, and every later trigger is deduplicated against a
+// guard nobody will ever drop. Rollup for that conversation is then dead until
+// the process restarts — which is exactly what production showed, a launched
+// loop that produced no summary, no error and none of its debug exits.
+func TestCondensedLoopSurvivesAHangingProvider(t *testing.T) {
+	db := openTestDB(t)
+	if err := runSchema(db); err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	s := &Store{db: db}
+	ctx := context.Background()
+	conv, err := s.GetOrCreateConversation(ctx, "test:hang")
+	if err != nil {
+		t.Fatalf("GetOrCreateConversation: %v", err)
+	}
+	convID := conv.ConversationID
+	seedLeafSummaries(t, s, convID, 50, 300)
+
+	// A provider that blocks until its context is cancelled — the shape of a
+	// wedged connection, not a slow one.
+	blocked := make(chan struct{})
+	hanging := func(callCtx context.Context, prompt string, opts CompleteOptions) (string, error) {
+		close(blocked)
+		<-callCtx.Done()
+		return "", callCtx.Err()
+	}
+
+	ce, cancel := newTestCompactionEngineWithStore(s, hanging)
+	defer cancel()
+	ce.condensedTimeout = 200 * time.Millisecond
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		ce.runCondensedLoop(ce.shutdownCtx, convID)
+	}()
+
+	select {
+	case <-blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("provider was never called")
+	}
+
+	// The loop must give up on its own deadline rather than block forever.
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("runCondensedLoop never returned; the guard would stay held and " +
+			"rollup for this conversation would be dead until restart")
+	}
+}

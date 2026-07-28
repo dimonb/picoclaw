@@ -1,5 +1,7 @@
 package seahorse
 
+import "time"
+
 // Short-term memory configuration constants — all are experience-based defaults.
 
 const (
@@ -47,6 +49,24 @@ const (
 	// fill a leaf chunk by itself. The model still sees the untruncated
 	// output during the turn that produced it; only the stored copy is cut.
 	MaxStoredToolResultTokens int = 8000
+
+	// CondensedCompactTimeout bounds one condensed compaction pass.
+	//
+	// Rollup is the only compaction that runs detached: leaf compaction executes
+	// inline on the turn's context and dies with it, while rollup runs on a
+	// background goroutine against a context that lives as long as the process.
+	// It also holds a per-conversation guard for its whole run. An unbounded
+	// provider call therefore does not merely stall one pass — it wedges rollup
+	// for that conversation until restart, because every later trigger is
+	// deduplicated against the guard the stuck goroutine still holds, and a
+	// goroutine that never returns never runs its deferred release.
+	//
+	// Observed in production: a rollup launched and was never heard from again —
+	// no summary, no error, and none of the loop's debug exits, with debug
+	// logging enabled. The pass is generous because summarizing a full
+	// LeafChunkTokens chunk is slow; it exists to break a wedge, not to pace
+	// normal work.
+	CondensedCompactTimeout = 5 * time.Minute
 
 	// MaxCompactIterations caps CompactUntilUnder to prevent infinite loops.
 	// Each iteration reduces ~4x tokens via leaf (8:1) or condensed (4:1) compaction.

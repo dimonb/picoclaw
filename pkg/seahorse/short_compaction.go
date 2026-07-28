@@ -2,6 +2,7 @@ package seahorse
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"time"
@@ -893,10 +894,26 @@ func (e *CompactionEngine) generateCondensedSummary(
 // c) tokensAfter >= tokensBefore (no progress this iteration), OR
 // d) tokensAfter >= previousTokens (no improvement over last iteration)
 func (e *CompactionEngine) runCondensedLoop(ctx context.Context, convID int64) {
+	// Entry and exit are logged at info because this loop runs detached and
+	// holds a guard that suppresses every later trigger for the conversation.
+	// When it stops early, that has to be visible without turning anything on:
+	// a silent exit here reads exactly like a rollup that never fired.
+	startedAt := time.Now()
+	passes := 0
+	logger.InfoCF("seahorse", "condensed: loop start", map[string]any{"conv_id": convID})
+	defer func() {
+		logger.InfoCF("seahorse", "condensed: loop end", map[string]any{
+			"conv_id":     convID,
+			"passes":      passes,
+			"duration_ms": elapsedMs(startedAt),
+		})
+	}()
+
 	var prevTokens int
 	for {
 		select {
 		case <-ctx.Done():
+			logger.InfoCF("seahorse", "condensed: context done", map[string]any{"conv_id": convID})
 			return
 		default:
 		}
@@ -907,9 +924,21 @@ func (e *CompactionEngine) runCondensedLoop(ctx context.Context, convID int64) {
 			return
 		}
 
-		condensedID, err := e.compactCondensed(ctx, convID)
+		// Bound the pass. A provider call that never returns would otherwise
+		// strand this goroutine forever, and with it the guard that keeps any
+		// further rollup from being attempted for this conversation.
+		passLimit := e.condensedPassTimeout()
+		passCtx, cancel := context.WithTimeout(ctx, passLimit)
+		condensedID, err := e.compactCondensed(passCtx, convID)
+		cancel()
+		passes++
 		if err != nil {
-			logger.ErrorCF("seahorse", "condensed: compact", map[string]any{"error": err.Error()})
+			logger.ErrorCF("seahorse", "condensed: compact", map[string]any{
+				"conv_id":    convID,
+				"error":      err.Error(),
+				"timed_out":  errors.Is(err, context.DeadlineExceeded),
+				"pass_limit": passLimit.String(),
+			})
 			return
 		}
 		if condensedID == nil {
