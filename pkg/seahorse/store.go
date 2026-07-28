@@ -1515,6 +1515,19 @@ func (s *Store) GetContextTokenCount(ctx context.Context, convID int64) (int, er
 	return count, err
 }
 
+// GetContextSummaryTokenCount returns the token count of the summary items in
+// context — the part of a conversation that compaction produces but never
+// reclaims, and that the assembler rebuilds into the system prompt every turn.
+func (s *Store) GetContextSummaryTokenCount(ctx context.Context, convID int64) (int, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx,
+		"SELECT COALESCE(SUM(token_count), 0) FROM context_items "+
+			"WHERE conversation_id = ? AND item_type = 'summary'",
+		convID,
+	).Scan(&count)
+	return count, err
+}
+
 // GetMaxOrdinal returns the highest ordinal in context_items for a conversation.
 func (s *Store) GetMaxOrdinal(ctx context.Context, convID int64) (int, error) {
 	var maxOrd sql.NullInt64

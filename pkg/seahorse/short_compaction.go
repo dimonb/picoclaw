@@ -68,6 +68,65 @@ func (e *CompactionEngine) compactLeafOnce(ctx context.Context, convID int64) (*
 	return e.compactLeaf(ctx, convID)
 }
 
+// shouldCompactCondensed reports whether a rollup pass is warranted.
+//
+// Total size is the obvious trigger and the one that never fires. Leaf
+// compaction runs at ContextThreshold and each pass drops the conversation well
+// clear of it, so the stored context never climbs to the full budget — the two
+// thresholds never meet. Every leaf summary ever produced then survives
+// forever, because nothing collapses them and the assembler reserves summaries
+// ahead of raw history when it evicts. Observed on a 28-day topic: 116 leaf
+// summaries, zero rollups, and across the whole database not one conversation
+// had more than a single condensed summary.
+//
+// So the summary block gets a trigger of its own, tied to the share the
+// assembler is willing to inject (SummaryBudgetShare). Past that point the
+// assembler is already dropping compressed context on every turn, and
+// collapsing it is strictly better than shedding it. The pass is self-limiting
+// in the same way the leaf pass is: a rollup drops the block well under the
+// share, so the next one is many turns away.
+func (e *CompactionEngine) shouldCompactCondensed(
+	ctx context.Context,
+	convID int64,
+	input CompactInput,
+	tokensBefore int,
+	budget int,
+) bool {
+	if input.Force {
+		return true
+	}
+	if budget <= 0 {
+		return false
+	}
+	if tokensBefore > budget {
+		return true
+	}
+
+	summaryTokens, err := e.store.GetContextSummaryTokenCount(ctx, convID)
+	if err != nil {
+		// Unknown size: leave it alone. Unlike the leaf pass, guessing wrong here
+		// costs a burst of summarization calls on a conversation that may not
+		// need any.
+		logger.WarnCF("seahorse", "compact: get summary token count", map[string]any{
+			"conv_id": convID,
+			"error":   err.Error(),
+		})
+		return false
+	}
+
+	shareLimit := int(float64(budget) * SummaryBudgetShare)
+	if summaryTokens <= shareLimit {
+		return false
+	}
+	logger.InfoCF("seahorse", "compact: summary block over share, rolling up", map[string]any{
+		"conv_id":        convID,
+		"budget":         budget,
+		"summary_tokens": summaryTokens,
+		"share_limit":    shareLimit,
+	})
+	return true
+}
+
 // Compact runs leaf compaction (sync) and optionally condensed compaction.
 func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input CompactInput) (*CompactResult, error) {
 	result := &CompactResult{}
@@ -111,7 +170,8 @@ func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input Comp
 		}
 	}
 
-	// Phase 2: condensed compaction if over threshold
+	// Phase 2: condensed compaction, when either the whole context or the
+	// summary block alone has outgrown what it may occupy.
 	tokensBefore, _ := e.store.GetContextTokenCount(ctx, convID)
 	var budget int
 	if input.Budget != nil {
@@ -125,7 +185,7 @@ func (e *CompactionEngine) Compact(ctx context.Context, convID int64, input Comp
 		budget = int(float64(tokensBefore) * ContextThreshold)
 	}
 
-	if input.Force || (tokensBefore > budget && budget > 0) {
+	if e.shouldCompactCondensed(ctx, convID, input, tokensBefore, budget) {
 		// Launch async condensed compaction with dedup
 		if _, loaded := e.condensing.LoadOrStore(convID, struct{}{}); !loaded {
 			go func() {
