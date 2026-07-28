@@ -259,8 +259,14 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 			}
 			chunkEnd = i
 			accumTokens += items[i].TokenCount
-			// Stop accumulating once we reach the token budget
-			if accumTokens >= LeafChunkTokens {
+			// Stop accumulating once we reach the token budget, but never
+			// before the chunk is summarizable. A single oversized message
+			// (a 40k-token tool_result, say) blows past LeafChunkTokens on
+			// its own; breaking there leaves a chunk shorter than
+			// LeafMinFanout, which the check below rejects — and since the
+			// head of the queue never moves, leaf compaction then declines
+			// forever and the conversation grows unbounded.
+			if accumTokens >= LeafChunkTokens && (chunkEnd-chunkStart+1) >= LeafMinFanout {
 				break
 			}
 		} else {

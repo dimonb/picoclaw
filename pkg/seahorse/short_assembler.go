@@ -97,6 +97,7 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 	}
 
 	var selected []resolvedItem
+	evicted := false
 	evictableTokens := 0
 	for _, r := range evictable {
 		evictableTokens += r.tokenCount
@@ -106,6 +107,7 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 		// All evictable fit
 		selected = append(selected, evictable...)
 	} else {
+		evicted = true
 		kept := selectEvictableWithinBudget(evictable, remainingBudget)
 		logger.WarnCF("seahorse", "assemble: context exceeds budget, evicting stored items", map[string]any{
 			"budget":           input.Budget,
@@ -193,6 +195,7 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 	return &AssembleResult{
 		Messages: messages,
 		Summary:  summary,
+		Evicted:  evicted,
 	}, nil
 }
 

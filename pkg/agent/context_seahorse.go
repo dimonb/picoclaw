@@ -143,12 +143,14 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 		"history_msgs":   len(history),
 		"summary_chars":  len(result.Summary),
 		"summary_tokens": tokenizer.EstimateMessageTokens(providers.Message{Content: result.Summary}),
+		"evicted":        result.Evicted,
 	})
 
 	// Summary is already formatted as XML with system prompt addition by assembler
 	return &AssembleResponse{
 		History: history,
 		Summary: result.Summary,
+		Evicted: result.Evicted,
 	}, nil
 }
 

@@ -61,6 +61,12 @@ type AssembleRequest struct {
 type AssembleResponse struct {
 	History []providers.Message // assembled conversation history for BuildMessages
 	Summary string              // conversation summary embedded into system prompt by BuildMessages
+
+	// Evicted reports that the stored context did not fit HistoryBudget and the
+	// manager dropped older items to make it fit. The prompt built from this
+	// response is valid, so the budget check downstream will pass — treat the
+	// flag itself as the signal that compaction is overdue.
+	Evicted bool
 }
 
 // CompactRequest is the input to Compact.

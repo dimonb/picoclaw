@@ -101,6 +101,53 @@ func TestAssembleKeepsSummariesWhenOverBudget(t *testing.T) {
 	if last.Content != fmt.Sprintf("fresh %d", FreshTailCount-1) {
 		t.Fatalf("last message = %q, want the newest fresh-tail message", last.Content)
 	}
+
+	if !result.Evicted {
+		t.Error("Evicted = false after dropping stored items; the caller would " +
+			"see a prompt that fits and never trigger compaction")
+	}
+}
+
+// The Evicted flag is the only signal that a conversation needs compacting:
+// the assembler always returns something that fits, so a budget check on the
+// built prompt cannot tell a healthy conversation from one silently shedding
+// its oldest messages every turn. It must therefore stay false whenever
+// nothing was dropped.
+func TestAssembleDoesNotReportEvictionWhenEverythingFits(t *testing.T) {
+	s, convID := setupAssemblerStore(t)
+	ctx := context.Background()
+
+	var items []ContextItem
+	ordinal := 100
+	for i := 0; i < 5; i++ {
+		m, err := s.AddMessage(ctx, convID, "user", fmt.Sprintf("msg %d", i), 10)
+		if err != nil {
+			t.Fatalf("AddMessage: %v", err)
+		}
+		items = append(items, ContextItem{
+			Ordinal:    ordinal,
+			ItemType:   "message",
+			MessageID:  m.ID,
+			TokenCount: 10,
+		})
+		ordinal += 100
+	}
+	if err := s.UpsertContextItems(ctx, convID, items); err != nil {
+		t.Fatalf("UpsertContextItems: %v", err)
+	}
+
+	a := &Assembler{store: s, config: Config{}}
+	result, err := a.Assemble(ctx, convID, AssembleInput{Budget: 100_000})
+	if err != nil {
+		t.Fatalf("Assemble: %v", err)
+	}
+	if result.Evicted {
+		t.Error("Evicted = true with a budget that fits everything; " +
+			"proactive compaction would run on every turn for no reason")
+	}
+	if len(result.Messages) != 5 {
+		t.Errorf("Messages = %d, want 5", len(result.Messages))
+	}
 }
 
 func TestSelectEvictableWithinBudgetPrefersSummariesThenNewestMessages(t *testing.T) {

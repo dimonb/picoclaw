@@ -28,6 +28,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 
 	var history []providers.Message
 	var summary string
+	var assembleEvicted bool
 	if !ts.opts.NoHistory {
 		if resp, err := p.ContextManager.Assemble(ctx, &AssembleRequest{
 			SessionKey:    ts.sessionKey,
@@ -35,6 +36,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		}); err == nil && resp != nil {
 			history = resp.History
 			summary = resp.Summary
+			assembleEvicted = resp.Evicted
 		}
 	}
 	ts.captureRestorePoint(history, summary)
@@ -52,7 +54,12 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 
 	if !ts.opts.NoHistory {
 		initialBudgetStats := estimateContextBudgetStats(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens)
-		if initialBudgetStats.OverBudget {
+		// assembleEvicted is a trigger in its own right. When the stored context
+		// no longer fits, the manager drops its oldest items and hands back a
+		// prompt that does fit — so OverBudget stays false and, without this,
+		// compaction is never asked for. The conversation then loses its oldest
+		// messages on every turn instead of summarizing them, forever.
+		if initialBudgetStats.OverBudget || assembleEvicted {
 			// The estimate that produced the assemble budget was too optimistic
 			// (usually a summary-heavy or skill-heavy system prompt). Recompute
 			// the budget from what the prompt actually costs, so compaction and
@@ -68,6 +75,11 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 			fields["history_msgs"] = len(history)
 			fields["summary_chars"] = len(summary)
 			fields["history_budget"] = measuredBudget
+			fields["assemble_evicted"] = assembleEvicted
+			fields["trigger"] = "over_budget"
+			if !initialBudgetStats.OverBudget {
+				fields["trigger"] = "assemble_evicted"
+			}
 			logger.WarnCF("agent", "Proactive compression: context budget exceeded before LLM call", fields)
 			if err := p.ContextManager.Compact(ctx, &CompactRequest{
 				SessionKey:    ts.sessionKey,

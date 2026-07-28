@@ -22,6 +22,15 @@ const (
 	CondensedTargetTokens int = 2000  // Target tokens for condensed summaries
 	MaxExpandTokens       int = 4000  // Token cap for expansion queries
 
+	// MaxStoredToolResultTokens caps a single tool_result at ingest. Tool
+	// output is unbounded — a shell command that dumps a TUI screen or a log
+	// file lands tens of thousands of tokens in one message, and that message
+	// then sits in history forever, crowding out real conversation. The cap
+	// stays well under LeafChunkTokens so that no single stored message can
+	// fill a leaf chunk by itself. The model still sees the untruncated
+	// output during the turn that produced it; only the stored copy is cut.
+	MaxStoredToolResultTokens int = 8000
+
 	// MaxCompactIterations caps CompactUntilUnder to prevent infinite loops.
 	// Each iteration reduces ~4x tokens via leaf (8:1) or condensed (4:1) compaction.
 	// With a 200k token context window and 75% threshold, ~20 iterations is enough

@@ -60,6 +60,14 @@ type AssembleInput struct {
 type AssembleResult struct {
 	Messages []Message `json:"messages"`
 	Summary  string    `json:"summary"` // formatted XML summaries + system prompt addition
+
+	// Evicted reports that the stored context did not fit the requested budget
+	// and older items were left out to make it fit. The returned context is
+	// valid either way, which is exactly the problem: without this flag the
+	// caller sees a prompt that fits and never triggers compaction, so the
+	// conversation keeps growing and every turn silently loses its oldest
+	// messages instead of summarizing them.
+	Evicted bool `json:"evicted,omitempty"`
 }
 
 const numSessionShards = 256
@@ -262,6 +270,14 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 	var totalTokens int
 	var msgIDs []int64
 	for _, msg := range messages {
+		if capToolResultForStorage(&msg) {
+			logger.InfoCF("seahorse", "ingest: truncated oversized tool result", map[string]any{
+				"conv_id":     conv.ConversationID,
+				"role":        msg.Role,
+				"token_cap":   MaxStoredToolResultTokens,
+				"kept_tokens": msg.TokenCount,
+			})
+		}
 		var added *Message
 		var err error
 		if len(msg.Parts) > 0 {
