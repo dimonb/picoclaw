@@ -96,6 +96,64 @@ func EstimateToolDefsTokens(defs []providers.ToolDefinition) int {
 	return tokenizer.EstimateToolDefsTokens(defs)
 }
 
+type contextBudgetStats struct {
+	MessageCount    int
+	ToolCount       int
+	MessageTokens   int
+	SystemTokens    int
+	NonSystemTokens int
+	ToolTokens      int
+	MaxTokens       int
+	TotalTokens     int
+	ContextWindow   int
+	RemainingTokens int
+	OverBudget      bool
+}
+
+func estimateContextBudgetStats(
+	contextWindow int,
+	messages []providers.Message,
+	toolDefs []providers.ToolDefinition,
+	maxTokens int,
+) contextBudgetStats {
+	stats := contextBudgetStats{
+		MessageCount:  len(messages),
+		ToolCount:     len(toolDefs),
+		MaxTokens:     maxTokens,
+		ContextWindow: contextWindow,
+	}
+	for _, m := range messages {
+		tokens := EstimateMessageTokens(m)
+		stats.MessageTokens += tokens
+		if m.Role == "system" {
+			stats.SystemTokens += tokens
+		} else {
+			stats.NonSystemTokens += tokens
+		}
+	}
+	stats.ToolTokens = EstimateToolDefsTokens(toolDefs)
+	stats.TotalTokens = stats.MessageTokens + stats.ToolTokens + maxTokens
+	stats.RemainingTokens = contextWindow - stats.TotalTokens
+	stats.OverBudget = stats.TotalTokens > contextWindow
+	return stats
+}
+
+func contextBudgetStatsFields(stats contextBudgetStats) map[string]any {
+	return map[string]any{
+		"message_count":     stats.MessageCount,
+		"tool_count":        stats.ToolCount,
+		"message_tokens":    stats.MessageTokens,
+		"system_tokens":     stats.SystemTokens,
+		"non_system_tokens": stats.NonSystemTokens,
+		"tool_tokens":       stats.ToolTokens,
+		"max_tokens":        stats.MaxTokens,
+		"total_tokens":      stats.TotalTokens,
+		"context_window":    stats.ContextWindow,
+		"remaining_tokens":  stats.RemainingTokens,
+		"over_budget":       stats.OverBudget,
+	}
+}
+
 // isOverContextBudget checks whether the assembled messages plus tool definitions
 // and output reserve would exceed the model's context window. This enables
 // proactive compression before calling the LLM, rather than reacting to 400 errors.
@@ -105,15 +163,7 @@ func isOverContextBudget(
 	toolDefs []providers.ToolDefinition,
 	maxTokens int,
 ) bool {
-	msgTokens := 0
-	for _, m := range messages {
-		msgTokens += EstimateMessageTokens(m)
-	}
-
-	toolTokens := EstimateToolDefsTokens(toolDefs)
-	total := msgTokens + toolTokens + maxTokens
-
-	return total > contextWindow
+	return estimateContextBudgetStats(contextWindow, messages, toolDefs, maxTokens).OverBudget
 }
 
 // trimHistoryToFitContextWindow rebuilds the prompt from progressively newer

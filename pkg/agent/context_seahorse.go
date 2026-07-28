@@ -133,6 +133,15 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 	}
 
 	history := seahorseToProviderMessages(result)
+	logger.DebugCF("agent", "Seahorse assemble result", map[string]any{
+		"session_key":      req.SessionKey,
+		"budget":           budget,
+		"max_tokens":       req.MaxTokens,
+		"effective_budget": effectiveBudget,
+		"history_msgs":     len(history),
+		"summary_chars":    len(result.Summary),
+		"summary_tokens":   tokenizer.EstimateMessageTokens(providers.Message{Content: result.Summary}),
+	})
 
 	// Summary is already formatted as XML with system prompt addition by assembler
 	return &AssembleResponse{
