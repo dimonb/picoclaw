@@ -797,11 +797,16 @@ func formatCurrentSenderLine(senderID, senderDisplayName string) string {
 func (cb *ContextBuilder) buildDynamicContext(
 	channel, chatID, senderID, senderDisplayName string,
 ) string {
-	now := time.Now().Format("2006-01-02 15:04 (Monday)")
+	// Date, not time-of-day: this string opens the system prompt, which every
+	// provider treats as the head of the cacheable prefix. A minute-resolution
+	// clock invalidates that prefix on every request — the exact timestamp of
+	// each message is already carried by the per-message annotations, so the
+	// only thing lost here is sub-day precision the model rarely needs.
+	today := time.Now().Format("2006-01-02 (Monday)")
 	rt := fmt.Sprintf("%s %s, Go %s", runtime.GOOS, runtime.GOARCH, runtime.Version())
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "## Current Time\n%s\n\n## Runtime\n%s", now, rt)
+	fmt.Fprintf(&sb, "## Current Date\n%s\n\n## Runtime\n%s", today, rt)
 
 	if channel != "" && chatID != "" {
 		fmt.Fprintf(&sb, "\n\n## Current Session\nChannel: %s\nChat ID: %s", channel, chatID)
