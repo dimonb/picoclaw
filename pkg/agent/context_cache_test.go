@@ -188,6 +188,71 @@ func TestBuildMessages_CurrentSenderDynamicContext(t *testing.T) {
 	}
 }
 
+// TestBuildMessages_CurrentTurnEnvelopeSurvivesRoundTrip pins the prompt
+// prefix against the storage round-trip: the annotation rendered for the
+// current user message must equal the one rendered for that same message a
+// turn later, when it comes back from the context manager as history.
+//
+// The current turn used to be annotated from a metadata bag that dropped
+// SenderUsername, so "[from:Dmitrii; …]" became "[from:Dmitrii (@dimonb); …]"
+// on the next turn. codex-ws fingerprints the prefix it already sent, saw the
+// mismatch, and replayed the whole conversation — throwing away the
+// server-side cache once per turn in every chat with a named sender.
+func TestBuildMessages_CurrentTurnEnvelopeSurvivesRoundTrip(t *testing.T) {
+	tmpDir := setupWorkspace(t, map[string]string{
+		"IDENTITY.md": "# Identity\nTest agent.",
+	})
+	defer os.RemoveAll(tmpDir)
+
+	cb := NewContextBuilder(tmpDir)
+
+	req := PromptBuildRequest{
+		CurrentMessage:    "пинг",
+		Channel:           "telegram",
+		ChatID:            "-100:169",
+		SenderID:          "35243507",
+		SenderDisplayName: "Dmitrii",
+		SenderUsername:    "dimonb",
+		MessageID:         "-100:169:6018",
+	}
+
+	msgs := cb.BuildMessagesFromPrompt(req)
+	current := msgs[len(msgs)-1]
+	if !strings.Contains(current.Content, "from:Dmitrii (@dimonb)") {
+		t.Fatalf("current turn envelope missing username: %q", current.Content)
+	}
+
+	// Next turn: the same message is replayed as history, rebuilt from the
+	// metadata the storage layer kept. Content is raw there — the envelope is
+	// a render-time concern — so feed it back the way the assembler does.
+	stored := providers.Message{
+		Role:      "user",
+		Content:   req.CurrentMessage,
+		MessageID: req.MessageID,
+		Metadata: &providers.MessageMetadata{
+			SenderID:          req.SenderID,
+			SenderDisplayName: req.SenderDisplayName,
+			SenderUsername:    req.SenderUsername,
+		},
+	}
+	next := cb.BuildMessagesFromPrompt(PromptBuildRequest{
+		History:           []providers.Message{stored},
+		CurrentMessage:    "пинг",
+		Channel:           req.Channel,
+		ChatID:            req.ChatID,
+		SenderID:          req.SenderID,
+		SenderDisplayName: req.SenderDisplayName,
+		SenderUsername:    req.SenderUsername,
+		MessageID:         "-100:169:6020",
+	})
+
+	replayed := next[1]
+	if replayed.Content != current.Content {
+		t.Errorf("prompt prefix rewritten across turns:\n  sent:     %q\n  replayed: %q",
+			current.Content, replayed.Content)
+	}
+}
+
 // TestMtimeAutoInvalidation verifies that the cache detects source file changes
 // via mtime without requiring explicit InvalidateCache().
 // Fix: original implementation had no auto-invalidation — edits to bootstrap files,

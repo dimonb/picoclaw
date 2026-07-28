@@ -1018,9 +1018,14 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 	// multimodal providers receive the uploaded image even when the user sends
 	// no accompanying text.
 	if strings.TrimSpace(req.CurrentMessage) != "" || len(req.Media) > 0 {
+		// SenderUsername must be carried here too: the same message comes
+		// back from storage on the next turn with the username set, and a
+		// current turn annotated without it rewrites the prompt prefix one
+		// turn later — which costs codex-ws its whole server-side cache.
 		md := &providers.MessageMetadata{
 			SenderID:          req.SenderID,
 			SenderDisplayName: req.SenderDisplayName,
+			SenderUsername:    req.SenderUsername,
 			ReplyToMessageID:  req.ReplyToMessageID,
 		}
 		if md.IsEmpty() {
