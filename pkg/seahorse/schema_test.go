@@ -66,6 +66,51 @@ func TestRunMigrations(t *testing.T) {
 	}
 }
 
+// Parts are looked up by message_id for every message read; without the index
+// SQLite falls back to a full table scan, which turns startup bootstrap into
+// minutes on a large DB.
+func TestRunSchemaIndexesMessagePartsByMessageID(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := runSchema(db); err != nil {
+		t.Fatalf("runSchema: %v", err)
+	}
+
+	var name string
+	err := db.QueryRow(
+		"SELECT name FROM sqlite_master WHERE type='index' AND name='idx_message_parts_message'",
+	).Scan(&name)
+	if err != nil {
+		t.Fatalf("index idx_message_parts_message not found: %v", err)
+	}
+
+	rows, err := db.Query(
+		`EXPLAIN QUERY PLAN SELECT part_id FROM message_parts WHERE message_id = 1 ORDER BY ordinal`,
+	)
+	if err != nil {
+		t.Fatalf("explain query plan: %v", err)
+	}
+	defer rows.Close()
+
+	var plan strings.Builder
+	for rows.Next() {
+		var id, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+			t.Fatalf("scan plan row: %v", err)
+		}
+		plan.WriteString(detail)
+		plan.WriteString("\n")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("plan rows: %v", err)
+	}
+
+	if !strings.Contains(plan.String(), "idx_message_parts_message") {
+		t.Errorf("parts lookup does not use idx_message_parts_message.\nPlan:\n%s", plan.String())
+	}
+}
+
 func TestRunMigrationsIdempotent(t *testing.T) {
 	db := openTestDB(t)
 

@@ -503,13 +503,19 @@ func (s *Store) GetMessages(ctx context.Context, convID int64, limit int, before
 		return nil, err
 	}
 
-	// Load parts for all messages
+	// Load parts for all messages in batches instead of one query per
+	// message — bootstrap reads whole conversations, so the N+1 version
+	// costs one round trip per stored message.
+	ids := make([]int64, len(msgs))
 	for i := range msgs {
-		parts, err := s.loadMessageParts(ctx, msgs[i].ID)
-		if err != nil {
-			return nil, err
-		}
-		msgs[i].Parts = parts
+		ids[i] = msgs[i].ID
+	}
+	partsByMsg, err := s.loadMessagePartsBatch(ctx, ids)
+	if err != nil {
+		return nil, err
+	}
+	for i := range msgs {
+		msgs[i].Parts = partsByMsg[msgs[i].ID]
 	}
 
 	return msgs, nil
@@ -685,6 +691,55 @@ func (s *Store) UpdateMessageCreatedAt(ctx context.Context, messageID int64, cre
 		return fmt.Errorf("message %d not found", messageID)
 	}
 	return nil
+}
+
+// loadMessagePartsBatchSize bounds the IN-list so the query stays well below
+// SQLite's bound-parameter limit for any conversation size.
+const loadMessagePartsBatchSize = 500
+
+// loadMessagePartsBatch loads parts for many messages at once, keyed by
+// message ID. Parts of each message keep their ordinal order.
+func (s *Store) loadMessagePartsBatch(ctx context.Context, msgIDs []int64) (map[int64][]MessagePart, error) {
+	parts := make(map[int64][]MessagePart, len(msgIDs))
+	if len(msgIDs) == 0 {
+		return parts, nil
+	}
+
+	for start := 0; start < len(msgIDs); start += loadMessagePartsBatchSize {
+		end := min(start+loadMessagePartsBatchSize, len(msgIDs))
+		chunk := msgIDs[start:end]
+
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		placeholders := strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")
+
+		query := `SELECT part_id, message_id, type, text, name, arguments, tool_call_id, media_uri, mime_type
+			 FROM message_parts WHERE message_id IN (` + placeholders + `) ORDER BY message_id, ordinal`
+
+		if err := func() error {
+			rows, err := s.db.QueryContext(ctx, query, args...)
+			if err != nil {
+				return err
+			}
+			defer rows.Close()
+
+			for rows.Next() {
+				var p MessagePart
+				if err := rows.Scan(&p.ID, &p.MessageID, &p.Type, &p.Text, &p.Name, &p.Arguments,
+					&p.ToolCallID, &p.MediaURI, &p.MimeType); err != nil {
+					return err
+				}
+				parts[p.MessageID] = append(parts[p.MessageID], p)
+			}
+			return rows.Err()
+		}(); err != nil {
+			return nil, err
+		}
+	}
+
+	return parts, nil
 }
 
 func (s *Store) loadMessageParts(ctx context.Context, msgID int64) ([]MessagePart, error) {

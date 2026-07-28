@@ -352,6 +352,55 @@ func TestStoreAddMessageWithParts(t *testing.T) {
 	}
 }
 
+// GetMessages loads parts in chunks; verify messages past the chunk boundary
+// still get their own parts, in ordinal order.
+func TestStoreGetMessagesLoadsPartsAcrossBatches(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+
+	conv, _ := s.GetOrCreateConversation(ctx, "agent:parts-batching")
+
+	const total = loadMessagePartsBatchSize + 7
+	for i := range total {
+		parts := []MessagePart{
+			{Type: "text", Text: fmt.Sprintf("first-%d", i)},
+			{Type: "tool_use", Name: "read_file", ToolCallID: fmt.Sprintf("tc_%d", i)},
+			{Type: "text", Text: fmt.Sprintf("last-%d", i)},
+		}
+		if _, err := s.AddMessageWithParts(ctx, conv.ConversationID, "assistant", parts, 1); err != nil {
+			t.Fatalf("AddMessageWithParts %d: %v", i, err)
+		}
+	}
+
+	msgs, err := s.GetMessages(ctx, conv.ConversationID, total, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(msgs) != total {
+		t.Fatalf("expected %d messages, got %d", total, len(msgs))
+	}
+
+	for i, msg := range msgs {
+		if len(msg.Parts) != 3 {
+			t.Fatalf("message %d: expected 3 parts, got %d", i, len(msg.Parts))
+		}
+		if msg.Parts[0].Text != fmt.Sprintf("first-%d", i) {
+			t.Errorf("message %d: part[0].Text = %q, want first-%d", i, msg.Parts[0].Text, i)
+		}
+		if msg.Parts[2].Text != fmt.Sprintf("last-%d", i) {
+			t.Errorf("message %d: part[2].Text = %q, want last-%d", i, msg.Parts[2].Text, i)
+		}
+		if msg.Parts[1].ToolCallID != fmt.Sprintf("tc_%d", i) {
+			t.Errorf("message %d: part[1].ToolCallID = %q, want tc_%d", i, msg.Parts[1].ToolCallID, i)
+		}
+		for _, p := range msg.Parts {
+			if p.MessageID != msg.ID {
+				t.Fatalf("message %d: part carries message_id %d, want %d", i, p.MessageID, msg.ID)
+			}
+		}
+	}
+}
+
 func TestStoreAddMessageWithPartsAndReasoningContent(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
