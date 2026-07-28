@@ -16,6 +16,23 @@ const (
 	CondensedMinFanout     int = 4 // Min summaries per condensed
 	CondensedMinFanoutHard int = 2 // Min for forced compaction
 
+	// SummaryBudgetShare bounds the injected summary block's share of the
+	// assemble budget.
+	//
+	// Summaries are never recycled the way messages are: the assembler reserves
+	// every one of them ahead of raw history, and leaf compaction only ever adds
+	// more. Nothing collapses them in normal operation either — condensed
+	// compaction triggers once stored context passes the full budget, while leaf
+	// compaction triggers at ContextThreshold and keeps the conversation below
+	// that line, so the two never meet and the block ratchets upward for the life
+	// of the chat. Observed on a 28-day topic: 116 leaf summaries, 83k tokens,
+	// injected into all 294KB of every system prompt it built.
+	//
+	// Capping trades always-on recall for retrieval on demand. Summaries past the
+	// allowance stay in SQLite and remain reachable through short_grep; nothing
+	// is deleted.
+	SummaryBudgetShare float64 = 0.15
+
 	// LeafChunkTokens is the token target.
 	LeafChunkTokens       int = 20000 // Max tokens per leaf chunk
 	LeafTargetTokens      int = 1200  // Target tokens for leaf summaries

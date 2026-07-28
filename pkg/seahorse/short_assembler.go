@@ -91,6 +91,40 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 			logger.InfoCF("seahorse", "assemble: trimmed fresh tail to safe boundary", logFields)
 		}
 	}
+
+	// Bound the summary block before any budget arithmetic looks at sizes.
+	// Summaries survive eviction by construction, so without this a conversation
+	// whose stored items all fit re-injects every summary it has ever
+	// accumulated into every system prompt it builds.
+	//
+	// Fresh-tail summaries are protected from dropping but still spend the
+	// allowance, so the cap bounds the whole block rather than just its
+	// evictable half.
+	if input.Budget > 0 {
+		allowance := int(float64(input.Budget) * SummaryBudgetShare)
+		freshTailHasSummary := false
+		for _, r := range freshTail {
+			if r.itemType == "summary" {
+				allowance -= r.tokenCount
+				freshTailHasSummary = true
+			}
+		}
+		if allowance < 0 {
+			allowance = 0
+		}
+		capped, droppedCount, droppedTokens := capSummariesWithinBudget(evictable, allowance, freshTailHasSummary)
+		if droppedCount > 0 {
+			logger.InfoCF("seahorse", "assemble: summary block over share, dropped oldest summaries", map[string]any{
+				"budget":         input.Budget,
+				"allowance":      allowance,
+				"dropped":        droppedCount,
+				"dropped_tokens": droppedTokens,
+				"kept_items":     len(capped),
+			})
+		}
+		evictable = capped
+	}
+
 	remainingBudget := input.Budget - freshTailTokens
 	if remainingBudget < 0 {
 		remainingBudget = 0
@@ -197,6 +231,57 @@ func (a *Assembler) Assemble(ctx context.Context, convID int64, input AssembleIn
 		Summary:  summary,
 		Evicted:  evicted,
 	}, nil
+}
+
+// capSummariesWithinBudget bounds how much of the assemble budget the summary
+// block may occupy, dropping the oldest summaries past the allowance.
+//
+// This runs on every assemble, not only when the context is over budget:
+// selectEvictableWithinBudget is reached solely on the over-budget path, so a
+// conversation whose stored items comfortably fit would otherwise carry an
+// unbounded summary block — the common case, and the expensive one, because
+// that block is rebuilt into the system prompt on every single turn.
+//
+// Newest-first, mirroring the reservation pass below: recent compressed context
+// is the context most likely to matter.
+//
+// Bounding accumulation must never erase the record that earlier conversation
+// existed at all, so one summary is admitted even when it alone exceeds the
+// allowance. haveSummary lets the caller say that guarantee is already met by a
+// protected fresh-tail summary, in which case no floor is applied here.
+//
+// Non-summary items pass through untouched and chronological order is preserved,
+// so the caller's contiguity guarantees over raw messages still hold.
+func capSummariesWithinBudget(
+	evictable []resolvedItem,
+	allowance int,
+	haveSummary bool,
+) (kept []resolvedItem, droppedCount, droppedTokens int) {
+	keep := make([]bool, len(evictable))
+	used := 0
+
+	for i := len(evictable) - 1; i >= 0; i-- {
+		if evictable[i].itemType != "summary" {
+			keep[i] = true
+			continue
+		}
+		if haveSummary && used+evictable[i].tokenCount > allowance {
+			droppedCount++
+			droppedTokens += evictable[i].tokenCount
+			continue
+		}
+		haveSummary = true
+		keep[i] = true
+		used += evictable[i].tokenCount
+	}
+
+	kept = make([]resolvedItem, 0, len(evictable))
+	for i, k := range keep {
+		if k {
+			kept = append(kept, evictable[i])
+		}
+	}
+	return kept, droppedCount, droppedTokens
 }
 
 // selectEvictableWithinBudget picks which evictable items survive when the
