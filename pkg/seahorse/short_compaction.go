@@ -107,6 +107,9 @@ func (e *CompactionEngine) CompactUntilUnder(
 	if len(maxIterations) > 0 && maxIterations[0] > 0 && maxIterations[0] < iterationCap {
 		iterationCap = maxIterations[0]
 	}
+	// Compaction runs summarization LLM calls and can hold a turn for tens of
+	// seconds with nothing else in the log. Time it so the cost is visible.
+	startedAt := time.Now()
 	logger.InfoCF("seahorse", "compact_until_under: start", map[string]any{
 		"conv_id":        convID,
 		"budget":         budget,
@@ -121,16 +124,19 @@ func (e *CompactionEngine) CompactUntilUnder(
 		}
 		if tokens <= budget {
 			logger.InfoCF("seahorse", "compact_until_under: done", map[string]any{
-				"conv_id":   convID,
-				"budget":    budget,
-				"tokens":    tokens,
-				"leaf":      result.LeafSummaries,
-				"condensed": result.CondensedSummaries,
+				"conv_id":     convID,
+				"budget":      budget,
+				"tokens":      tokens,
+				"leaf":        result.LeafSummaries,
+				"condensed":   result.CondensedSummaries,
+				"iterations":  iter,
+				"duration_ms": elapsedMs(startedAt),
 			})
 			return result, nil
 		}
 
 		// Try leaf first
+		iterStartedAt := time.Now()
 		summaryID, err := e.compactLeaf(ctx, convID, true)
 		if err != nil {
 			return result, err
@@ -139,8 +145,11 @@ func (e *CompactionEngine) CompactUntilUnder(
 			result.SummariesCreated = append(result.SummariesCreated, *summaryID)
 			result.LeafSummaries++
 			logger.InfoCF("seahorse", "compact_until_under: leaf", map[string]any{
-				"conv_id":    convID,
-				"summary_id": *summaryID,
+				"conv_id":     convID,
+				"summary_id":  *summaryID,
+				"tokens":      tokens,
+				"budget":      budget,
+				"duration_ms": elapsedMs(iterStartedAt),
 			})
 			continue
 		}
@@ -154,8 +163,11 @@ func (e *CompactionEngine) CompactUntilUnder(
 			result.SummariesCreated = append(result.SummariesCreated, *condensedID)
 			result.CondensedSummaries++
 			logger.InfoCF("seahorse", "compact_until_under: condensed", map[string]any{
-				"conv_id":    convID,
-				"summary_id": *condensedID,
+				"conv_id":     convID,
+				"summary_id":  *condensedID,
+				"tokens":      tokens,
+				"budget":      budget,
+				"duration_ms": elapsedMs(iterStartedAt),
 			})
 			continue
 		}
@@ -164,8 +176,11 @@ func (e *CompactionEngine) CompactUntilUnder(
 		newTokens, _ := e.store.GetContextTokenCount(ctx, convID)
 		if newTokens >= prevTokens {
 			logger.WarnCF("seahorse", "compact_until_under: no progress", map[string]any{
-				"conv_id": convID,
-				"tokens":  newTokens,
+				"conv_id":     convID,
+				"tokens":      newTokens,
+				"budget":      budget,
+				"iterations":  iter,
+				"duration_ms": elapsedMs(startedAt),
 			})
 			return result, nil
 		}
@@ -175,12 +190,18 @@ func (e *CompactionEngine) CompactUntilUnder(
 	// Iteration cap reached. For a bounded (proactive) call this is expected:
 	// the caller trims locally for this turn and compaction resumes next turn.
 	logger.WarnCF("seahorse", "compact_until_under: exceeded max iterations", map[string]any{
-		"conv_id":    convID,
-		"budget":     budget,
-		"iterations": iterationCap,
-		"tokens":     contextTokenCountOrZero(ctx, e, convID),
+		"conv_id":     convID,
+		"budget":      budget,
+		"iterations":  iterationCap,
+		"tokens":      contextTokenCountOrZero(ctx, e, convID),
+		"duration_ms": elapsedMs(startedAt),
 	})
 	return result, nil
+}
+
+// elapsedMs reports whole milliseconds since t, for log fields.
+func elapsedMs(t time.Time) int64 {
+	return time.Since(t).Milliseconds()
 }
 
 // contextTokenCountOrZero reports the stored context size for logging without
