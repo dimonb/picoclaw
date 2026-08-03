@@ -81,6 +81,8 @@ You can also inspect skills and MCP servers directly from Telegram:
 **4. Advanced Formatting**
 You can set use_markdown_v2: true to enable enhanced formatting options. This allows the bot to utilize the full range of Telegram MarkdownV2 features, including nested styles, spoilers, and custom fixed-width blocks.
 
+Or set `use_rich_messages: true` to send replies via Telegram's Rich Messages endpoint (Bot API 10.1+), which renders Markdown tables, headings, task lists, and block quotes natively instead of flattening them. It takes precedence over `use_markdown_v2`, and automatically falls back to plain text if the Rich Messages API call fails.
+
 </details>
 
 <a id="discord"></a>

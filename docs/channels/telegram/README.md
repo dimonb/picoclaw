@@ -17,6 +17,7 @@ The Telegram channel uses long polling via the Telegram Bot API for bot-based co
       "allow_chats": ["-1001234567890"],
       "proxy": "",
       "use_markdown_v2": false,
+      "use_rich_messages": false,
       "media_group_delay_ms": 500
     }
   }
@@ -31,6 +32,7 @@ The Telegram channel uses long polling via the Telegram Bot API for bot-based co
 | allow_chats      | array  | No       | Allowlist of Telegram chat IDs; empty means all chats are allowed. For forum topics use `<chatID>/<threadID>` |
 | proxy            | string | No       | Proxy URL for connecting to the Telegram API (e.g. http://127.0.0.1:7890) |
 | use_markdown_v2 | bool   | No       | Enable Telegram MarkdownV2 formatting                              |
+| use_rich_messages | bool | No       | Send replies via the Bot API Rich Messages endpoint, natively rendering tables, headings, task lists and block quotes. Takes precedence over `use_markdown_v2`. Requires Bot API 10.1+ |
 | media_group_delay_ms | int | No       | Idle delay before processing Telegram media groups/albums. Defaults to 500 ms |
 
 ## Setup
@@ -83,3 +85,27 @@ You can set `use_markdown_v2: true` to enable enhanced formatting options. This 
   }
 }
 ```
+
+### Rich Messages (tables and document-grade formatting)
+
+Set `use_rich_messages: true` to deliver replies through Telegram's **Rich Messages** endpoint (Bot API 10.1+). Instead of the lossy Markdown→HTML/MarkdownV2 conversion — which flattens Markdown tables into a wall of text — the agent's Markdown is sent as-is and rendered natively by Telegram, so tables, headings, task lists, and block quotes look the way they were written.
+
+```json
+{
+  "channel_list": {
+    "telegram": {
+      "enabled": true,
+      "type": "telegram",
+      "token": "YOUR_BOT_TOKEN",
+      "allow_from": ["YOUR_USER_ID"],
+      "use_rich_messages": true
+    }
+  }
+}
+```
+
+Notes:
+
+- `use_rich_messages` takes precedence over `use_markdown_v2` when both are set.
+- The Markdown dialect is GitHub-Flavored-Markdown-compatible (pipe tables, `#` headings, `- [ ]` task lists, `>` block quotes, fenced code, etc.).
+- If the Rich Messages API call fails, the reply automatically falls back to plain text, so nothing is lost on older Telegram clients or servers that don't support the feature yet.

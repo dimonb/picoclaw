@@ -740,7 +740,7 @@ func TestSend_ToolFeedbackStaysSingleMessageAfterHTMLExpansion(t *testing.T) {
 func TestFitToolFeedbackForTelegram_ReservesAnimationFrame(t *testing.T) {
 	content := "🔧 `read_file`\n" + strings.Repeat("a", 4096)
 
-	fitted := fitToolFeedbackForTelegram(content, false, 4096)
+	fitted := fitToolFeedbackForTelegram(content, telegramFormatHTML, 4096)
 	animated := strings.Replace(
 		fitted,
 		"`\n",
@@ -748,7 +748,7 @@ func TestFitToolFeedbackForTelegram_ReservesAnimationFrame(t *testing.T) {
 		1,
 	)
 
-	if got := len([]rune(parseContent(animated, false))); got > 4096 {
+	if got := len([]rune(parseContent(animated, telegramFormatHTML))); got > 4096 {
 		t.Fatalf("animated parsed length = %d, want <= 4096", got)
 	}
 }
@@ -1859,4 +1859,134 @@ func TestHandleMessage_ChatAllowlist_RejectsOtherGroup(t *testing.T) {
 		t.Fatalf("unexpected inbound message published for blocked chat: %+v", inbound)
 	default:
 	}
+}
+
+// --- Rich Messages (Bot API 10.1+) ---
+
+func newRichTestChannel(t *testing.T, caller *stubCaller) *TelegramChannel {
+	t.Helper()
+	ch := newTestChannel(t, caller)
+	ch.tgCfg = &config.TelegramSettings{UseRichMessages: true}
+	return ch
+}
+
+func decodeJSONBody(t *testing.T, data *ta.RequestData) map[string]any {
+	t.Helper()
+	require.NotNil(t, data)
+	require.Equal(t, ta.ContentTypeJSON, data.ContentType)
+	var m map[string]any
+	require.NoError(t, json.Unmarshal(data.BodyRaw, &m))
+	return m
+}
+
+func TestSend_RichMessage_UsesSendRichMessageWithMarkdown(t *testing.T) {
+	const table = "| A | B |\n|---|---|\n| 1 | 2 |"
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return successResponse(t), nil
+		},
+	}
+	ch := newRichTestChannel(t, caller)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: table,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
+
+	body := decodeJSONBody(t, caller.calls[0].Data)
+	rich, ok := body["rich_message"].(map[string]any)
+	require.True(t, ok, "body should contain a rich_message object: %s", string(caller.calls[0].Data.BodyRaw))
+	assert.Equal(t, table, rich["markdown"], "markdown must be passed through unchanged (tables included)")
+}
+
+func TestSend_RichMessage_FallsBackToPlainTextOnError(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if strings.Contains(url, "sendRichMessage") {
+				return nil, errors.New("Bad Request: rich message is unsupported")
+			}
+			return successResponse(t), nil
+		},
+	}
+	ch := newRichTestChannel(t, caller)
+
+	_, err := ch.Send(context.Background(), bus.OutboundMessage{
+		ChatID:  "12345",
+		Content: "**hi**",
+	})
+
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 2, "a rich failure should retry with a plain sendMessage")
+	assert.Contains(t, caller.calls[0].URL, "sendRichMessage")
+	assert.Contains(t, caller.calls[1].URL, "sendMessage")
+	assert.NotContains(t, caller.calls[1].URL, "sendRichMessage")
+
+	body := decodeJSONBody(t, caller.calls[1].Data)
+	assert.Equal(t, "**hi**", body["text"], "fallback must send the original markdown as plain text")
+	_, hasParseMode := body["parse_mode"]
+	assert.False(t, hasParseMode, "plain-text fallback must not set parse_mode")
+}
+
+func TestEditMessage_RichUsesRichMessage(t *testing.T) {
+	const table = "| A | B |\n|---|---|\n| 1 | 2 |"
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			return successResponseWithMessageID(t, 7), nil
+		},
+	}
+	ch := newRichTestChannel(t, caller)
+
+	err := ch.EditMessage(context.Background(), "12345", "7", table)
+	require.NoError(t, err)
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "editMessageText")
+
+	body := decodeJSONBody(t, caller.calls[0].Data)
+	rich, ok := body["rich_message"].(map[string]any)
+	require.True(t, ok, "edit body should carry rich_message: %s", string(caller.calls[0].Data.BodyRaw))
+	assert.Equal(t, table, rich["markdown"])
+	_, hasText := body["text"]
+	assert.False(t, hasText, "a rich edit must not also send a text field")
+}
+
+func TestBeginStream_RichUsesRichDraftAndFinalize(t *testing.T) {
+	const table = "| A | B |\n|---|---|\n| 1 | 2 |"
+	isRichFinal := func(url string) bool {
+		return strings.Contains(url, "sendRichMessage") && !strings.Contains(url, "Draft")
+	}
+	caller := &stubCaller{
+		callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+			if isRichFinal(url) {
+				return successResponseWithMessageID(t, 5), nil
+			}
+			return &ta.Response{Ok: true, Result: []byte("true")}, nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	ch.tgCfg.UseRichMessages = true
+	ch.tgCfg.Streaming = config.StreamingConfig{Enabled: true}
+
+	streamer, err := ch.BeginStream(context.Background(), "12345")
+	require.NoError(t, err)
+
+	require.NoError(t, streamer.Update(context.Background(), table))
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "sendRichMessageDraft")
+	draftBody := decodeJSONBody(t, caller.calls[0].Data)
+	draftRich, ok := draftBody["rich_message"].(map[string]any)
+	require.True(t, ok, "draft body should carry rich_message: %s", string(caller.calls[0].Data.BodyRaw))
+	assert.Equal(t, table, draftRich["markdown"])
+
+	require.NoError(t, streamer.Finalize(context.Background(), table))
+	sawRichFinal := false
+	for _, call := range caller.calls {
+		if isRichFinal(call.URL) {
+			sawRichFinal = true
+		}
+	}
+	assert.True(t, sawRichFinal, "finalize should deliver the message via sendRichMessage")
 }

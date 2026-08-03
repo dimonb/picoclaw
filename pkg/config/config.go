@@ -591,6 +591,7 @@ type TelegramSettings struct {
 	AllowChats           FlexibleStringSlice `json:"allow_chats,omitempty"            yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOW_CHATS"`
 	Streaming            StreamingConfig     `json:"streaming,omitzero"               yaml:"-"`
 	UseMarkdownV2        bool                `json:"use_markdown_v2"                  yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_USE_MARKDOWN_V2"`
+	UseRichMessages      bool                `json:"use_rich_messages"                yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_USE_RICH_MESSAGES"`
 	MediaGroupDelayMS    int                 `json:"media_group_delay_ms"             yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_MEDIA_GROUP_DELAY_MS"`
 	AllowedReactionEmoji FlexibleStringSlice `json:"allowed_reaction_emoji,omitempty" yaml:"-"               env:"PICOCLAW_CHANNELS_TELEGRAM_ALLOWED_REACTION_EMOJI"`
 	// DisableInboundReaction suppresses the automatic 👀 reaction the channel

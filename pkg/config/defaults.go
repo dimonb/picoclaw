@@ -545,6 +545,7 @@ func defaultChannels() ChannelsConfig {
 			"placeholder": map[string]any{"enabled": true, "text": []string{"Thinking... 💭"}},
 			"settings": map[string]any{
 				"use_markdown_v2":      false,
+				"use_rich_messages":    false,
 				"media_group_delay_ms": 500,
 			},
 		},

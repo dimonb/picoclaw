@@ -118,6 +118,7 @@
         "proxy": "",
         "allow_chats": [],
         "use_markdown_v2": false,
+        "use_rich_messages": false,
         "streaming": {
           "enabled": true
         }
