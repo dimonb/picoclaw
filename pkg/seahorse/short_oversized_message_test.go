@@ -164,6 +164,85 @@ func TestCapToolResultForStorage(t *testing.T) {
 	})
 }
 
+// TestBootstrapDoesNotRebuildCappedToolResults pins the startup cost of the
+// storage cap.
+//
+// The cap rewrites tool output on its way into SQLite, but the JSONL history it
+// came from keeps the full text forever. Bootstrap compared the two directly,
+// so a conversation that had ever stored an oversized tool result reported a
+// mismatch at that message on every single startup, deleted everything after it
+// and re-ingested — which capped the text again, so the next startup found the
+// same "edit". On the beta bot that was 22 conversations rebuilt per boot, each
+// delete scanning the whole FTS index: ~8.5 minutes of startup during which the
+// gateway has not started a single channel.
+func TestBootstrapDoesNotRebuildCappedToolResults(t *testing.T) {
+	e := newTestEngine(t)
+	ctx := context.Background()
+	sessionKey := "test:bootstrap-capped-tool-result"
+
+	huge := strings.Repeat("x", MaxStoredToolResultTokens*40)
+	if estimateTextTokens(huge) <= MaxStoredToolResultTokens {
+		t.Fatalf("test fixture is not over the cap")
+	}
+
+	// The canonical history, exactly as the JSONL replays it on every boot.
+	history := []Message{
+		{Role: "user", Content: "read the file", TokenCount: 4},
+		{
+			Role:       "assistant",
+			Parts:      []MessagePart{{Type: "tool_use", Name: "read_file", ToolCallID: "call_1", Arguments: "{}"}},
+			TokenCount: 8,
+		},
+		{
+			Role:       "tool",
+			Parts:      []MessagePart{{Type: "tool_result", ToolCallID: "call_1", Text: huge}},
+			TokenCount: estimateTextTokens(huge),
+		},
+		{Role: "assistant", Content: "done", TokenCount: 2},
+	}
+
+	if err := e.Bootstrap(ctx, sessionKey, history); err != nil {
+		t.Fatalf("first Bootstrap: %v", err)
+	}
+	conv, err := e.store.GetOrCreateConversation(ctx, sessionKey)
+	if err != nil {
+		t.Fatalf("GetOrCreateConversation: %v", err)
+	}
+	before, err := e.store.GetMessages(ctx, conv.ConversationID, 100, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+	if len(before) != len(history) {
+		t.Fatalf("stored %d messages, want %d", len(before), len(history))
+	}
+
+	// Restart: same history, nothing edited.
+	if err := e.Bootstrap(ctx, sessionKey, history); err != nil {
+		t.Fatalf("second Bootstrap: %v", err)
+	}
+	after, err := e.store.GetMessages(ctx, conv.ConversationID, 100, 0)
+	if err != nil {
+		t.Fatalf("GetMessages: %v", err)
+	}
+
+	if len(after) != len(before) {
+		t.Fatalf("message count changed across restart: %d → %d", len(before), len(after))
+	}
+	for i := range before {
+		if before[i].ID != after[i].ID {
+			t.Fatalf("message %d was deleted and re-ingested (id %d → %d): every restart "+
+				"rebuilds the tail of this conversation", i, before[i].ID, after[i].ID)
+		}
+	}
+
+	// The history slice belongs to the caller — the session store hands out the
+	// same messages to the rest of the turn.
+	if len(history[2].Parts[0].Text) != len(huge) {
+		t.Errorf("Bootstrap truncated the caller's history in place: %d chars left of %d",
+			len(history[2].Parts[0].Text), len(huge))
+	}
+}
+
 // TestCompactSkipsLeafWellUnderBudget pins the end-of-turn leaf trigger to the
 // budget.
 //

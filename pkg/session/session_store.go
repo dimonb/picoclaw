@@ -32,3 +32,13 @@ type SessionStore interface {
 	// Close releases resources held by the store.
 	Close() error
 }
+
+// HistoryRevisionStore is an optional capability: a store that can report
+// whether a session's history has moved without reading it back.
+//
+// Consumers that mirror history into their own storage use it to skip
+// unchanged sessions. Implementations must return "" rather than guess when
+// they cannot tell, and callers must treat "" as "changed".
+type HistoryRevisionStore interface {
+	HistoryRevision(key string) string
+}

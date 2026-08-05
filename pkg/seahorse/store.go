@@ -146,6 +146,39 @@ func (s *Store) GetConversationBySessionKey(ctx context.Context, sessionKey stri
 	return &conv, nil
 }
 
+// GetHistoryRevision returns the history revision recorded by the last
+// successful bootstrap of this session, or "" when the session is unknown or
+// has never been reconciled.
+func (s *Store) GetHistoryRevision(ctx context.Context, sessionKey string) (string, error) {
+	var revision sql.NullString
+	err := s.db.QueryRowContext(ctx,
+		"SELECT history_revision FROM conversations WHERE session_key = ?",
+		sessionKey,
+	).Scan(&revision)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get history revision: %w", err)
+	}
+	return revision.String, nil
+}
+
+// SetHistoryRevision records the revision of the history this conversation is
+// now in sync with. Storing a revision older than what was actually reconciled
+// is safe (it costs a redundant reconcile); storing a newer one is not, so
+// callers must sample the revision before they read the history.
+func (s *Store) SetHistoryRevision(ctx context.Context, sessionKey, revision string) error {
+	_, err := s.db.ExecContext(ctx,
+		"UPDATE conversations SET history_revision = ? WHERE session_key = ?",
+		revision, sessionKey,
+	)
+	if err != nil {
+		return fmt.Errorf("set history revision: %w", err)
+	}
+	return nil
+}
+
 // GetSessionStatus returns status for a specific session.
 func (s *Store) GetSessionStatus(ctx context.Context, sessionKey string) (*SessionStatus, error) {
 	conv, err := s.GetConversationBySessionKey(ctx, sessionKey)
@@ -1175,6 +1208,12 @@ func (s *Store) ClearConversation(ctx context.Context, convID int64) error {
 	if _, err := tx.ExecContext(ctx,
 		"DELETE FROM messages WHERE conversation_id = ?", convID); err != nil {
 		return fmt.Errorf("messages: %w", err)
+	}
+	// The stored history is gone, so whatever revision it was in sync with no
+	// longer describes this conversation.
+	if _, err := tx.ExecContext(ctx,
+		"UPDATE conversations SET history_revision = '' WHERE conversation_id = ?", convID); err != nil {
+		return fmt.Errorf("history_revision: %w", err)
 	}
 
 	return tx.Commit()

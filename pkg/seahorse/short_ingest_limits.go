@@ -65,6 +65,38 @@ func capToolResultForStorage(msg *Message) bool {
 	return changed
 }
 
+// storageShape returns the message as Ingest would persist it, without
+// touching the caller's copy.
+//
+// Bootstrap must compare the canonical JSONL against this shape rather than
+// against the raw message. Ingest caps oversized tool output, so the stored row
+// is a shorter string than the history it came from; comparing raw text reads
+// that cap as a history edit, deletes the conversation tail and re-ingests it —
+// which caps it again, so the next startup finds the same "edit". Every boot
+// then rebuilds every conversation that ever stored a large tool result.
+//
+// Capping is idempotent: text already under the cap comes back unchanged, so
+// the shaped message is also what a re-ingest would store.
+//
+// The Parts slice is cloned first: capToolResultForStorage rewrites part text
+// in place, and a Message copy still shares its caller's backing array.
+func storageShape(msg Message) (Message, bool) {
+	shaped := msg
+	if len(msg.Parts) > 0 {
+		shaped.Parts = append([]MessagePart(nil), msg.Parts...)
+	}
+	return shaped, capToolResultForStorage(&shaped)
+}
+
+// storageShapes maps storageShape over a slice.
+func storageShapes(messages []Message) []Message {
+	shaped := make([]Message, len(messages))
+	for i := range messages {
+		shaped[i], _ = storageShape(messages[i])
+	}
+	return shaped
+}
+
 // truncateToolTextForStorage cuts text down to roughly MaxStoredToolResultTokens,
 // keeping both ends. The head carries the command and the start of its output;
 // the tail carries the exit status and whatever error the tool ended on, which

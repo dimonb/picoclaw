@@ -190,3 +190,23 @@ func (b *JSONLBackend) Close() error {
 func (b *JSONLBackend) ListSessions() []string {
 	return b.store.ListSessions()
 }
+
+// HistoryRevision returns an opaque token that changes whenever GetHistory
+// would return something different, or "" when the underlying store cannot
+// tell. Callers must treat "" as "changed".
+func (b *JSONLBackend) HistoryRevision(key string) string {
+	revStore, ok := b.store.(historyRevisionStore)
+	if !ok {
+		return ""
+	}
+	return revStore.HistoryRevision(b.resolveSessionKey(key))
+}
+
+type historyRevisionStore interface {
+	HistoryRevision(sessionKey string) string
+}
+
+// The bootstrap sweep only skips unchanged sessions when the live store
+// advertises this capability, and it degrades silently to re-reading
+// everything if it does not.
+var _ HistoryRevisionStore = (*JSONLBackend)(nil)

@@ -281,8 +281,9 @@ func (e *Engine) Ingest(ctx context.Context, sessionKey string, messages []Messa
 
 	var totalTokens int
 	var msgIDs []int64
-	for _, msg := range messages {
-		if capToolResultForStorage(&msg) {
+	for _, raw := range messages {
+		msg, capped := storageShape(raw)
+		if capped {
 			logger.InfoCF("seahorse", "ingest: truncated oversized tool result", map[string]any{
 				"conv_id":     conv.ConversationID,
 				"role":        msg.Role,
@@ -484,6 +485,32 @@ func (e *Engine) ClearSession(ctx context.Context, sessionKey string) error {
 	return e.store.ClearConversation(ctx, conv.ConversationID)
 }
 
+// StoresSession reports whether the engine keeps history for this session at
+// all. Callers use it to skip work — reading a session's history back off disk,
+// for one — that the engine would then discard.
+func (e *Engine) StoresSession(sessionKey string) bool {
+	return !e.shouldIgnoreSession(sessionKey) && !e.isStatelessSession(sessionKey)
+}
+
+// HistoryRevision returns the revision the last successful Bootstrap of this
+// session was in sync with, or "" when it has never been reconciled.
+//
+// A caller that can cheaply compute the current revision of its own history
+// (see session.HistoryRevisionStore) uses this to skip loading and comparing a
+// session that has not changed since.
+func (e *Engine) HistoryRevision(ctx context.Context, sessionKey string) (string, error) {
+	return e.store.GetHistoryRevision(ctx, sessionKey)
+}
+
+// SetHistoryRevision records the revision Bootstrap just reconciled against.
+// No-op for sessions the engine does not store.
+func (e *Engine) SetHistoryRevision(ctx context.Context, sessionKey, revision string) error {
+	if e.shouldIgnoreSession(sessionKey) || e.isStatelessSession(sessionKey) {
+		return nil
+	}
+	return e.store.SetHistoryRevision(ctx, sessionKey, revision)
+}
+
 // Bootstrap reconciles a session's messages with the database.
 // Called once at startup for each known session.
 // Bootstrap reconciles JSONL history with SQLite by ingesting only the delta.
@@ -499,6 +526,12 @@ func (e *Engine) Bootstrap(ctx context.Context, sessionKey string, messages []Me
 	if len(messages) == 0 {
 		return nil
 	}
+
+	// Reconcile against the shape Ingest persists, not the raw history: the
+	// stored copy of an oversized tool result is capped, and comparing it to
+	// the uncapped original makes every such conversation look edited on every
+	// startup. See storageShape.
+	messages = storageShapes(messages)
 
 	conv, err := e.store.GetOrCreateConversation(ctx, sessionKey)
 	if err != nil {

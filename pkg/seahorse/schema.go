@@ -35,10 +35,11 @@ func runSchema(db *sql.DB) error {
 
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS conversations (
-			conversation_id INTEGER PRIMARY KEY AUTOINCREMENT,
-			session_key     TEXT NOT NULL UNIQUE,
-			created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-			updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+			conversation_id  INTEGER PRIMARY KEY AUTOINCREMENT,
+			session_key      TEXT NOT NULL UNIQUE,
+			history_revision TEXT NOT NULL DEFAULT '',
+			created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+			updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
 
 		`CREATE TABLE IF NOT EXISTS messages (
@@ -167,6 +168,9 @@ func runSchema(db *sql.DB) error {
 		}
 	}
 
+	if err := ensureConversationsHistoryRevisionColumn(db); err != nil {
+		return err
+	}
 	if err := ensureMessagesReasoningContentColumn(db); err != nil {
 		return err
 	}
@@ -181,6 +185,25 @@ func runSchema(db *sql.DB) error {
 	}
 	if err := ensureMessagesAttachmentsColumn(db); err != nil {
 		return err
+	}
+	return nil
+}
+
+// ensureConversationsHistoryRevisionColumn adds the marker the bootstrap sweep
+// uses to skip sessions whose JSONL has not moved since it last reconciled
+// them. Existing rows start empty, which reads as "unknown" and reconciles once.
+func ensureConversationsHistoryRevisionColumn(db *sql.DB) error {
+	hasColumn, err := tableHasColumn(db, "conversations", "history_revision")
+	if err != nil {
+		return fmt.Errorf("check conversations.history_revision: %w", err)
+	}
+	if hasColumn {
+		return nil
+	}
+	if _, err := db.Exec(
+		`ALTER TABLE conversations ADD COLUMN history_revision TEXT NOT NULL DEFAULT ''`,
+	); err != nil {
+		return fmt.Errorf("add conversations.history_revision: %w", err)
 	}
 	return nil
 }

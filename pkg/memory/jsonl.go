@@ -851,6 +851,36 @@ func (s *JSONLStore) rewriteJSONL(
 	return fileutil.WriteFileAtomic(s.jsonlPath(sessionKey), buf.Bytes(), 0o644)
 }
 
+// HistoryRevision returns a cheap identity for a session's stored history.
+//
+// It changes whenever GetHistory would return something different, and costs
+// two stat-sized reads instead of parsing the whole JSONL. Callers that mirror
+// the history elsewhere (the seahorse bootstrap sweep) use it to skip sessions
+// that have not moved since they were last reconciled — on a workspace with a
+// few thousand archived sessions that is the difference between parsing
+// hundreds of megabytes at every startup and reading a few hundred bytes.
+//
+// The empty string means "unknown": callers must treat it as changed.
+//
+// Both inputs matter. Appends and rewrites change the JSONL's size or mtime;
+// TruncateHistory moves the logical start without touching the file at all, so
+// the skip offset is part of the identity too.
+func (s *JSONLStore) HistoryRevision(sessionKey string) string {
+	l := s.sessionLock(sessionKey)
+	l.Lock()
+	defer l.Unlock()
+
+	info, err := os.Stat(s.jsonlPath(sessionKey))
+	if err != nil {
+		return ""
+	}
+	meta, err := s.readMeta(sessionKey)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d:%d", info.Size(), info.ModTime().UnixNano(), meta.Skip)
+}
+
 // ListSessions returns all known session keys by reading .meta.json files.
 func (s *JSONLStore) ListSessions() []string {
 	entries, err := os.ReadDir(s.dir)
