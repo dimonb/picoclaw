@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -16,6 +17,11 @@ type GatewayConfig struct {
 	Port      int    `json:"port"                env:"PICOCLAW_GATEWAY_PORT"`
 	HotReload bool   `json:"hot_reload"          env:"PICOCLAW_GATEWAY_HOT_RELOAD"`
 	LogLevel  string `json:"log_level,omitempty" env:"PICOCLAW_LOG_LEVEL"`
+	// LogMaxSizeMB and LogMaxFiles bound gateway.log, which is otherwise an
+	// unbounded append file — on a persistent volume it outlives restarts and
+	// just keeps growing. Zero means the logger's defaults.
+	LogMaxSizeMB int `json:"log_max_size_mb,omitempty" env:"PICOCLAW_LOG_MAX_SIZE_MB"`
+	LogMaxFiles  int `json:"log_max_files,omitempty"   env:"PICOCLAW_LOG_MAX_FILES"`
 }
 
 func canonicalGatewayLogLevel(level logger.LogLevel) string {
@@ -101,4 +107,32 @@ func ResolveGatewayLogLevel(path string) string {
 	}
 
 	return normalizeGatewayLogLevel(cfg.Gateway.LogLevel)
+}
+
+// ResolveGatewayLogRotation reads the log rotation bounds the same way, and for
+// the same reason: file logging is enabled before the config loader runs, so
+// the loader's own output already needs somewhere bounded to go. Zero values
+// leave the logger on its defaults.
+func ResolveGatewayLogRotation(path string) logger.FileLoggingOptions {
+	var cfg struct {
+		Gateway GatewayConfig `json:"gateway"`
+	}
+
+	if data, err := os.ReadFile(path); err == nil {
+		// A parse error is already reported by ResolveGatewayLogLevel, which
+		// runs alongside this; staying quiet here avoids duplicating it.
+		_ = json.Unmarshal(data, &cfg)
+	}
+
+	opts := logger.FileLoggingOptions{
+		MaxSizeMB: cfg.Gateway.LogMaxSizeMB,
+		MaxFiles:  cfg.Gateway.LogMaxFiles,
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("PICOCLAW_LOG_MAX_SIZE_MB"))); err == nil && v > 0 {
+		opts.MaxSizeMB = v
+	}
+	if v, err := strconv.Atoi(strings.TrimSpace(os.Getenv("PICOCLAW_LOG_MAX_FILES"))); err == nil && v > 0 {
+		opts.MaxFiles = v
+	}
+	return opts
 }

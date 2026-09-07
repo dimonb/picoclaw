@@ -570,10 +570,13 @@
     }
   },
   "gateway": {
-    "_comment": "Default log level is set to 'fatal'. Other available options are 'debug', 'info', 'warn' and 'error'.",
+    "_comment": "Default log level is set to 'fatal'. Other available options are 'debug', 'info', 'warn' and 'error'. Note that the gateway's -d flag overrides log_level with 'debug'.",
+    "_comment_log_rotation": "gateway.log rotates once it passes log_max_size_mb, keeping log_max_files older files alongside it, so the total ceiling is log_max_size_mb * (log_max_files + 1). Defaults: 64 MB and 3 files.",
     "host": "localhost",
     "port": 18790,
     "hot_reload": false,
-    "log_level": "fatal"
+    "log_level": "fatal",
+    "log_max_size_mb": 64,
+    "log_max_files": 3
   }
 }

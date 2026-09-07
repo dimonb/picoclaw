@@ -37,7 +37,7 @@ var (
 
 	currentLevel  = INFO
 	logger        zerolog.Logger
-	logFile       *os.File
+	logFile       *rotatingFile
 	once          sync.Once
 	mu            sync.RWMutex
 	writers       []io.Writer
@@ -173,7 +173,42 @@ func SetLevelFromString(s string) {
 	}
 }
 
+// FileLoggingOptions bounds the log file on disk. The file logger used to be a
+// bare append handle with no ceiling at all: on the beta bot, where the log
+// lives on a PVC and so survives restarts, it reached 1.2 GB. Zero values mean
+// the defaults.
+type FileLoggingOptions struct {
+	// MaxSizeMB rotates the active file once a write would carry it past this.
+	MaxSizeMB int
+	// MaxFiles is how many rotated files to keep alongside the active one, so
+	// the total ceiling is MaxSizeMB * (MaxFiles + 1).
+	MaxFiles int
+}
+
+const (
+	// Deliberately modest: picoclaw also runs on boards with a couple of GB of
+	// storage, so the default ceiling is 256 MB total. Deployments with room
+	// raise it through gateway.log_max_size_mb / log_max_files.
+	defaultLogMaxSizeMB = 64
+	defaultLogMaxFiles  = 3
+)
+
+func (o FileLoggingOptions) normalized() FileLoggingOptions {
+	if o.MaxSizeMB <= 0 {
+		o.MaxSizeMB = defaultLogMaxSizeMB
+	}
+	if o.MaxFiles <= 0 {
+		o.MaxFiles = defaultLogMaxFiles
+	}
+	return o
+}
+
 func EnableFileLogging(filePath string) error {
+	return EnableFileLoggingWithOptions(filePath, FileLoggingOptions{})
+}
+
+// EnableFileLoggingWithOptions sends log output to filePath, rotating it by size.
+func EnableFileLoggingWithOptions(filePath string, opts FileLoggingOptions) error {
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -181,7 +216,11 @@ func EnableFileLogging(filePath string) error {
 		return fmt.Errorf("failed to create log directory: %w", err)
 	}
 
-	newFile, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if len(writers) != 1 {
+		return fmt.Errorf("failed to configure file logging: unexpected writer count %d", len(writers))
+	}
+
+	newFile, err := newRotatingFile(filePath, opts.normalized())
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}
@@ -192,10 +231,6 @@ func EnableFileLogging(filePath string) error {
 	}
 
 	logFile = newFile
-
-	if len(writers) != 1 {
-		return fmt.Errorf("failed to configure file logging: %w", err)
-	}
 
 	writers = append(writers, logFile)
 	logger = logger.Output(io.MultiWriter(writers...))

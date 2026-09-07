@@ -2660,6 +2660,73 @@ func TestResolveGatewayLogLevel_UsesEnvOverrideAndNormalizesInvalid(t *testing.T
 	}
 }
 
+func TestResolveGatewayLogRotation(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	data := `{"version":1,"gateway":{"log_max_size_mb":512,"log_max_files":4}}`
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	got := ResolveGatewayLogRotation(cfgPath)
+	if got.MaxSizeMB != 512 || got.MaxFiles != 4 {
+		t.Fatalf("ResolveGatewayLogRotation() = %+v, want {512 4}", got)
+	}
+}
+
+// Omitted keys must stay zero so the logger applies its own defaults rather
+// than being pinned to a ceiling the config never asked for.
+func TestResolveGatewayLogRotation_OmittedLeavesZero(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"version":1,"gateway":{}}`), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	got := ResolveGatewayLogRotation(cfgPath)
+	if got.MaxSizeMB != 0 || got.MaxFiles != 0 {
+		t.Fatalf("ResolveGatewayLogRotation() = %+v, want the zero value", got)
+	}
+}
+
+func TestResolveGatewayLogRotation_EnvOverridesAndIgnoresGarbage(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	data := `{"version":1,"gateway":{"log_max_size_mb":512,"log_max_files":4}}`
+	if err := os.WriteFile(cfgPath, []byte(data), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	t.Setenv("PICOCLAW_LOG_MAX_SIZE_MB", "128")
+	t.Setenv("PICOCLAW_LOG_MAX_FILES", "2")
+	if got := ResolveGatewayLogRotation(cfgPath); got.MaxSizeMB != 128 || got.MaxFiles != 2 {
+		t.Fatalf("with env override = %+v, want {128 2}", got)
+	}
+
+	t.Setenv("PICOCLAW_LOG_MAX_SIZE_MB", "not-a-number")
+	t.Setenv("PICOCLAW_LOG_MAX_FILES", "0")
+	if got := ResolveGatewayLogRotation(cfgPath); got.MaxSizeMB != 512 || got.MaxFiles != 4 {
+		t.Fatalf("with unusable env values = %+v, want the config values {512 4}", got)
+	}
+}
+
+// A missing or unparseable config must not stop file logging from coming up.
+func TestResolveGatewayLogRotation_BadConfigFallsBackToZero(t *testing.T) {
+	got := ResolveGatewayLogRotation(filepath.Join(t.TempDir(), "does-not-exist.json"))
+	if got.MaxSizeMB != 0 || got.MaxFiles != 0 {
+		t.Fatalf("missing config = %+v, want the zero value", got)
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte("{not json"), 0o600); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if got := ResolveGatewayLogRotation(cfgPath); got.MaxSizeMB != 0 || got.MaxFiles != 0 {
+		t.Fatalf("unparseable config = %+v, want the zero value", got)
+	}
+}
+
 func TestLoadConfig_AppliesLegacyClawHubRegistryEnvOverrides(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.json")
