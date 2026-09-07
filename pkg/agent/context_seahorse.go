@@ -65,8 +65,9 @@ func newSeahorseContextManager(cfg json.RawMessage, al *AgentLoop) (ContextManag
 	agent := al.registry.GetDefaultAgent()
 	dbPath := agent.Workspace + "/sessions/seahorse.db"
 
-	// Create CompleteFn from provider
-	completeFn := providerToCompleteFn(agent.Provider, agent.Model)
+	// Create CompleteFn from the loop, not from this agent snapshot: see
+	// agentLoopToCompleteFn for why it must resolve per call.
+	completeFn := agentLoopToCompleteFn(al)
 
 	// Create engine
 	engine, err := seahorse.NewEngine(seahorse.Config{
@@ -107,35 +108,129 @@ func newSeahorseContextManager(cfg json.RawMessage, al *AgentLoop) (ContextManag
 	return mgr, nil
 }
 
-// providerToCompleteFn wraps providers.LLMProvider as a seahorse.CompleteFn.
+// seahorseCallOptions builds the provider options every summarization call
+// uses.
+//
+// Summarization is a self-contained prompt, not a turn in any conversation: it
+// must not land in a chat's provider session. "stateless" additionally tells
+// session-based providers (codex-ws) to use a throwaway connection instead of
+// chaining these one-shot prompts onto each other.
+func seahorseCallOptions(opts seahorse.CompleteOptions) map[string]any {
+	sessionKey := opts.SessionKey
+	if sessionKey == "" {
+		sessionKey = "seahorse"
+	}
+	return map[string]any{
+		"max_tokens":       opts.MaxTokens,
+		"temperature":      opts.Temperature,
+		"prompt_cache_key": "seahorse",
+		"session_key":      sessionKey,
+		"stateless":        true,
+	}
+}
+
+// providerToCompleteFn wraps one providers.LLMProvider as a
+// seahorse.CompleteFn. It is the leaf call: agentLoopToCompleteFn picks the
+// provider and model, this performs the request.
 func providerToCompleteFn(provider providers.LLMProvider, model string) seahorse.CompleteFn {
 	return func(ctx context.Context, prompt string, opts seahorse.CompleteOptions) (string, error) {
-		sessionKey := opts.SessionKey
-		if sessionKey == "" {
-			sessionKey = "seahorse"
-		}
 		resp, err := provider.Chat(
 			ctx,
 			[]providers.Message{{Role: "user", Content: prompt}},
 			nil, // no tools for summarization
 			model,
-			map[string]any{
-				"max_tokens":       opts.MaxTokens,
-				"temperature":      opts.Temperature,
-				"prompt_cache_key": "seahorse",
-				// Summarization is a self-contained prompt, not a turn in any
-				// conversation: it must not land in a chat's provider session.
-				// "stateless" additionally tells session-based providers
-				// (codex-ws) to use a throwaway connection instead of chaining
-				// these one-shot prompts onto each other.
-				"session_key": sessionKey,
-				"stateless":   true,
-			},
+			seahorseCallOptions(opts),
 		)
 		if err != nil {
 			return "", err
 		}
 		return resp.Content, nil
+	}
+}
+
+// agentLoopToCompleteFn adapts the loop's current model configuration to a
+// seahorse.CompleteFn.
+//
+// It resolves the agent, its candidates and the fallback chain on every call
+// rather than capturing them once, because this function is built inside
+// NewAgentLoop and the ContextManager is never rebuilt afterwards — not even
+// by ReloadProviderAndConfig, which swaps the registry and the fallback chain
+// but leaves al.contextManager alone. Capturing meant summarization was pinned
+// to whatever model the process started with: repointing
+// agents.defaults.model_name at a working model and reloading fixed every turn
+// and left compaction talking to the dead one.
+//
+// Going through the fallback chain matters for the same reason turns do. When
+// the beta bot's primary began rejecting every request, turns failed over to
+// the second candidate and kept working, while compaction — a single bare
+// provider.Chat — just returned the error. Nothing was summarized for three
+// weeks; the assembler quietly evicted old messages instead, so the only
+// symptom was history disappearing without a summary behind it.
+func agentLoopToCompleteFn(al *AgentLoop) seahorse.CompleteFn {
+	return func(ctx context.Context, prompt string, opts seahorse.CompleteOptions) (string, error) {
+		registry := al.GetRegistry()
+		if registry == nil {
+			return "", fmt.Errorf("seahorse: no registry available for summarization")
+		}
+		agent := registry.GetDefaultAgent()
+		if agent == nil {
+			return "", fmt.Errorf("seahorse: no agent available for summarization")
+		}
+
+		messages := []providers.Message{{Role: "user", Content: prompt}}
+		callOpts := seahorseCallOptions(opts)
+		candidates := agent.Candidates
+
+		fallback := al.GetFallbackChain()
+		if len(candidates) > 1 && fallback != nil {
+			result, err := fallback.ExecuteCandidate(ctx, candidates,
+				func(ctx context.Context, candidate providers.FallbackCandidate) (*providers.LLMResponse, error) {
+					provider, perr := providerForFallbackCandidate(
+						agent,
+						agent.Provider,
+						candidates,
+						candidate.Provider,
+						candidate.Model,
+					)
+					if perr != nil {
+						return nil, perr
+					}
+					return provider.Chat(ctx, messages, nil, candidate.Model, callOpts)
+				})
+			if err != nil {
+				return "", err
+			}
+			if result == nil || result.Response == nil {
+				return "", fmt.Errorf("seahorse: fallback returned no response")
+			}
+			if len(result.Attempts) > 0 {
+				logger.InfoCF("seahorse", "summarization fell back", map[string]any{
+					"provider": result.Provider,
+					"model":    result.Model,
+					"attempts": len(result.Attempts) + 1,
+				})
+			}
+			return result.Response.Content, nil
+		}
+
+		model := agent.Model
+		provider := agent.Provider
+		if len(candidates) == 1 {
+			model = candidates[0].Model
+			if p, perr := providerForFallbackCandidate(
+				agent,
+				agent.Provider,
+				candidates,
+				candidates[0].Provider,
+				candidates[0].Model,
+			); perr == nil {
+				provider = p
+			}
+		}
+		if provider == nil {
+			return "", fmt.Errorf("seahorse: no provider available for summarization")
+		}
+		return providerToCompleteFn(provider, model)(ctx, prompt, opts)
 	}
 }
 

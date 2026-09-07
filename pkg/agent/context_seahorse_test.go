@@ -11,6 +11,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
+	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/seahorse"
 )
 
@@ -1560,5 +1561,175 @@ func TestSeahorseRoundTrip_PreservesAttachments(t *testing.T) {
 	got := seahorseToProviderMessages(result)
 	if len(got) != 1 || len(got[0].Attachments) != 1 || got[0].Attachments[0] != atts[0] {
 		t.Fatalf("round-trip lost attachments: %+v", got)
+	}
+}
+
+// --- agentLoopToCompleteFn tests ---
+
+// loopForCompleteFn wires an AgentLoop around one agent instance, the way
+// NewAgentRegistry would, so the summarizer can resolve it.
+func loopForCompleteFn(inst *AgentInstance) *AgentLoop {
+	return &AgentLoop{
+		registry: &AgentRegistry{
+			agents: map[string]*AgentInstance{routing.DefaultAgentID: inst},
+		},
+	}
+}
+
+// The ContextManager is built once in NewAgentLoop and never rebuilt, so the
+// summarizer must read the model off the current registry on every call.
+// Capturing it pinned compaction to the model the process started with, and
+// repointing agents.defaults.model_name plus /reload could not shift it.
+func TestAgentLoopToCompleteFnUsesCurrentRegistry(t *testing.T) {
+	var capturedModel string
+	mp := &seahorseTestProvider{
+		chatFn: func(ctx context.Context, messages []providers.Message, tools []providers.ToolDefinition, model string, options map[string]any) (*providers.LLMResponse, error) {
+			capturedModel = model
+			return &providers.LLMResponse{Content: "summary"}, nil
+		},
+	}
+
+	al := loopForCompleteFn(&AgentInstance{ID: routing.DefaultAgentID, Model: "old-model", Provider: mp})
+	completeFn := agentLoopToCompleteFn(al)
+
+	if _, err := completeFn(context.Background(), "summarize", seahorse.CompleteOptions{}); err != nil {
+		t.Fatalf("completeFn: %v", err)
+	}
+	if capturedModel != "old-model" {
+		t.Fatalf("model = %q, want old-model", capturedModel)
+	}
+
+	// Stand in for ReloadProviderAndConfig, which swaps the registry.
+	al.mu.Lock()
+	al.registry = &AgentRegistry{
+		agents: map[string]*AgentInstance{routing.DefaultAgentID: {
+			ID:       routing.DefaultAgentID,
+			Model:    "new-model",
+			Provider: mp,
+		}},
+	}
+	al.mu.Unlock()
+
+	if _, err := completeFn(context.Background(), "summarize", seahorse.CompleteOptions{}); err != nil {
+		t.Fatalf("completeFn after reload: %v", err)
+	}
+	if capturedModel != "new-model" {
+		t.Errorf("model after reload = %q, want new-model", capturedModel)
+	}
+}
+
+// A dead primary must not take compaction down with it: turns fail over, and
+// so should summarization.
+func TestAgentLoopToCompleteFnFallsBackOnPrimaryFailure(t *testing.T) {
+	primaryCalls := 0
+	primary := &seahorseTestProvider{
+		chatFn: func(ctx context.Context, messages []providers.Message, tools []providers.ToolDefinition, model string, options map[string]any) (*providers.LLMResponse, error) {
+			primaryCalls++
+			return nil, context.DeadlineExceeded
+		},
+	}
+	backupCalls := 0
+	backup := &seahorseTestProvider{
+		chatFn: func(ctx context.Context, messages []providers.Message, tools []providers.ToolDefinition, model string, options map[string]any) (*providers.LLMResponse, error) {
+			backupCalls++
+			return &providers.LLMResponse{Content: "summary from backup"}, nil
+		},
+	}
+
+	candidates := []providers.FallbackCandidate{
+		{Provider: "codex-ws", Model: "dead-primary"},
+		{Provider: "openai", Model: "live-backup"},
+	}
+	al := loopForCompleteFn(&AgentInstance{
+		ID:         routing.DefaultAgentID,
+		Model:      "dead-primary",
+		Provider:   primary,
+		Candidates: candidates,
+		CandidateProviders: map[string]providers.LLMProvider{
+			providers.ModelKey("codex-ws", "dead-primary"): primary,
+			providers.ModelKey("openai", "live-backup"):    backup,
+		},
+	})
+	al.fallback = providers.NewFallbackChain(
+		providers.NewCooldownTracker(),
+		providers.NewRateLimiterRegistry(),
+	)
+
+	result, err := agentLoopToCompleteFn(al)(context.Background(), "summarize", seahorse.CompleteOptions{})
+	if err != nil {
+		t.Fatalf("completeFn: %v", err)
+	}
+	if result != "summary from backup" {
+		t.Errorf("result = %q, want 'summary from backup'", result)
+	}
+	if primaryCalls == 0 {
+		t.Error("primary was never attempted")
+	}
+	if backupCalls != 1 {
+		t.Errorf("backup calls = %d, want 1", backupCalls)
+	}
+}
+
+// With the whole chain down there is nothing to summarize with, and the error
+// must reach the caller rather than yielding an empty summary.
+func TestAgentLoopToCompleteFnAllCandidatesFail(t *testing.T) {
+	dead := &seahorseTestProvider{
+		chatFn: func(ctx context.Context, messages []providers.Message, tools []providers.ToolDefinition, model string, options map[string]any) (*providers.LLMResponse, error) {
+			return nil, context.DeadlineExceeded
+		},
+	}
+	candidates := []providers.FallbackCandidate{
+		{Provider: "codex-ws", Model: "dead-a"},
+		{Provider: "openai", Model: "dead-b"},
+	}
+	al := loopForCompleteFn(&AgentInstance{
+		ID:         routing.DefaultAgentID,
+		Model:      "dead-a",
+		Provider:   dead,
+		Candidates: candidates,
+		CandidateProviders: map[string]providers.LLMProvider{
+			providers.ModelKey("codex-ws", "dead-a"): dead,
+			providers.ModelKey("openai", "dead-b"):   dead,
+		},
+	})
+	al.fallback = providers.NewFallbackChain(
+		providers.NewCooldownTracker(),
+		providers.NewRateLimiterRegistry(),
+	)
+
+	if _, err := agentLoopToCompleteFn(al)(context.Background(), "summarize", seahorse.CompleteOptions{}); err == nil {
+		t.Error("expected an error when every candidate fails")
+	}
+}
+
+// A single configured candidate carries the resolved model name, which may
+// differ from the model_list alias in agent.Model.
+func TestAgentLoopToCompleteFnSingleCandidateUsesCandidateModel(t *testing.T) {
+	var capturedModel string
+	mp := &seahorseTestProvider{
+		chatFn: func(ctx context.Context, messages []providers.Message, tools []providers.ToolDefinition, model string, options map[string]any) (*providers.LLMResponse, error) {
+			capturedModel = model
+			return &providers.LLMResponse{Content: "summary"}, nil
+		},
+	}
+	al := loopForCompleteFn(&AgentInstance{
+		ID:         routing.DefaultAgentID,
+		Model:      "alias-name",
+		Provider:   mp,
+		Candidates: []providers.FallbackCandidate{{Provider: "openai", Model: "resolved/model-v2"}},
+	})
+
+	if _, err := agentLoopToCompleteFn(al)(context.Background(), "summarize", seahorse.CompleteOptions{}); err != nil {
+		t.Fatalf("completeFn: %v", err)
+	}
+	if capturedModel != "resolved/model-v2" {
+		t.Errorf("model = %q, want resolved/model-v2", capturedModel)
+	}
+}
+
+func TestAgentLoopToCompleteFnNoAgent(t *testing.T) {
+	al := &AgentLoop{registry: &AgentRegistry{agents: map[string]*AgentInstance{}}}
+	if _, err := agentLoopToCompleteFn(al)(context.Background(), "summarize", seahorse.CompleteOptions{}); err == nil {
+		t.Error("expected an error when no agent is registered")
 	}
 }

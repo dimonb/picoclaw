@@ -7,6 +7,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/media"
+	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
@@ -33,6 +34,15 @@ func (al *AgentLoop) GetConfig() *config.Config {
 	al.mu.RLock()
 	defer al.mu.RUnlock()
 	return al.cfg
+}
+
+// GetFallbackChain returns the current fallback chain. ReloadProviderAndConfig
+// replaces it along with the registry, so callers outside the turn pipeline
+// must read it under the lock rather than hold on to one.
+func (al *AgentLoop) GetFallbackChain() *providers.FallbackChain {
+	al.mu.RLock()
+	defer al.mu.RUnlock()
+	return al.fallback
 }
 
 func (al *AgentLoop) SetMediaStore(s media.MediaStore) {
