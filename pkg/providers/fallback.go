@@ -193,6 +193,19 @@ func (fc *FallbackChain) ExecuteCandidate(
 		cooldownKey := candidate.StableKey()
 		if !fc.cooldown.IsAvailable(cooldownKey) {
 			remaining := fc.cooldown.CooldownRemaining(cooldownKey)
+			// Say so. A candidate that keeps failing is marked down once and
+			// then skipped silently on every later call, so a permanently
+			// broken primary looks exactly like a healthy one that is simply
+			// never chosen: the only trace left is "Fallback: succeeded with
+			// <the second candidate>". The beta bot ran three weeks that way,
+			// on its fallback model, at a fraction of the primary's speed,
+			// with nothing in the log naming the primary as the reason.
+			logger.DebugCF("provider.fallback", "candidate in cooldown, skipping", map[string]any{
+				"provider":  candidate.Provider,
+				"model":     candidate.Model,
+				"remaining": remaining.Round(time.Second).String(),
+				"errors":    fc.cooldown.ErrorCount(cooldownKey),
+			})
 			result.Attempts = append(result.Attempts, FallbackAttempt{
 				Provider: candidate.Provider,
 				Model:    candidate.Model,
