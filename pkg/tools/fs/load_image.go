@@ -137,14 +137,35 @@ func (t *LoadImageTool) Execute(ctx context.Context, args map[string]any) *ToolR
 	filename := filepath.Base(resolved)
 	scope := fmt.Sprintf("tool:load_image:%s:%s", channel, chatID)
 
-	ref, err := t.mediaStore.Store(resolved, media.MediaMeta{
-		Filename:      filename,
-		ContentType:   mediaType,
-		Source:        "tool:load_image",
-		CleanupPolicy: media.CleanupPolicyForgetOnly,
-	}, scope)
-	if err != nil {
-		return ErrorResult(fmt.Sprintf("failed to register image in media store: %v", err))
+	// Prefer a ref the archive already holds for this content.
+	//
+	// The ref below goes into ForLLM, which lands in conversation history and
+	// is re-resolved on every later turn — so it has to outlive the tool call
+	// by as long as the conversation does. A ref registered here cannot: the
+	// file is borrowed (it usually already sits in the archive, put there by
+	// the channel that received it), so the registration must be ForgetOnly to
+	// keep this tool out of its disk lifecycle, and Store only archives
+	// DeleteOnCleanup entries. The result is an in-memory-only ref that the TTL
+	// sweep drops minutes later, leaving history pointing at nothing.
+	//
+	// Reusing the archived ref sidesteps that entirely: it is durable, it
+	// already points at this exact content, and no second entry is created.
+	ref, reused := durableRefForFile(t.mediaStore, resolved)
+	if !reused {
+		var err error
+		ref, err = t.mediaStore.Store(resolved, media.MediaMeta{
+			Filename:      filename,
+			ContentType:   mediaType,
+			Source:        "tool:load_image",
+			CleanupPolicy: media.CleanupPolicyForgetOnly,
+			// Only consulted once an entry reaches the archive, which a
+			// ForgetOnly one still does not — but this is what it must be when
+			// it does, since history keeps referencing it.
+			RetentionClass: media.RetentionClassPermanent,
+		}, scope)
+		if err != nil {
+			return ErrorResult(fmt.Sprintf("failed to register image in media store: %v", err))
+		}
 	}
 
 	// Build the tool result text. The media:// ref in Media will be picked
@@ -160,4 +181,15 @@ func (t *LoadImageTool) Execute(ctx context.Context, args map[string]any) *ToolR
 		// that would send the file to the user channel instead.
 		Media: []string{ref},
 	}
+}
+
+// durableRefForFile asks the store for an archived ref covering localPath.
+// Stores without an archive do not implement the capability, in which case the
+// caller registers a fresh ref as before.
+func durableRefForFile(store media.MediaStore, localPath string) (string, bool) {
+	finder, ok := store.(media.DurableRefFinder)
+	if !ok {
+		return "", false
+	}
+	return finder.DurableRefForFile(localPath)
 }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/media"
@@ -148,5 +149,159 @@ func TestLoadImage_SuccessPath(t *testing.T) {
 	}
 	if resolved != imgPath {
 		t.Errorf("expected resolved path %q, got %q", imgPath, resolved)
+	}
+}
+
+// minimalPNG returns the smallest file detectMediaType accepts as an image.
+func minimalPNG() []byte {
+	out := []byte{0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A}
+	out = append(out, []byte{
+		0x00, 0x00, 0x00, 0x0D,
+		0x49, 0x48, 0x44, 0x52,
+		0x00, 0x00, 0x00, 0x01,
+		0x00, 0x00, 0x00, 0x01,
+		0x08,
+		0x02,
+		0x00, 0x00, 0x00,
+		0x90, 0x77, 0x53, 0xDE,
+	}...)
+	return append(out, []byte{
+		0x00, 0x00, 0x00, 0x00,
+		0x49, 0x45, 0x4E, 0x44,
+		0xAE, 0x42, 0x60, 0x82,
+	}...)
+}
+
+func storeWithArchiveForTool(t *testing.T) *media.FileMediaStore {
+	t.Helper()
+	return storeWithArchiveWithCleanup(t, media.MediaCleanerConfig{})
+}
+
+func storeWithArchiveWithCleanup(t *testing.T, cfg media.MediaCleanerConfig) *media.FileMediaStore {
+	t.Helper()
+	archive, err := media.NewSQLiteMediaArchive(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewSQLiteMediaArchive: %v", err)
+	}
+	t.Cleanup(func() { _ = archive.Close() })
+
+	store := media.NewFileMediaStoreWithCleanup(cfg)
+	store.SetArchive(archive)
+	return store
+}
+
+// The regression this guards. load_image embeds its ref in ForLLM, which lands
+// in conversation history and is re-resolved on every later turn. It used to
+// mint a fresh ref for a borrowed file, which — being ForgetOnly — never
+// reached the archive and so died at the next in-memory TTL sweep, leaving
+// history pointing at nothing. Reusing the archived ref keeps it resolvable.
+func TestLoadImage_ReusesArchivedRefAndSurvivesCleanup(t *testing.T) {
+	dir := t.TempDir()
+	store := storeWithArchiveWithCleanup(t, media.MediaCleanerConfig{
+		Enabled:  true,
+		Interval: time.Minute,
+		MaxAge:   time.Nanosecond,
+	})
+
+	// A channel received the image and archived it, as telegram does.
+	inbound := filepath.Join(dir, "inbound.png")
+	if err := os.WriteFile(inbound, minimalPNG(), 0o644); err != nil {
+		t.Fatalf("write inbound: %v", err)
+	}
+	channelRef, err := store.Store(inbound, media.MediaMeta{
+		Filename:       "inbound.png",
+		ContentType:    "image/png",
+		Source:         "telegram",
+		CleanupPolicy:  media.CleanupPolicyDeleteOnCleanup,
+		RetentionClass: media.RetentionClassPermanent,
+	}, "telegram:-100:5629")
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	archivedPath, err := store.Resolve(channelRef)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	// The model now asks to look at that archived file.
+	tool := NewLoadImageTool(dir, false, 0, store)
+	ctx := WithToolContext(context.Background(), "telegram", "-100")
+	result := tool.Execute(ctx, map[string]any{"path": archivedPath})
+	if result.IsError {
+		t.Fatalf("load_image failed: %s", result.ForLLM)
+	}
+	if len(result.Media) != 1 {
+		t.Fatalf("Media = %v, want exactly one ref", result.Media)
+	}
+
+	if result.Media[0] != channelRef {
+		t.Errorf("minted a new ref %q instead of reusing the archived %q",
+			result.Media[0], channelRef)
+	}
+
+	// The point of reusing it: an in-memory sweep must not orphan it. The
+	// store is configured to expire everything immediately, so sweep and then
+	// resolve as a later turn would.
+	store.CleanExpired()
+
+	if _, err := store.Resolve(result.Media[0]); err != nil {
+		t.Errorf("ref did not survive the TTL sweep: %v", err)
+	}
+}
+
+// A file the archive has never seen still has to work: fall back to
+// registering a ref, and mark it permanent so it is not reaped once a future
+// change lets ForgetOnly entries reach the archive.
+func TestLoadImage_FallsBackWhenNothingArchived(t *testing.T) {
+	dir := t.TempDir()
+	store := storeWithArchiveForTool(t)
+
+	imgPath := filepath.Join(dir, "fresh.png")
+	if err := os.WriteFile(imgPath, minimalPNG(), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tool := NewLoadImageTool(dir, false, 0, store)
+	ctx := WithToolContext(context.Background(), "telegram", "-100")
+	result := tool.Execute(ctx, map[string]any{"path": imgPath})
+	if result.IsError {
+		t.Fatalf("load_image failed: %s", result.ForLLM)
+	}
+	if len(result.Media) != 1 {
+		t.Fatalf("Media = %v, want exactly one ref", result.Media)
+	}
+
+	path, meta, err := store.ResolveWithMeta(result.Media[0])
+	if err != nil {
+		t.Fatalf("ResolveWithMeta: %v", err)
+	}
+	if path != imgPath {
+		t.Errorf("resolved path = %q, want the original %q", path, imgPath)
+	}
+	if meta.RetentionClass != media.RetentionClassPermanent {
+		t.Errorf("RetentionClass = %q, want permanent", meta.RetentionClass)
+	}
+	// Still ForgetOnly: the file is the caller's, not ours to delete.
+	if meta.CleanupPolicy != media.CleanupPolicyForgetOnly {
+		t.Errorf("CleanupPolicy = %q, want forget_only", meta.CleanupPolicy)
+	}
+}
+
+// A store without the capability (no archive support at all) must keep working.
+func TestLoadImage_StoreWithoutDurableRefFinder(t *testing.T) {
+	dir := t.TempDir()
+	imgPath := filepath.Join(dir, "plain.png")
+	if err := os.WriteFile(imgPath, minimalPNG(), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	tool := NewLoadImageTool(dir, false, 0, media.NewFileMediaStore())
+	ctx := WithToolContext(context.Background(), "telegram", "-100")
+	result := tool.Execute(ctx, map[string]any{"path": imgPath})
+	if result.IsError {
+		t.Fatalf("load_image failed: %s", result.ForLLM)
+	}
+	if len(result.Media) != 1 || !strings.HasPrefix(result.Media[0], "media://") {
+		t.Fatalf("Media = %v, want one media:// ref", result.Media)
 	}
 }

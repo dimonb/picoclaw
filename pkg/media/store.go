@@ -52,6 +52,26 @@ type MediaStore interface {
 	ReleaseAll(scope string) error
 }
 
+// DurableRefFinder is implemented by stores backed by an archive, so a caller
+// that only needs to point the model at a file already under management can
+// reuse the ref covering it instead of registering a second one.
+//
+// Registering a second one is a trap. A ref for a borrowed file has to use
+// CleanupPolicyForgetOnly — the caller must not take over the file's disk
+// lifecycle — but Store only archives DeleteOnCleanup entries, so a ForgetOnly
+// ref never gets a durable row. It lives in the in-memory map alone and dies
+// at the next TTL sweep, while the tool result carrying it stays in
+// conversation history for good. On the beta bot that left 456 dead refs and
+// 24k failed resolutions spread over two and a half months.
+//
+// It is an optional capability rather than part of MediaStore so that
+// implementations without an archive need not carry a stub.
+type DurableRefFinder interface {
+	// DurableRefForFile returns an archived ref covering the same content as
+	// localPath, or false when there is none.
+	DurableRefForFile(localPath string) (ref string, ok bool)
+}
+
 // mediaEntry holds the path and metadata for a stored media file.
 type mediaEntry struct {
 	path     string
@@ -199,6 +219,42 @@ func (s *FileMediaStore) Store(localPath string, meta MediaMeta, scope string) (
 	s.pathStates[storedPath] = pathState
 
 	return ref, nil
+}
+
+// DurableRefForFile returns an archived ref covering the same content as
+// localPath, preferring a permanent one over an ephemeral one. It reports
+// false when no archive is attached, the file cannot be hashed, or nothing
+// archived matches.
+func (s *FileMediaStore) DurableRefForFile(localPath string) (string, bool) {
+	s.mu.RLock()
+	archive := s.archive
+	s.mu.RUnlock()
+
+	if archive == nil {
+		return "", false
+	}
+
+	sha, err := hashFile(localPath)
+	if err != nil {
+		return "", false
+	}
+
+	var ephemeral string
+	for _, entry := range archive.LookupBySHA(sha) {
+		// An index row whose file is gone would hand back a ref that fails on
+		// resolution instead, further from the cause.
+		if _, statErr := os.Stat(entry.ArchivePath); statErr != nil {
+			continue
+		}
+		if entry.RetentionClass == RetentionClassPermanent {
+			return entry.Ref, true
+		}
+		if ephemeral == "" {
+			ephemeral = entry.Ref
+		}
+	}
+
+	return ephemeral, ephemeral != ""
 }
 
 // Resolve returns the local path for the given ref.
