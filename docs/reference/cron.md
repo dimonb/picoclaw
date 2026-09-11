@@ -58,8 +58,8 @@ Example tool calls:
 {"action":"update","job_id":"79095b2f5685a0f2","cron_expr":"30 10 * * *"}
 ```
 
-`update` accepts `name`, `message`, `command`, `session`, and exactly one
-schedule field (`at_seconds`, `every_seconds`, or `cron_expr`).
+`update` accepts `name`, `message`, `command`, `session`, `notify`, and exactly
+one schedule field (`at_seconds`, `every_seconds`, or `cron_expr`).
 Omit `command` to preserve it, set `command` to a non-empty string to replace
 it, or set `command` to `""` to clear it. Command updates require the same
 channel allowlist and confirmation gates as command creation.
@@ -117,7 +117,25 @@ When a job includes `command`, PicoClaw runs that shell command through the
 `exec` tool. The saved `message` becomes descriptive text only; the scheduled
 action is the shell command.
 
-How the result is delivered is controlled by `tools.cron.command_delivery`:
+**Whether it is reported at all** is controlled by `notify` (default
+`tools.cron.notify`, shipped as `output`):
+
+- `output`: report only when the command printed something or exited non-zero.
+  A watchdog script that finds nothing costs no agent turn and no message — the
+  canonical "stay quiet unless something happened" poll. Note that `exec`
+  substitutes `(no output)` for empty output; that placeholder counts as
+  silence, not as a result.
+- `always`: report every run, including silent ones.
+
+A non-zero exit reports even with no output: a watchdog script breaking is
+itself an event. `notify` applies to command jobs only — a message job *is* the
+agent turn, so there is nothing to suppress.
+
+If you want "report only when the output *changed*", keep the previous output
+in a file inside the script and exit quietly when it matches; the engine
+deliberately has no such mode.
+
+How a reported result is delivered is controlled by `tools.cron.command_delivery`:
 
 - `session` (default): the command's exit state and output are injected into the
   session as a cron trigger, and the agent decides whether the result is worth
@@ -140,8 +158,11 @@ If you disable `tools.cron`, users can no longer create or manage jobs through t
 `tools.cron.session_mode` sets the default session a firing runs in: `origin`
 (default) or `isolated`. See [Where a Firing Runs](#where-a-firing-runs).
 
-`tools.cron.command_delivery` sets how scheduled command output reaches the
-user: `session` (default) or `raw`. See [`command`](#command).
+`tools.cron.notify` sets the default for whether a scheduled command reports at
+all: `output` (default) or `always`. See [`command`](#command).
+
+`tools.cron.command_delivery` sets how a reported result reaches the user:
+`session` (default) or `raw`. See [`command`](#command).
 
 ### `tools.exec`
 
@@ -187,6 +208,7 @@ Example:
       "enabled": true,
       "exec_timeout_minutes": 5,
       "session_mode": "origin",
+      "notify": "output",
       "command_delivery": "session",
       "allow_command": true,
       "command_allowed_remotes": [

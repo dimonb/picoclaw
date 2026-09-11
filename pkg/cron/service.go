@@ -60,6 +60,11 @@ type CronPayload struct {
 	// SessionMode is "origin" (inject into SessionKey) or "isolated" (a fresh
 	// throwaway session per firing). Empty means the configured default.
 	SessionMode string `json:"sessionMode,omitempty"`
+	// Notify is "output" (report only when the command produced something or
+	// failed) or "always". It applies to command jobs only; a message job is
+	// the agent turn, so there is nothing to suppress. Empty means the
+	// configured default.
+	Notify string `json:"notify,omitempty"`
 	// Origin holds the rest of the scheduling turn's inbound context.
 	Origin *CronOrigin `json:"origin,omitempty"`
 }

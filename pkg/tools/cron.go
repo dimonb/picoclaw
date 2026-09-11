@@ -42,6 +42,7 @@ type CronTool struct {
 	commandAllowedRemotes []string
 	sessionMode           string
 	commandDelivery       string
+	notifyMode            string
 }
 
 // NewCronTool creates a new CronTool
@@ -55,12 +56,14 @@ func NewCronTool(
 	var commandAllowedRemotes []string
 	sessionMode := config.CronSessionModeOrigin
 	commandDelivery := config.CronCommandDeliverySession
+	notifyMode := config.CronNotifyOutput
 	if cfg != nil {
 		allowCommand = cfg.Tools.Cron.AllowCommand
 		execEnabled = cfg.Tools.Exec.Enabled
 		commandAllowedRemotes = cfg.Tools.Cron.CommandAllowedRemotes
 		sessionMode = normalizeCronSessionMode(cfg.Tools.Cron.SessionMode, sessionMode)
 		commandDelivery = normalizeCronCommandDelivery(cfg.Tools.Cron.CommandDelivery, commandDelivery)
+		notifyMode = normalizeCronNotify(cfg.Tools.Cron.Notify, notifyMode)
 	}
 
 	var execTool *ExecTool
@@ -84,7 +87,19 @@ func NewCronTool(
 		commandAllowedRemotes: commandAllowedRemotes,
 		sessionMode:           sessionMode,
 		commandDelivery:       commandDelivery,
+		notifyMode:            notifyMode,
 	}, nil
+}
+
+func normalizeCronNotify(value, fallback string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case config.CronNotifyOutput:
+		return config.CronNotifyOutput
+	case config.CronNotifyAlways:
+		return config.CronNotifyAlways
+	default:
+		return fallback
+	}
 }
 
 func normalizeCronSessionMode(value, fallback string) string {
@@ -166,6 +181,11 @@ func (t *CronTool) Parameters() map[string]any {
 			"job_id": map[string]any{
 				"type":        "string",
 				"description": "Job ID (for get/update/remove/enable/disable)",
+			},
+			"notify": map[string]any{
+				"type":        "string",
+				"enum":        []string{"output", "always"},
+				"description": "Command jobs only. 'output' (default) wakes you only when the command printed something or exited non-zero — a watchdog that finds nothing costs nothing. 'always' reports every run. Ignored for message jobs.",
 			},
 			"session": map[string]any{
 				"type":        "string",
@@ -276,6 +296,11 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 		return errResult
 	}
 
+	notifyMode, errResult := cronNotifyArg(args)
+	if errResult != nil {
+		return errResult
+	}
+
 	// Truncate message for job name (max 30 chars)
 	messagePreview := utils.Truncate(message, 30)
 
@@ -294,6 +319,7 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 			SessionKey:  cronSchedulingSessionKey(ctx),
 			AgentID:     ToolAgentID(ctx),
 			SessionMode: sessionMode,
+			Notify:      notifyMode,
 			Origin:      cronOriginFromContext(ctx),
 		},
 	})
@@ -332,6 +358,26 @@ func cronSessionModeArg(args map[string]any) (string, *ToolResult) {
 		return mode, nil
 	default:
 		return "", ErrorResult("session must be 'origin' or 'isolated'")
+	}
+}
+
+// cronNotifyArg reads the optional per-job notify mode.
+func cronNotifyArg(args map[string]any) (string, *ToolResult) {
+	value, present, errResult := optionalString(args, "notify")
+	if errResult != nil {
+		return "", errResult
+	}
+	if !present {
+		return "", nil
+	}
+	mode := strings.ToLower(strings.TrimSpace(value))
+	switch mode {
+	case "":
+		return "", nil
+	case config.CronNotifyOutput, config.CronNotifyAlways:
+		return mode, nil
+	default:
+		return "", ErrorResult("notify must be 'output' or 'always'")
 	}
 }
 
@@ -475,6 +521,15 @@ func (t *CronTool) updateJob(ctx context.Context, args map[string]any) *ToolResu
 			return errResult
 		}
 		job.Payload.SessionMode = sessionMode
+		patches++
+	}
+
+	if _, present := args["notify"]; present {
+		notifyMode, errResult := cronNotifyArg(args)
+		if errResult != nil {
+			return errResult
+		}
+		job.Payload.Notify = notifyMode
 		patches++
 	}
 
@@ -772,6 +827,18 @@ func (t *CronTool) executeCommandJob(
 
 	result := t.execTool.Execute(ctx, args)
 
+	// A watchdog that finds nothing should cost nothing: no agent turn, no
+	// message. A non-zero exit still reports — the script itself breaking is an
+	// event worth hearing about, even with no output.
+	if !t.shouldReportCommandResult(job, result) {
+		logger.DebugCF("cron", "Scheduled command produced nothing to report", map[string]any{
+			"job_id":   job.ID,
+			"job_name": job.Name,
+			"notify":   t.notifyModeFor(job),
+		})
+		return "silent", nil
+	}
+
 	if t.commandDelivery == config.CronCommandDeliveryRaw {
 		var output string
 		if result.IsError {
@@ -835,6 +902,20 @@ func (t *CronTool) triggerSessionKey(job *cron.CronJob) string {
 
 func (t *CronTool) sessionModeFor(job *cron.CronJob) string {
 	return normalizeCronSessionMode(job.Payload.SessionMode, t.sessionMode)
+}
+
+func (t *CronTool) notifyModeFor(job *cron.CronJob) string {
+	return normalizeCronNotify(job.Payload.Notify, t.notifyMode)
+}
+
+// shouldReportCommandResult decides whether a finished command is worth
+// surfacing at all, before either delivery path spends anything on it.
+func (t *CronTool) shouldReportCommandResult(job *cron.CronJob, result *ToolResult) bool {
+	if t.notifyModeFor(job) == config.CronNotifyAlways {
+		return true
+	}
+	output := strings.TrimSpace(result.ForLLM)
+	return result.IsError || (output != "" && output != execNoOutputPlaceholder)
 }
 
 // cronTriggerInboundContext rebuilds the scheduling turn's inbound context.

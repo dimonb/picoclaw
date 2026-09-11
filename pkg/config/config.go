@@ -1098,6 +1098,16 @@ const (
 	CronSessionModeIsolated = "isolated"
 )
 
+// Cron notify modes: whether a scheduled command's result is worth waking the
+// agent for at all.
+const (
+	// CronNotifyOutput wakes the agent only when the command produced output or
+	// failed — a watchdog script that finds nothing costs no tokens.
+	CronNotifyOutput = "output"
+	// CronNotifyAlways reports every run, including silent ones.
+	CronNotifyAlways = "always"
+)
+
 // Cron command delivery modes: how scheduled shell output reaches the user.
 const (
 	// CronCommandDeliverySession injects the output as a cron trigger and lets
@@ -1117,6 +1127,10 @@ type CronToolsConfig struct {
 	// into the session that scheduled the job, "isolated" uses a fresh
 	// throwaway session per firing. Per-job overrides win.
 	SessionMode string `json:"session_mode" env:"PICOCLAW_TOOLS_CRON_SESSION_MODE"`
+	// Notify controls whether a scheduled command's result is worth waking the
+	// agent for: "output" (default) reports only when the command produced
+	// output or failed, "always" reports every run. Per-job overrides win.
+	Notify string `json:"notify" env:"PICOCLAW_TOOLS_CRON_NOTIFY"`
 	// CommandDelivery controls how scheduled shell output reaches the user:
 	// "session" injects it as a cron trigger so the agent decides what to say,
 	// "raw" posts the output straight to the chat.

@@ -392,6 +392,7 @@ func DefaultConfig() *Config {
 				ExecTimeoutMinutes: 5,
 				AllowCommand:       true,
 				SessionMode:        CronSessionModeOrigin,
+				Notify:             CronNotifyOutput,
 				CommandDelivery:    CronCommandDeliverySession,
 			},
 			Exec: ExecConfig{

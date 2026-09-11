@@ -1343,6 +1343,97 @@ func TestCronTool_ExecuteJobInjectsCommandOutput(t *testing.T) {
 	}
 }
 
+func TestCronTool_ExecuteJobSilentWhenCommandPrintsNothing(t *testing.T) {
+	tool := newTestCronToolWithConfig(t, config.DefaultConfig())
+
+	job := &cron.CronJob{ID: "job-quiet", Name: "watchdog"}
+	job.Payload.Channel = "cli"
+	job.Payload.To = "direct"
+	job.Payload.Message = "watch the queue"
+	job.Payload.Command = "true"
+	job.Payload.SessionKey = "sk_v1_deadbeef"
+
+	if got := executeTestCronJob(t, tool, job); got != "silent" {
+		t.Fatalf("ExecuteJob() = %q, want silent", got)
+	}
+
+	// Nothing reached the agent and nothing reached the chat.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	select {
+	case msg := <-tool.msgBus.InboundChan():
+		t.Fatalf("silent watchdog woke the agent: %q", msg.Content)
+	case msg := <-tool.msgBus.OutboundChan():
+		t.Fatalf("silent watchdog posted to chat: %q", msg.Content)
+	case <-ctx.Done():
+	}
+}
+
+func TestCronTool_ExecuteJobReportsFailedCommandWithoutOutput(t *testing.T) {
+	tool := newTestCronToolWithConfig(t, config.DefaultConfig())
+
+	// A watchdog script that breaks is an event even when it prints nothing.
+	job := &cron.CronJob{ID: "job-broken", Name: "watchdog"}
+	job.Payload.Channel = "cli"
+	job.Payload.To = "direct"
+	job.Payload.Command = "exit 3"
+	job.Payload.SessionKey = "sk_v1_deadbeef"
+
+	if got := executeTestCronJob(t, tool, job); got != "dispatched" {
+		t.Fatalf("ExecuteJob() = %q, want dispatched", got)
+	}
+	if msg := waitForInboundTrigger(t, tool); msg.SessionKey != "sk_v1_deadbeef" {
+		t.Fatalf("session key = %q, want the scheduling session", msg.SessionKey)
+	}
+}
+
+func TestCronTool_ExecuteJobNotifyAlwaysReportsSilentRun(t *testing.T) {
+	tool := newTestCronToolWithConfig(t, config.DefaultConfig())
+
+	job := &cron.CronJob{ID: "job-chatty", Name: "watchdog"}
+	job.Payload.Channel = "cli"
+	job.Payload.To = "direct"
+	job.Payload.Command = "true"
+	job.Payload.SessionKey = "sk_v1_deadbeef"
+	job.Payload.Notify = config.CronNotifyAlways
+
+	if got := executeTestCronJob(t, tool, job); got != "dispatched" {
+		t.Fatalf("ExecuteJob() = %q, want dispatched", got)
+	}
+	if msg := waitForInboundTrigger(t, tool); msg.SessionKey != "sk_v1_deadbeef" {
+		t.Fatalf("session key = %q, want the scheduling session", msg.SessionKey)
+	}
+}
+
+func TestCronTool_AddJobNotifyArgument(t *testing.T) {
+	tool := newTestCronTool(t)
+	ctx := WithToolContext(context.Background(), "cli", "direct")
+
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "watchdog",
+		"at_seconds": float64(60),
+		"notify":     "always",
+	})
+	if result.IsError {
+		t.Fatalf("add failed: %s", result.ForLLM)
+	}
+	jobs := tool.cronService.ListJobs(true)
+	if len(jobs) != 1 || jobs[0].Payload.Notify != config.CronNotifyAlways {
+		t.Fatalf("notify not stored: %+v", jobs)
+	}
+
+	bad := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "watchdog",
+		"at_seconds": float64(60),
+		"notify":     "sometimes",
+	})
+	if !bad.IsError {
+		t.Fatal("expected invalid notify mode to be rejected")
+	}
+}
+
 func TestCronTool_ExecuteJobRunsCommandWithRawDelivery(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Tools.Cron.CommandDelivery = config.CronCommandDeliveryRaw

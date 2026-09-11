@@ -211,6 +211,11 @@ func NewExecToolWithConfig(
 	}, nil
 }
 
+// execNoOutputPlaceholder stands in for an empty result so the model is not
+// handed a blank tool output. Callers deciding whether a command said anything
+// must treat it as silence — see CronTool.shouldReportCommandResult.
+const execNoOutputPlaceholder = "(no output)"
+
 func (t *ExecTool) Name() string {
 	return "exec"
 }
@@ -480,7 +485,7 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 	}
 
 	if output == "" {
-		output = "(no output)"
+		output = execNoOutputPlaceholder
 	}
 
 	maxLen := 10000
