@@ -85,7 +85,9 @@ queued as a steering message instead of racing it.
 
 Jobs created before these fields existed — and jobs created by
 `picoclaw cron add`, which has no session — carry no session key. They are
-routed to the channel's natural session instead.
+routed to the channel's natural session instead. The first `update` issued from
+a real session adopts that session, so an old job can be pinned without being
+recreated. Jobs that already carry a session are only reachable from it.
 
 ### `session: origin` (default)
 

@@ -1147,6 +1147,42 @@ func TestCronTool_AddJobCapturesSchedulingSession(t *testing.T) {
 	}
 }
 
+func TestCronTool_UpdateAdoptsSessionForLegacyJob(t *testing.T) {
+	tool := newTestCronTool(t)
+	job := addTestCronJob(t, tool, "legacy", "telegram", "chat-1", "")
+	if job.Payload.SessionKey != "" {
+		t.Fatalf("fixture should have no session key, got %q", job.Payload.SessionKey)
+	}
+
+	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
+	ctx = WithToolSessionContext(ctx, "main", "sk_v1_adopted", nil)
+	ctx = WithToolOriginContext(ctx, &bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "chat-1",
+		ChatType: "group",
+	})
+
+	result := tool.Execute(ctx, map[string]any{
+		"action":    "update",
+		"job_id":    job.ID,
+		"cron_expr": "30 10 * * *",
+	})
+	if result.IsError {
+		t.Fatalf("update failed: %s", result.ForLLM)
+	}
+
+	updated, ok := tool.cronService.GetJob(job.ID)
+	if !ok {
+		t.Fatal("updated job not found")
+	}
+	if updated.Payload.SessionKey != "sk_v1_adopted" || updated.Payload.AgentID != "main" {
+		t.Fatalf("session not adopted: %+v", updated.Payload)
+	}
+	if updated.Payload.Origin == nil || updated.Payload.Origin.ChatType != "group" {
+		t.Fatalf("origin not adopted: %+v", updated.Payload.Origin)
+	}
+}
+
 func TestCronTool_AddJobSessionModeArgument(t *testing.T) {
 	tool := newTestCronTool(t)
 	ctx := WithToolContext(context.Background(), "cli", "direct")

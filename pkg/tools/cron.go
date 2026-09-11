@@ -482,6 +482,18 @@ func (t *CronTool) updateJob(ctx context.Context, args map[string]any) *ToolResu
 		return ErrorResult("at least one update field is required")
 	}
 
+	// Migration path for jobs that predate session pinning (and CLI-created
+	// ones): the first update from a real session adopts it. Jobs that already
+	// carry a session are only reachable from that session, so this cannot move
+	// someone else's job.
+	if job.Payload.SessionKey == "" {
+		if sessionKey := cronSchedulingSessionKey(ctx); sessionKey != "" {
+			job.Payload.SessionKey = sessionKey
+			job.Payload.AgentID = ToolAgentID(ctx)
+			job.Payload.Origin = cronOriginFromContext(ctx)
+		}
+	}
+
 	if err := t.cronService.UpdateJob(job); err != nil {
 		return ErrorResult(fmt.Sprintf("Error updating job: %v", err))
 	}
