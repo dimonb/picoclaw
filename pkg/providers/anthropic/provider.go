@@ -305,7 +305,9 @@ func levelToBudget(level string) int {
 		return 16384
 	case "high":
 		return 32000
-	case "xhigh":
+	case "xhigh", "max":
+		// "max" only exists on the Codex transport; clamp it to the strongest
+		// budget here rather than silently disabling thinking.
 		return 64000
 	default:
 		return 0

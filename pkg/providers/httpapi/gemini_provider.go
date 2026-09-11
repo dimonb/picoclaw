@@ -382,7 +382,7 @@ func mapGeminiThinkingLevel(level string) string {
 		return "low"
 	case "medium":
 		return "medium"
-	case "high", "xhigh", "adaptive":
+	case "high", "xhigh", "max", "adaptive":
 		return "high"
 	default:
 		return ""
@@ -466,7 +466,7 @@ func mapGeminiThinkingBudget(level string) (int, bool) {
 		return 4096, true
 	case "high":
 		return 8192, true
-	case "xhigh":
+	case "xhigh", "max":
 		return 16384, true
 	default:
 		return 0, false

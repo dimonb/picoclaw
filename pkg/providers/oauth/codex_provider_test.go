@@ -695,7 +695,10 @@ func TestCodexProvider_ChatRoundTrip_ModelFallbackFromUnsupported(t *testing.T) 
 	provider.client = createOpenAITestClient(server.URL, "test-token", "acc-123")
 
 	messages := []Message{{Role: "user", Content: "Hello"}}
-	resp, err := provider.Chat(t.Context(), messages, nil, "gpt-5.3-codex", nil)
+	// A model this transport cannot serve must be rewritten to the default; the
+	// stub server rejects anything else. Passing a model that merely happens to
+	// equal the default would assert nothing.
+	resp, err := provider.Chat(t.Context(), messages, nil, "anthropic/claude-opus-5", nil)
 	if err != nil {
 		t.Fatalf("Chat() error: %v", err)
 	}

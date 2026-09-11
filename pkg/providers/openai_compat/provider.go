@@ -260,6 +260,10 @@ func normalizedThinkingLevel(options map[string]any) (string, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "off", "low", "medium", "high", "xhigh", "adaptive":
 		return strings.ToLower(strings.TrimSpace(raw)), true
+	case "max":
+		// Only the Codex transport has a distinct "max"; everywhere else it is
+		// the strongest level available.
+		return "xhigh", true
 	default:
 		return "", false
 	}

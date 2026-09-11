@@ -11,7 +11,10 @@ import (
 // ThinkingLevel controls how the provider sends thinking parameters.
 //
 //   - "adaptive": sends {thinking: {type: "adaptive"}} + output_config.effort (Claude 4.6+)
-//   - "low"/"medium"/"high"/"xhigh": sends {thinking: {type: "enabled", budget_tokens: N}} (all models)
+//   - "low"/"medium"/"high"/"xhigh"/"max": sends {thinking: {type: "enabled", budget_tokens: N}} (all models)
+//
+// Providers that cannot honor a level map it onto the closest one they accept;
+// "max" currently only exists on the Codex transport (gpt-6-astra).
 //   - "off": disables thinking
 type ThinkingLevel string
 
@@ -21,6 +24,7 @@ const (
 	ThinkingMedium   ThinkingLevel = "medium"
 	ThinkingHigh     ThinkingLevel = "high"
 	ThinkingXHigh    ThinkingLevel = "xhigh"
+	ThinkingMax      ThinkingLevel = "max"
 	ThinkingAdaptive ThinkingLevel = "adaptive"
 )
 
@@ -39,6 +43,8 @@ func parseThinkingLevel(level string) ThinkingLevel {
 		return ThinkingHigh
 	case "xhigh":
 		return ThinkingXHigh
+	case "max":
+		return ThinkingMax
 	default:
 		return ThinkingOff
 	}
@@ -46,7 +52,7 @@ func parseThinkingLevel(level string) ThinkingLevel {
 
 func isConfiguredThinkingLevel(level string) bool {
 	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "off", "low", "medium", "high", "xhigh", "adaptive":
+	case "off", "low", "medium", "high", "xhigh", "max", "adaptive":
 		return true
 	default:
 		return false

@@ -16,7 +16,11 @@ import (
 )
 
 const (
-	codexDefaultModel        = "gpt-5.3-codex"
+	// codexDefaultModel is the model used when the configured one cannot be
+	// sent to this transport. Keep it to a model the Codex backend actually
+	// serves: gpt-5.3-codex was retired and every substitution onto it failed
+	// with "not supported when using Codex with a ChatGPT account".
+	codexDefaultModel        = "gpt-5.5"
 	codexDefaultInstructions = "You are Codex, a coding assistant."
 )
 
@@ -182,6 +186,14 @@ func (p *CodexProvider) SupportsNativeSearch() bool {
 	return p.enableWebSearch
 }
 
+// codexModelAliases maps the short names people actually type onto the
+// identifiers the Codex backend expects. Without an entry here a bare "astra"
+// falls through to the default model, which is the worst outcome: the turn runs
+// on something else entirely.
+var codexModelAliases = map[string]string{
+	"astra": "gpt-6-astra",
+}
+
 func resolveCodexModel(model string) (string, string) {
 	m := strings.ToLower(strings.TrimSpace(model))
 	if m == "" {
@@ -192,6 +204,10 @@ func resolveCodexModel(model string) (string, string) {
 		m = after
 	} else if strings.Contains(m, "/") {
 		return codexDefaultModel, "non-openai model namespace"
+	}
+
+	if canonical, ok := codexModelAliases[m]; ok {
+		return canonical, ""
 	}
 
 	unsupportedPrefixes := []string{

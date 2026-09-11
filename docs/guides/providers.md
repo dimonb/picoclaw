@@ -77,6 +77,7 @@ This design also enables **multi-agent support** with flexible provider selectio
 | **Azure OpenAI**    | `azure`           | `https://{resource}.openai.azure.com`               | Azure     | [Get Key](https://portal.azure.com)                              |
 | **Antigravity**     | `antigravity`     | Google Cloud                                        | Custom    | OAuth only                                                       |
 | **GitHub Copilot**  | `github-copilot`  | `localhost:4321`                                    | gRPC      | -                                                                |
+| **Codex (WebSocket)** | `codex-ws`      | `wss://chatgpt.com/backend-api/codex/responses`     | Codex WS  | OAuth only (`picoclaw auth login --provider openai`)             |
 
 #### Basic Configuration
 
@@ -129,7 +130,7 @@ This design also enables **multi-agent support** with flexible provider selectio
 | `user_agent` | string | No | Custom `User-Agent` header sent with API requests (supported by OpenAI-compatible, Gemini, Anthropic, and Azure providers)                                                                                                                  |
 | `request_timeout` | int | No | Request timeout in seconds (default varies by provider)                                                                                                                                                                                     |
 | `max_tokens_field` | string | No | Override the max tokens field name in request body (e.g., `max_completion_tokens` for o1 models)                                                                                                                                            |
-| `thinking_level` | string | No | Extended thinking level: `off`, `low`, `medium`, `high`, `xhigh`, or `adaptive`                                                                                                                                                             |
+| `thinking_level` | string | No | Extended thinking level: `off`, `low`, `medium`, `high`, `xhigh`, `max`, or `adaptive`. `max` only exists on the Codex transport; other providers clamp it to their strongest level.                                                        |
 | `tool_schema_transform` | string | No | Optional compatibility transform for tool parameter schemas. Default: disabled. Supported values: `simple`.                                                                                             |
 | `extra_body` | object | No | Additional fields to inject into every request body                                                                                                                                                                                         |
 | `custom_headers` | object | No | Additional HTTP headers to inject into every request (e.g., `{"X-Source":"coding-plan"}`). If a key matches a built-in header, the custom value overrides the built-in one (e.g., `Authorization`, `User-Agent`, `Content-Type`, `Accept`). |
@@ -525,6 +526,42 @@ The old `providers` configuration is **deprecated** and has been removed in V2. 
 ```
 
 For detailed migration guide, see [migration/model-list-migration.md](../migration/model-list-migration.md).
+
+### Codex WebSocket (`codex-ws`)
+
+`codex-ws` talks to the Codex backend over the same persistent WebSocket the
+official Codex CLI uses, authenticated with an OpenAI OAuth login rather than an
+API key. Each conversation gets its own connection, so turns in different chats
+run in parallel while turns in one chat stay ordered.
+
+```json
+{
+  "model_list": [
+    {
+      "model_name": "astra",
+      "provider": "codex-ws",
+      "model": "gpt-6-astra",
+      "thinking_level": "high"
+    }
+  ]
+}
+```
+
+**Models.** The backend serves a small, changing set of models to ChatGPT
+accounts, and it rejects the rest outright — a model that worked last month can
+stop being accepted. `astra` is accepted as a short alias for `gpt-6-astra`. A
+model this transport cannot send at all (a Claude or Gemini identifier arriving
+through a fallback chain, say) is rewritten to the default model and logged as
+`Requested model is not usable on this transport, substituting`; check for that
+line when a turn answers but not from the model you configured.
+
+**Reasoning effort.** `thinking_level` maps onto the Codex reasoning effort, and
+which efforts a model takes is model-specific: `gpt-6-astra` accepts
+`low`/`medium`/`high`/`xhigh`/`max` and rejects `none`/`minimal`. When a model
+rejects the configured level, PicoClaw reads the supported list out of the
+rejection, retries on the nearest level, and remembers the substitution for the
+rest of the process — the turn succeeds and logs
+`Model rejected the reasoning effort, retrying with the nearest supported one`.
 
 ### Provider Architecture
 

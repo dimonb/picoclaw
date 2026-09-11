@@ -298,6 +298,12 @@ type CodexWSProvider struct {
 	mu       sync.Mutex
 	sessions map[string]*wsSessionState
 	done     chan struct{}
+
+	// effortMu guards effortFallbacks, which remembers the reasoning effort a
+	// model actually accepted for a requested thinking level. Without it every
+	// turn would pay the rejection round-trip again.
+	effortMu        sync.Mutex
+	effortFallbacks map[string]string
 }
 
 func NewCodexWSProvider(token, accountID string) *CodexWSProvider {
@@ -312,6 +318,7 @@ func NewCodexWSProvider(token, accountID string) *CodexWSProvider {
 		baseURL:         baseURL,
 		sessions:        make(map[string]*wsSessionState),
 		done:            make(chan struct{}),
+		effortFallbacks: make(map[string]string),
 	}
 	if accountID != "" {
 		p.accountID.Store(&accountID)
@@ -410,7 +417,13 @@ func (p *CodexWSProvider) deleteSession(sessionKey string) {
 
 // connectSession dials a new WebSocket and runs the prewarm turn for the given session.
 // Called with sess.mu held.
-func (p *CodexWSProvider) connectSession(sess *wsSessionState, instructions string, tools []wsToolDef, model string, options map[string]any) error {
+func (p *CodexWSProvider) connectSession(
+	sess *wsSessionState,
+	instructions string,
+	tools []wsToolDef,
+	model string,
+	options map[string]any,
+) error {
 	tok, accID, err := p.tokenSource()
 	if err != nil {
 		return fmt.Errorf("token: %w", err)
@@ -424,9 +437,9 @@ func (p *CodexWSProvider) connectSession(sess *wsSessionState, instructions stri
 	}
 	hdrs := http.Header{}
 	hdrs.Set("Authorization", "Bearer "+tok)
-	hdrs.Set("originator", "codex_cli_rs")
+	hdrs.Set("Originator", "codex_cli_rs")
 	hdrs.Set("User-Agent", codexUserAgent())
-	hdrs.Set("openai-beta", codexWSBetaHeader)
+	hdrs.Set("Openai-Beta", codexWSBetaHeader)
 	if ptr := p.accountID.Load(); ptr != nil && *ptr != "" {
 		hdrs.Set("Chatgpt-Account-Id", *ptr)
 	}
@@ -518,16 +531,24 @@ func (p *CodexWSProvider) drainStream(
 		_, msg, readErr := sess.conn.ReadMessage()
 		if readErr != nil {
 			err = fmt.Errorf("ws read: %w", readErr)
-			return
+			return responseID, usage, err
 		}
 
 		var evt wsEvent
 		if jsonErr := json.Unmarshal(msg, &evt); jsonErr != nil {
-			logger.DebugCF("provider.codex_ws", "Failed to parse event", map[string]any{"raw": string(msg[:min(len(msg), 200)])})
+			logger.DebugCF(
+				"provider.codex_ws",
+				"Failed to parse event",
+				map[string]any{"raw": string(msg[:min(len(msg), 200)])},
+			)
 			continue
 		}
 		if evt.Type != "response.output_text.delta" && evt.Type != "response.function_call_arguments.delta" {
-			logger.DebugCF("provider.codex_ws", "WS event", map[string]any{"type": evt.Type, "raw": string(msg[:min(len(msg), 300)])})
+			logger.DebugCF(
+				"provider.codex_ws",
+				"WS event",
+				map[string]any{"type": evt.Type, "raw": string(msg[:min(len(msg), 300)])},
+			)
 		}
 
 		switch evt.Type {
@@ -593,7 +614,7 @@ func (p *CodexWSProvider) drainStream(
 			// Top-level server error (e.g. 429 usage_limit_reached). Surface it
 			// immediately instead of blocking on the read deadline.
 			err = wsErrorToGoError(evt.Error, evt.StatusCode)
-			return
+			return responseID, usage, err
 
 		case "response.completed", "response.incomplete":
 			if evt.Response != nil {
@@ -602,7 +623,7 @@ func (p *CodexWSProvider) drainStream(
 				}
 				usage = evt.Response.Usage
 			}
-			return
+			return responseID, usage, err
 
 		case "response.failed":
 			if evt.Response != nil {
@@ -615,7 +636,7 @@ func (p *CodexWSProvider) drainStream(
 			// payload (e.g. a usage limit delivered this way); otherwise keep the
 			// prior behavior of returning whatever was already streamed.
 			err = responseFailedToGoError(evt.Response)
-			return
+			return responseID, usage, err
 		}
 	}
 }
@@ -629,6 +650,7 @@ func (p *CodexWSProvider) buildRequest(
 	tools []wsToolDef,
 	model string,
 	options map[string]any,
+	effortOverride string,
 ) wsRequest {
 	if input == nil {
 		input = []wsInputItem{}
@@ -658,17 +680,45 @@ func (p *CodexWSProvider) buildRequest(
 	}
 
 	if level, ok := options["thinking_level"].(string); ok && level != "" && level != "off" {
-		if level == "auto" {
+		switch {
+		case effortOverride != "":
+			// The model rejected the requested effort and told us what it takes.
+			req.Reasoning = &wsReasoning{Effort: effortOverride}
+			req.Include = []string{"reasoning.encrypted_content"}
+		case level == "auto":
 			// Let server choose effort (send reasoning block with no explicit effort).
 			req.Reasoning = &wsReasoning{}
 			req.Include = []string{"reasoning.encrypted_content"}
-		} else if effort, effortOK := codexReasoningEffort(level); effortOK {
-			req.Reasoning = &wsReasoning{Effort: string(effort)}
-			req.Include = []string{"reasoning.encrypted_content"}
+		default:
+			if effort, effortOK := codexReasoningEffort(level); effortOK {
+				req.Reasoning = &wsReasoning{Effort: string(effort)}
+				req.Include = []string{"reasoning.encrypted_content"}
+			}
 		}
 	}
 
 	return req
+}
+
+func codexEffortCacheKey(model, level string) string {
+	return model + "\x00" + strings.ToLower(strings.TrimSpace(level))
+}
+
+// cachedEffortFallback returns the effort previously found to work for this
+// model/level pair, or "" when the requested level has never been rejected.
+func (p *CodexWSProvider) cachedEffortFallback(model, level string) string {
+	if level == "" {
+		return ""
+	}
+	p.effortMu.Lock()
+	defer p.effortMu.Unlock()
+	return p.effortFallbacks[codexEffortCacheKey(model, level)]
+}
+
+func (p *CodexWSProvider) rememberEffortFallback(model, level, effort string) {
+	p.effortMu.Lock()
+	defer p.effortMu.Unlock()
+	p.effortFallbacks[codexEffortCacheKey(model, level)] = effort
 }
 
 // Chat implements LLMProvider.
@@ -680,13 +730,13 @@ func (p *CodexWSProvider) Chat(
 	options map[string]any,
 ) (*LLMResponse, error) {
 	var outputItems []wsOutputItem
-	_, err := p.chatStream(ctx, messages, tools, model, options, nil, func(item wsOutputItem) {
+	usage, err := p.chatStream(ctx, messages, tools, model, options, nil, func(item wsOutputItem) {
 		outputItems = append(outputItems, item)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return parseWSResponse(outputItems), nil
+	return parseWSResponse(outputItems, usage), nil
 }
 
 // ChatStream implements StreamingProvider.
@@ -699,13 +749,13 @@ func (p *CodexWSProvider) ChatStream(
 	onChunk func(string),
 ) (*LLMResponse, error) {
 	var outputItems []wsOutputItem
-	_, err := p.chatStream(ctx, messages, tools, model, options, onChunk, func(item wsOutputItem) {
+	usage, err := p.chatStream(ctx, messages, tools, model, options, onChunk, func(item wsOutputItem) {
 		outputItems = append(outputItems, item)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return parseWSResponse(outputItems), nil
+	return parseWSResponse(outputItems, usage), nil
 }
 
 func (p *CodexWSProvider) chatStream(
@@ -717,7 +767,17 @@ func (p *CodexWSProvider) chatStream(
 	onText func(string),
 	onItem func(wsOutputItem),
 ) (wsUsage, error) {
-	resolvedModel, _ := resolveCodexModel(model)
+	resolvedModel, substitutionReason := resolveCodexModel(model)
+	if substitutionReason != "" {
+		// Silent substitution is how "my model does nothing" bugs are born:
+		// the turn succeeds, just not on the model that was configured.
+		logger.WarnCF("provider.codex_ws", "Requested model is not usable on this transport, substituting",
+			map[string]any{
+				"requested": model,
+				"using":     resolvedModel,
+				"reason":    substitutionReason,
+			})
+	}
 	useNativeSearch := p.enableWebSearch && (options["native_search"] == true)
 	wsTools := translateToolsForWS(tools, useNativeSearch)
 
@@ -810,15 +870,33 @@ func (p *CodexWSProvider) chatStream(
 		}
 	}
 	if normalizedSentCount, reset := normalizeCodexWSReplayCursor(sess.sentMsgCount, len(convMsgs)); reset {
-		logger.WarnCF("provider.codex_ws", "Replay cursor exceeded history after reconnect, resetting session replay state",
-			map[string]any{"session_key": sessionKey, "sent_count": sess.sentMsgCount, "history_len": len(convMsgs)})
+		logger.WarnCF(
+			"provider.codex_ws",
+			"Replay cursor exceeded history after reconnect, resetting session replay state",
+			map[string]any{"session_key": sessionKey, "sent_count": sess.sentMsgCount, "history_len": len(convMsgs)},
+		)
 		sess.sentMsgCount = normalizedSentCount
 		sess.previousResponseID = ""
 	}
 
+	// Reasoning efforts are model-specific and change between model
+	// generations, so reuse whatever this model accepted for this level before.
+	requestedLevel, _ := options["thinking_level"].(string)
+	effortOverride := p.cachedEffortFallback(resolvedModel, requestedLevel)
+	effortRetries := 0
+
 	// Build the initial request with only NEW messages since the last turn.
 	newMsgs := convMsgs[sess.sentMsgCount:]
-	req := p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(ensureToolOutputs(newMsgs)), wsTools, resolvedModel, options)
+	req := p.buildRequest(
+		sess,
+		instructions,
+		sess.previousResponseID,
+		buildWSInput(ensureToolOutputs(newMsgs)),
+		wsTools,
+		resolvedModel,
+		options,
+		effortOverride,
+	)
 	sess.sentMsgCount = len(convMsgs)
 	sess.sentDigest = historyPrefixDigest(convMsgs)
 
@@ -863,7 +941,16 @@ func (p *CodexWSProvider) chatStream(
 			// Replay full history after reconnect.
 			sess.sentMsgCount = len(convMsgs)
 			sess.sentDigest = historyPrefixDigest(convMsgs)
-			req = p.buildRequest(sess, instructions, sess.previousResponseID, buildWSInput(ensureToolOutputs(convMsgs)), wsTools, resolvedModel, options)
+			req = p.buildRequest(
+				sess,
+				instructions,
+				sess.previousResponseID,
+				buildWSInput(ensureToolOutputs(convMsgs)),
+				wsTools,
+				resolvedModel,
+				options,
+				effortOverride,
+			)
 		}
 
 		if err := p.sendToSession(sess, req); err != nil {
@@ -873,6 +960,22 @@ func (p *CodexWSProvider) chatStream(
 		respID, usage, lastErr = p.drainStream(sess, onText, onItem)
 		if lastErr == nil {
 			break
+		}
+		// The model may reject the reasoning effort outright (gpt-6-astra
+		// dropped "none"/"minimal"). The rejection names the efforts it does
+		// take, so retry on the nearest one instead of failing the turn over a
+		// knob the caller does not care that precisely about.
+		if effortRetries < maxCodexEffortRetries {
+			if effort, ok := p.effortFallbackFromError(
+				resolvedModel,
+				requestedLevel,
+				lastErr,
+			); ok &&
+				effort != effortOverride {
+				effortOverride = effort
+				effortRetries++
+				continue
+			}
 		}
 		// Server-side rejection (usage limit / failed response): reconnecting
 		// would just hit the same error. Fail fast so the fallback chain can
@@ -891,6 +994,42 @@ func (p *CodexWSProvider) chatStream(
 	return usage, nil
 }
 
+// maxCodexEffortRetries bounds the effort renegotiation so a server that keeps
+// rejecting our choice cannot spin the retry loop.
+const maxCodexEffortRetries = 2
+
+// effortFallbackFromError inspects a failed turn for an "unsupported reasoning
+// effort" rejection and returns the nearest effort the model accepts, caching
+// it so later turns skip the round-trip.
+func (p *CodexWSProvider) effortFallbackFromError(model, level string, err error) (string, bool) {
+	if err == nil || level == "" {
+		return "", false
+	}
+	var serverErr *wsServerError
+	if !errors.As(err, &serverErr) {
+		return "", false
+	}
+	rejected, supported, ok := parseCodexUnsupportedEffort(serverErr.Msg)
+	if !ok {
+		return "", false
+	}
+	effort, ok := nearestCodexEffort(rejected, supported)
+	if !ok {
+		return "", false
+	}
+
+	p.rememberEffortFallback(model, level, effort)
+	logger.WarnCF("provider.codex_ws", "Model rejected the reasoning effort, retrying with the nearest supported one",
+		map[string]any{
+			"model":          model,
+			"thinking_level": level,
+			"rejected":       rejected,
+			"using":          effort,
+			"supported":      strings.Join(supported, ","),
+		})
+	return effort, true
+}
+
 func normalizeCodexWSReplayCursor(sentMsgCount, historyLen int) (int, bool) {
 	if sentMsgCount < 0 || sentMsgCount > historyLen {
 		return 0, true
@@ -903,7 +1042,7 @@ func normalizeCodexWSReplayCursor(sentMsgCount, historyLen int) (int, bool) {
 // so any rewrite of already-sent history is detected.
 func historyPrefixDigest(msgs []Message) string {
 	h := fnv.New64a()
-	var sep = []byte{0}
+	sep := []byte{0}
 	for _, m := range msgs {
 		_, _ = h.Write([]byte(m.Role))
 		_, _ = h.Write(sep)
@@ -1092,7 +1231,7 @@ func translateToolsForWS(tools []ToolDefinition, enableWebSearch bool) []wsToolD
 	return result
 }
 
-func parseWSResponse(items []wsOutputItem) *LLMResponse {
+func parseWSResponse(items []wsOutputItem, usage wsUsage) *LLMResponse {
 	var content strings.Builder
 	var toolCalls []ToolCall
 
@@ -1122,11 +1261,25 @@ func parseWSResponse(items []wsOutputItem) *LLMResponse {
 		finishReason = "tool_calls"
 	}
 
-	return &LLMResponse{
+	resp := &LLMResponse{
 		Content:      content.String(),
 		ToolCalls:    toolCalls,
 		FinishReason: finishReason,
 	}
+	// The backend omits usage on some turns; reporting zeros as a real
+	// measurement would make context-usage look empty rather than unknown.
+	if usage.TotalTokens > 0 || usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		total := usage.TotalTokens
+		if total == 0 {
+			total = usage.InputTokens + usage.OutputTokens
+		}
+		resp.Usage = &UsageInfo{
+			PromptTokens:     usage.InputTokens,
+			CompletionTokens: usage.OutputTokens,
+			TotalTokens:      total,
+		}
+	}
+	return resp
 }
 
 // wsHandshakeTimeout is the timeout for the WebSocket handshake.
