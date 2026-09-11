@@ -305,6 +305,13 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 
 		content := parseContent(chunk, format)
 
+		// Nothing to deliver: Telegram rejects blank text on both the rich and
+		// the plain endpoint, so sending it would burn a retry budget on a
+		// failure that will never resolve, and report it as temporary.
+		if strings.TrimSpace(content) == "" && strings.TrimSpace(chunk) == "" {
+			continue
+		}
+
 		if len([]rune(content)) > 4096 {
 			if isToolFeedback {
 				fittedChunk := fitToolFeedbackForTelegram(chunk, format, 4096)
@@ -353,7 +360,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 			// Filter out empty chunks to avoid sending empty messages to Telegram.
 			nonEmpty := make([]string, 0, len(subChunks))
 			for _, s := range subChunks {
-				if s != "" {
+				if strings.TrimSpace(s) != "" {
 					nonEmpty = append(nonEmpty, s)
 				}
 			}

@@ -482,6 +482,31 @@ func TestPublishResponseIfNeeded_MarksFinalOutbound(t *testing.T) {
 	}
 }
 
+// A cron-driven turn told to report only when something happened answers with
+// whitespace, not with an empty string. Publishing that produced a message no
+// channel can deliver, retried as if the failure were temporary.
+func TestPublishResponseIfNeeded_SkipsBlankResponse(t *testing.T) {
+	for _, response := range []string{"", " ", "\n", " \n\t "} {
+		al, _, msgBus, provider, cleanup := newTestAgentLoop(t)
+		_ = provider
+
+		if err := al.PublishResponseIfNeeded(
+			context.Background(), "pico", "pico:session-1", "session-1", response,
+		); err != nil {
+			cleanup()
+			t.Fatalf("PublishResponseIfNeeded(%q) error: %v", response, err)
+		}
+
+		select {
+		case outbound := <-msgBus.OutboundChan():
+			cleanup()
+			t.Fatalf("blank response %q was published as %q", response, outbound.Content)
+		case <-time.After(100 * time.Millisecond):
+		}
+		cleanup()
+	}
+}
+
 func TestPublishPicoReasoningIncludesSessionKey(t *testing.T) {
 	al, _, msgBus, provider, cleanup := newTestAgentLoop(t)
 	defer cleanup()

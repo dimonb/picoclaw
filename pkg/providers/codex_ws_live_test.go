@@ -38,9 +38,13 @@ func TestCodexWSLive(t *testing.T) {
 		options["thinking_level"] = level
 	}
 
+	prompt := os.Getenv("CODEX_WS_PROMPT")
+	if prompt == "" {
+		prompt = "Reply with exactly: pong"
+	}
 	messages := []Message{
 		{Role: "system", Content: "You are a terse assistant."},
-		{Role: "user", Content: "Reply with exactly: pong"},
+		{Role: "user", Content: prompt},
 	}
 
 	resp, err := p.ChatStream(ctx, messages, nil, resolved, options, nil)

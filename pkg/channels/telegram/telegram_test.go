@@ -1879,6 +1879,29 @@ func decodeJSONBody(t *testing.T, data *ta.RequestData) map[string]any {
 	return m
 }
 
+// A model told to stay silent answers with whitespace rather than an empty
+// string. Telegram rejects that on both endpoints, so it must never be sent:
+// the retries cannot succeed and the failure is reported as temporary.
+func TestSend_BlankContentIsNotDelivered(t *testing.T) {
+	for _, content := range []string{" ", "\n", " \n\t "} {
+		caller := &stubCaller{
+			callFn: func(ctx context.Context, url string, data *ta.RequestData) (*ta.Response, error) {
+				return successResponse(t), nil
+			},
+		}
+		ch := newRichTestChannel(t, caller)
+
+		ids, err := ch.Send(context.Background(), bus.OutboundMessage{
+			ChatID:  "12345",
+			Content: content,
+		})
+
+		require.NoError(t, err)
+		assert.Empty(t, ids)
+		assert.Empty(t, caller.calls, "blank content %q reached the Telegram API", content)
+	}
+}
+
 func TestSend_RichMessage_UsesSendRichMessageWithMarkdown(t *testing.T) {
 	const table = "| A | B |\n|---|---|\n| 1 | 2 |"
 	caller := &stubCaller{

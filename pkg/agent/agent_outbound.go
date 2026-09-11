@@ -46,7 +46,12 @@ func (al *AgentLoop) publishResponseOrError(
 }
 
 func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string) error {
-	if response == "" {
+	// Trim, not just an empty check: a model told to stay silent unless it has
+	// something to report answers with a space rather than an empty string, and
+	// " " is not deliverable — Telegram rejects it as RICH_MESSAGE_EMPTY and
+	// then as "text must be non-empty", which the channel reports as a
+	// temporary failure and retries. Silence is a result, not a message.
+	if strings.TrimSpace(response) == "" {
 		return nil
 	}
 
