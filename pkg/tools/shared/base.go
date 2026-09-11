@@ -3,6 +3,7 @@ package toolshared
 import (
 	"context"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/session"
 )
 
@@ -50,6 +51,7 @@ var (
 	ctxKeyAgentID          = &toolCtxKey{"agentID"}
 	ctxKeySessionKey       = &toolCtxKey{"sessionKey"}
 	ctxKeySessionScope     = &toolCtxKey{"sessionScope"}
+	ctxKeyOriginContext    = &toolCtxKey{"originContext"}
 )
 
 // WithToolContext returns a child context carrying channel and chatID.
@@ -140,6 +142,29 @@ func ToolSessionKey(ctx context.Context) string {
 		return ""
 	}
 	return v
+}
+
+// WithToolOriginContext returns a child context carrying a copy of the turn's
+// full inbound context. Tools that persist a turn for later replay (cron) need
+// more than channel/chatID: the session key is derived from chat type, topic,
+// account and sender too.
+func WithToolOriginContext(ctx context.Context, inbound *bus.InboundContext) context.Context {
+	if inbound == nil {
+		return ctx
+	}
+	clone := *inbound
+	return context.WithValue(ctx, ctxKeyOriginContext, &clone)
+}
+
+// ToolOriginContext extracts a copy of the turn's inbound context from ctx, or
+// nil if unset.
+func ToolOriginContext(ctx context.Context) *bus.InboundContext {
+	inbound, ok := ctx.Value(ctxKeyOriginContext).(*bus.InboundContext)
+	if !ok || inbound == nil {
+		return nil
+	}
+	clone := *inbound
+	return &clone
 }
 
 // ToolSessionScope extracts the active turn's structured session scope from ctx.

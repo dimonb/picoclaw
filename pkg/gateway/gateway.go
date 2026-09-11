@@ -804,7 +804,7 @@ func setupCronTool(
 	var cronTool *tools.CronTool
 	if cfg.Tools.IsToolEnabled("cron") {
 		var err error
-		cronTool, err = tools.NewCronTool(cronService, agentLoop, msgBus, workspace, restrict, execTimeout, cfg)
+		cronTool, err = tools.NewCronTool(cronService, msgBus, workspace, restrict, execTimeout, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("critical error during CronTool initialization: %w", err)
 		}
@@ -814,8 +814,7 @@ func setupCronTool(
 
 	if cronTool != nil {
 		cronService.SetOnJob(func(job *cron.CronJob) (string, error) {
-			result := cronTool.ExecuteJob(context.Background(), job)
-			return result, nil
+			return cronTool.ExecuteJob(context.Background(), job)
 		})
 	}
 

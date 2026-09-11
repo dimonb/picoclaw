@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/session"
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
@@ -59,6 +60,14 @@ func WithToolSessionContext(
 	scope *session.SessionScope,
 ) context.Context {
 	return toolshared.WithToolSessionContext(ctx, agentID, sessionKey, scope)
+}
+
+func WithToolOriginContext(ctx context.Context, inbound *bus.InboundContext) context.Context {
+	return toolshared.WithToolOriginContext(ctx, inbound)
+}
+
+func ToolOriginContext(ctx context.Context) *bus.InboundContext {
+	return toolshared.ToolOriginContext(ctx)
 }
 
 func ToolChannel(ctx context.Context) string {

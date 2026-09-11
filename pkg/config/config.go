@@ -34,7 +34,7 @@ var rawMessageType = reflect.TypeOf(json.RawMessage{})
 func envParseOptions() env.Options {
 	return env.Options{
 		FuncMap: map[reflect.Type]env.ParserFunc{
-			rawMessageType: func(v string) (interface{}, error) {
+			rawMessageType: func(v string) (any, error) {
 				if v == "" {
 					return json.RawMessage(nil), nil
 				}
@@ -1089,12 +1089,38 @@ type WebToolsConfig struct {
 	PrivateHostWhitelist FlexibleStringSlice `yaml:"-" json:"private_host_whitelist,omitempty" env:"PICOCLAW_TOOLS_WEB_PRIVATE_HOST_WHITELIST"`
 }
 
+// Cron session modes: where a scheduled firing runs.
+const (
+	// CronSessionModeOrigin injects the firing into the session that scheduled
+	// the job, so the agent sees the trigger in its original context.
+	CronSessionModeOrigin = "origin"
+	// CronSessionModeIsolated runs each firing in a fresh throwaway session.
+	CronSessionModeIsolated = "isolated"
+)
+
+// Cron command delivery modes: how scheduled shell output reaches the user.
+const (
+	// CronCommandDeliverySession injects the output as a cron trigger and lets
+	// the agent decide what (if anything) to report.
+	CronCommandDeliverySession = "session"
+	// CronCommandDeliveryRaw posts the command output straight to the chat.
+	CronCommandDeliveryRaw = "raw"
+)
+
 type CronToolsConfig struct {
 	ToolConfig `envPrefix:"PICOCLAW_TOOLS_CRON_"`
 	// 0 means no timeout.
 	ExecTimeoutMinutes    int      `json:"exec_timeout_minutes"    env:"PICOCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES"`
 	AllowCommand          bool     `json:"allow_command"           env:"PICOCLAW_TOOLS_CRON_ALLOW_COMMAND"`
 	CommandAllowedRemotes []string `json:"command_allowed_remotes" env:"PICOCLAW_TOOLS_CRON_COMMAND_ALLOWED_REMOTES"`
+	// SessionMode is the default session a firing runs in: "origin" injects it
+	// into the session that scheduled the job, "isolated" uses a fresh
+	// throwaway session per firing. Per-job overrides win.
+	SessionMode string `json:"session_mode" env:"PICOCLAW_TOOLS_CRON_SESSION_MODE"`
+	// CommandDelivery controls how scheduled shell output reaches the user:
+	// "session" injects it as a cron trigger so the agent decides what to say,
+	// "raw" posts the output straight to the chat.
+	CommandDelivery string `json:"command_delivery" env:"PICOCLAW_TOOLS_CRON_COMMAND_DELIVERY"`
 }
 
 type ExecConfig struct {

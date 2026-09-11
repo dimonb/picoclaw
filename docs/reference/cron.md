@@ -23,7 +23,7 @@ Examples:
 
 ```bash
 picoclaw cron add --name "Daily summary" --message "Summarize today's logs" --cron "0 18 * * *"
-picoclaw cron add --name "Ping" --message "heartbeat" --every 300 --deliver
+picoclaw cron add --name "Ping" --message "heartbeat" --every 300
 ```
 
 ## Agent Tool Actions
@@ -42,7 +42,9 @@ the original prompt, delivery target, or command payload.
 
 Remote channel access is scoped to the current `channel/chat_id`: remote callers
 can only list, get, or update jobs whose saved `payload.channel` and `payload.to`
-match the current conversation. Command jobs include a shell command payload, so
+match the current conversation. When both the job and the caller know their
+session, the session keys must match too — one chat can host several sessions
+(forum topics, per-sender scopes). Command jobs include a shell command payload, so
 they can only be listed, inspected, or updated from internal channels or remote
 channels allowed by `tools.cron.command_allowed_remotes`.
 
@@ -56,33 +58,70 @@ Example tool calls:
 {"action":"update","job_id":"79095b2f5685a0f2","cron_expr":"30 10 * * *"}
 ```
 
-`update` accepts `name`, `message`, `command`, and exactly one schedule field
-(`at_seconds`, `every_seconds`, or `cron_expr`).
+`update` accepts `name`, `message`, `command`, `session`, and exactly one
+schedule field (`at_seconds`, `every_seconds`, or `cron_expr`).
 Omit `command` to preserve it, set `command` to a non-empty string to replace
 it, or set `command` to `""` to clear it. Command updates require the same
 channel allowlist and confirmation gates as command creation.
 
+## Where a Firing Runs
+
+A firing is not a standalone task: it is injected back into the session that
+scheduled the job, as an inbound message tagged `[cron]`. The agent therefore
+sees the trigger with the history, summaries, and skills of the conversation
+that created it, and can tell a firing apart from a real user message.
+
+To make that possible, `add` records the scheduling turn alongside the schedule:
+
+- `payload.sessionKey` — the session to inject into
+- `payload.agentId` — the agent that owned the scheduling turn
+- `payload.origin` — the rest of the inbound context (chat type, topic, space,
+  account, sender), because the session key is derived from the whole scope and
+  cannot be rebuilt from `channel` + `chat_id` alone
+
+Because the firing travels through the normal inbound path, it is serialized
+with live turns in the same session: if a turn is already running, the trigger is
+queued as a steering message instead of racing it.
+
+Jobs created before these fields existed — and jobs created by
+`picoclaw cron add`, which has no session — carry no session key. They are
+routed to the channel's natural session instead.
+
+### `session: origin` (default)
+
+Inject the firing into the session that scheduled the job.
+
+### `session: isolated`
+
+Run every firing in a fresh, empty session. Useful only for standalone monitors
+whose output should never touch a conversation's context. A job scheduled from
+inside an isolated firing does not inherit that throwaway session.
+
+Set the default with `tools.cron.session_mode`; a per-job `session` argument
+wins over it.
+
 ## Execution Modes
 
-Jobs are stored with a message payload and can execute in three stable user-facing modes:
+Jobs are stored with a message payload and execute in two modes:
 
-### `deliver: false`
+### Message jobs
 
-This is the default for the cron tool.
-
-When the job fires, PicoClaw sends the saved message back through the agent loop as a new agent turn. Use this for scheduled work that may need reasoning, tools, or a generated reply.
-
-### `deliver: true`
-
-When the job fires, PicoClaw publishes the saved message directly to the target channel and recipient without agent processing.
-
-The CLI `picoclaw cron add --deliver` flag uses this mode.
+The saved message is injected into the session as a cron trigger. Use this for
+scheduled work that may need reasoning, tools, or a generated reply.
 
 ### `command`
 
-When a cron-tool job includes `command`, PicoClaw runs that shell command through the `exec` tool and publishes the command output back to the channel.
+When a job includes `command`, PicoClaw runs that shell command through the
+`exec` tool. The saved `message` becomes descriptive text only; the scheduled
+action is the shell command.
 
-For command jobs, `deliver` is forced to `false` when the job is created. The saved `message` becomes descriptive text only; the scheduled action is the shell command.
+How the result is delivered is controlled by `tools.cron.command_delivery`:
+
+- `session` (default): the command's exit state and output are injected into the
+  session as a cron trigger, and the agent decides whether the result is worth
+  reporting. Output is truncated so a chatty script cannot flood the context.
+- `raw`: the command output is published straight to the chat without agent
+  processing.
 
 The current CLI `picoclaw cron add` command does not expose a `command` flag.
 
@@ -95,6 +134,12 @@ The current CLI `picoclaw cron add` command does not expose a `command` flag.
 If you disable `tools.cron`, users can no longer create or manage jobs through the agent tool. The gateway still starts `CronService`, but it does not install the job execution callback. As a result, due jobs do not actually run; one-time jobs may be deleted and recurring jobs may be rescheduled without executing their payload. The CLI still uses the same job store.
 
 `tools.cron.exec_timeout_minutes` sets the timeout used for scheduled command execution. Default: `5`. Set `0` for no timeout.
+
+`tools.cron.session_mode` sets the default session a firing runs in: `origin`
+(default) or `isolated`. See [Where a Firing Runs](#where-a-firing-runs).
+
+`tools.cron.command_delivery` sets how scheduled command output reaches the
+user: `session` (default) or `raw`. See [`command`](#command).
 
 ### `tools.exec`
 
@@ -139,6 +184,8 @@ Example:
     "cron": {
       "enabled": true,
       "exec_timeout_minutes": 5,
+      "session_mode": "origin",
+      "command_delivery": "session",
       "allow_command": true,
       "command_allowed_remotes": [
         "telegram:1234567890"

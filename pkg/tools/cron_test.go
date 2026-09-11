@@ -3,7 +3,6 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,60 +13,16 @@ import (
 	"github.com/sipeed/picoclaw/pkg/cron"
 )
 
-type stubJobExecutor struct {
-	response        string
-	err             error
-	alreadySent     bool // simulate message tool having already sent in this round
-	lastPrompt      string
-	lastKey         string
-	lastChan        string
-	lastChatID      string
-	publishedResp   string
-	publishedChan   string
-	publishedChatID string
-	publishedKey    string
-}
-
-func (s *stubJobExecutor) ProcessDirectWithChannel(
-	_ context.Context,
-	content, sessionKey, channel, chatID string,
-) (string, error) {
-	s.lastPrompt = content
-	s.lastKey = sessionKey
-	s.lastChan = channel
-	s.lastChatID = chatID
-	return s.response, s.err
-}
-
-func (s *stubJobExecutor) PublishResponseIfNeeded(
-	_ context.Context,
-	channel, chatID, sessionKey, response string,
-) error {
-	if s.alreadySent {
-		return nil
-	}
-	s.publishedResp = response
-	s.publishedChan = channel
-	s.publishedChatID = chatID
-	s.publishedKey = sessionKey
-	return nil
-}
-
-func newTestCronToolWithExecutorAndConfig(t *testing.T, executor JobExecutor, cfg *config.Config) *CronTool {
+func newTestCronToolWithConfig(t *testing.T, cfg *config.Config) *CronTool {
 	t.Helper()
 	storePath := filepath.Join(t.TempDir(), "cron.json")
 	cronService := cron.NewCronService(storePath, nil)
 	msgBus := bus.NewMessageBus()
-	tool, err := NewCronTool(cronService, executor, msgBus, t.TempDir(), true, 0, cfg)
+	tool, err := NewCronTool(cronService, msgBus, t.TempDir(), true, 0, cfg)
 	if err != nil {
 		t.Fatalf("NewCronTool() error: %v", err)
 	}
 	return tool
-}
-
-func newTestCronToolWithConfig(t *testing.T, cfg *config.Config) *CronTool {
-	t.Helper()
-	return newTestCronToolWithExecutorAndConfig(t, nil, cfg)
 }
 
 func newTestCronTool(t *testing.T) *CronTool {
@@ -91,23 +46,58 @@ func parseCronJobResult(t *testing.T, result *ToolResult) cron.CronJob {
 func addTestCronJob(t *testing.T, tool *CronTool, name, channel, chatID, command string) *cron.CronJob {
 	t.Helper()
 	everyMS := int64(60_000)
-	job, err := tool.cronService.AddJob(
-		name,
-		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
-		name+" message",
-		channel,
-		chatID,
-	)
+	job, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     name,
+		Schedule: cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		Payload: cron.CronPayload{
+			Message: name + " message",
+			Command: command,
+			Channel: channel,
+			To:      chatID,
+		},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
-	if command != "" {
-		job.Payload.Command = command
-		if err := tool.cronService.UpdateJob(job); err != nil {
-			t.Fatalf("UpdateJob() error: %v", err)
-		}
-	}
 	return job
+}
+
+// waitForInboundTrigger reads the cron trigger the tool published to the bus.
+func waitForInboundTrigger(t *testing.T, tool *CronTool) bus.InboundMessage {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	select {
+	case msg := <-tool.msgBus.InboundChan():
+		return msg
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for inbound cron trigger")
+		return bus.InboundMessage{}
+	}
+}
+
+func waitForOutboundMessage(t *testing.T, tool *CronTool) bus.OutboundMessage {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	select {
+	case msg := <-tool.msgBus.OutboundChan():
+		return msg
+	case <-ctx.Done():
+		t.Fatal("timeout waiting for outbound message")
+		return bus.OutboundMessage{}
+	}
+}
+
+func executeTestCronJob(t *testing.T, tool *CronTool, job *cron.CronJob) string {
+	t.Helper()
+	status, err := tool.ExecuteJob(context.Background(), job)
+	if err != nil {
+		t.Fatalf("ExecuteJob() error: %v", err)
+	}
+	return status
 }
 
 // TestCronTool_CommandBlockedFromRemoteChannel verifies command scheduling is restricted by default.
@@ -413,13 +403,11 @@ func TestCronTool_GetReturnsFullJobPayload(t *testing.T) {
 	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
 	everyMS := int64(60_000)
 	message := strings.Repeat("daily briefing details ", 8)
-	job, err := tool.cronService.AddJob(
-		"daily",
-		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
-		message,
-		"telegram",
-		"chat-1",
-	)
+	job, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     "daily",
+		Schedule: cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		Payload:  cron.CronPayload{Message: message, Channel: "telegram", To: "chat-1"},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
@@ -448,13 +436,15 @@ func TestCronTool_GetReturnsFullJobPayload(t *testing.T) {
 func TestCronTool_UpdateSchedulePreservesPayload(t *testing.T) {
 	tool := newTestCronTool(t)
 	ctx := WithToolContext(context.Background(), "cli", "direct")
-	original, err := tool.cronService.AddJob(
-		"AI daily",
-		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
-		"fetch RSS, include source links",
-		"weixin",
-		"chat-1",
-	)
+	original, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     "AI daily",
+		Schedule: cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+		Payload: cron.CronPayload{
+			Message: "fetch RSS, include source links",
+			Channel: "weixin",
+			To:      "chat-1",
+		},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
@@ -491,13 +481,11 @@ func TestCronTool_UpdateMessagePreservesScheduleAndNextRun(t *testing.T) {
 	tool := newTestCronTool(t)
 	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
 	everyMS := int64(120_000)
-	original, err := tool.cronService.AddJob(
-		"reminder",
-		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
-		"old message",
-		"telegram",
-		"chat-1",
-	)
+	original, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     "reminder",
+		Schedule: cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		Payload:  cron.CronPayload{Message: "old message", Channel: "telegram", To: "chat-1"},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
@@ -533,13 +521,11 @@ func TestCronTool_UpdateMessagePreservesScheduleAndNextRun(t *testing.T) {
 func TestCronTool_UpdateValidationErrors(t *testing.T) {
 	tool := newTestCronTool(t)
 	ctx := WithToolContext(context.Background(), "cli", "direct")
-	job, err := tool.cronService.AddJob(
-		"job",
-		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
-		"message",
-		"cli",
-		"direct",
-	)
+	job, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     "job",
+		Schedule: cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+		Payload:  cron.CronPayload{Message: "message", Channel: "cli", To: "direct"},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
@@ -589,43 +575,35 @@ func TestCronTool_ListFiltersJobsForRemoteChannel(t *testing.T) {
 	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
 	everyMS := int64(60_000)
 
-	ownJob, err := tool.cronService.AddJob(
-		"own",
-		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
-		"visible",
-		"telegram",
-		"chat-1",
-	)
+	ownJob, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     "own",
+		Schedule: cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		Payload:  cron.CronPayload{Message: "visible", Channel: "telegram", To: "chat-1"},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
-	otherChatJob, err := tool.cronService.AddJob(
-		"other-chat",
-		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
-		"hidden",
-		"telegram",
-		"chat-2",
-	)
+	otherChatJob, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     "other-chat",
+		Schedule: cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		Payload:  cron.CronPayload{Message: "hidden", Channel: "telegram", To: "chat-2"},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
-	otherChannelJob, err := tool.cronService.AddJob(
-		"other-channel",
-		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
-		"hidden",
-		"feishu",
-		"chat-1",
-	)
+	otherChannelJob, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     "other-channel",
+		Schedule: cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		Payload:  cron.CronPayload{Message: "hidden", Channel: "feishu", To: "chat-1"},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
-	commandJob, err := tool.cronService.AddJob(
-		"command",
-		cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
-		"hidden command",
-		"telegram",
-		"chat-1",
-	)
+	commandJob, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     "command",
+		Schedule: cron.CronSchedule{Kind: "every", EveryMS: &everyMS},
+		Payload:  cron.CronPayload{Message: "hidden command", Channel: "telegram", To: "chat-1"},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
@@ -651,13 +629,11 @@ func TestCronTool_ListFiltersJobsForRemoteChannel(t *testing.T) {
 
 func TestCronTool_RemoteCannotAccessOtherChatJob(t *testing.T) {
 	tool := newTestCronTool(t)
-	job, err := tool.cronService.AddJob(
-		"private",
-		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
-		"secret",
-		"telegram",
-		"chat-1",
-	)
+	job, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     "private",
+		Schedule: cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+		Payload:  cron.CronPayload{Message: "secret", Channel: "telegram", To: "chat-1"},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
@@ -683,13 +659,11 @@ func TestCronTool_RemoteCannotAccessOtherChatJob(t *testing.T) {
 
 func TestCronTool_RemoteCannotAccessCommandJob(t *testing.T) {
 	tool := newTestCronTool(t)
-	job, err := tool.cronService.AddJob(
-		"command",
-		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
-		"run command",
-		"telegram",
-		"chat-1",
-	)
+	job, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     "command",
+		Schedule: cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+		Payload:  cron.CronPayload{Message: "run command", Channel: "telegram", To: "chat-1"},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
@@ -1013,13 +987,11 @@ func TestCronTool_CommandUpdateSafetyGates(t *testing.T) {
 		cfg.Tools.Exec.Enabled = false
 		tool := newTestCronToolWithConfig(t, cfg)
 		ctx := WithToolContext(context.Background(), "cli", "direct")
-		job, err := tool.cronService.AddJob(
-			"job",
-			cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
-			"message",
-			"cli",
-			"direct",
-		)
+		job, err := tool.cronService.AddJob(cron.AddJobInput{
+			Name:     "job",
+			Schedule: cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+			Payload:  cron.CronPayload{Message: "message", Channel: "cli", To: "direct"},
+		})
 		if err != nil {
 			t.Fatalf("AddJob() error: %v", err)
 		}
@@ -1041,13 +1013,11 @@ func TestCronTool_CommandUpdateSafetyGates(t *testing.T) {
 		cfg.Tools.Cron.AllowCommand = false
 		tool := newTestCronToolWithConfig(t, cfg)
 		ctx := WithToolContext(context.Background(), "cli", "direct")
-		job, err := tool.cronService.AddJob(
-			"job",
-			cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
-			"message",
-			"cli",
-			"direct",
-		)
+		job, err := tool.cronService.AddJob(cron.AddJobInput{
+			Name:     "job",
+			Schedule: cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+			Payload:  cron.CronPayload{Message: "message", Channel: "cli", To: "direct"},
+		})
 		if err != nil {
 			t.Fatalf("AddJob() error: %v", err)
 		}
@@ -1097,13 +1067,11 @@ func TestCronTool_CommandUpdateSafetyGates(t *testing.T) {
 func TestCronTool_InternalCanAccessCommandJobFromAnyChannel(t *testing.T) {
 	tool := newTestCronTool(t)
 	ctx := WithToolContext(context.Background(), "cli", "direct")
-	job, err := tool.cronService.AddJob(
-		"command",
-		cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
-		"run command",
-		"telegram",
-		"chat-1",
-	)
+	job, err := tool.cronService.AddJob(cron.AddJobInput{
+		Name:     "command",
+		Schedule: cron.CronSchedule{Kind: "cron", Expr: "0 8 * * *"},
+		Payload:  cron.CronPayload{Message: "run command", Channel: "telegram", To: "chat-1"},
+	})
 	if err != nil {
 		t.Fatalf("AddJob() error: %v", err)
 	}
@@ -1138,6 +1106,76 @@ func TestCronTool_InternalCanAccessCommandJobFromAnyChannel(t *testing.T) {
 	}
 }
 
+func TestCronTool_AddJobCapturesSchedulingSession(t *testing.T) {
+	tool := newTestCronTool(t)
+	ctx := WithToolContext(context.Background(), "telegram", "-100123/5629")
+	ctx = WithToolSessionContext(ctx, "main", "sk_v1_abc", nil)
+	ctx = WithToolOriginContext(ctx, &bus.InboundContext{
+		Channel:  "telegram",
+		ChatID:   "-100123/5629",
+		ChatType: "group",
+		TopicID:  "5629",
+		SenderID: "35243507",
+		Account:  "bot-a",
+	})
+
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "ping me",
+		"at_seconds": float64(60),
+	})
+	if result.IsError {
+		t.Fatalf("add failed: %s", result.ForLLM)
+	}
+
+	jobs := tool.cronService.ListJobs(true)
+	if len(jobs) != 1 {
+		t.Fatalf("want 1 job, got %d", len(jobs))
+	}
+	payload := jobs[0].Payload
+	if payload.SessionKey != "sk_v1_abc" || payload.AgentID != "main" {
+		t.Fatalf("scheduling session not captured: %+v", payload)
+	}
+	if payload.Origin == nil {
+		t.Fatal("origin context not captured")
+	}
+	if payload.Origin.ChatType != "group" || payload.Origin.TopicID != "5629" {
+		t.Fatalf("origin scope not captured: %+v", payload.Origin)
+	}
+	if payload.Origin.SenderID != "35243507" || payload.Origin.Account != "bot-a" {
+		t.Fatalf("origin identity not captured: %+v", payload.Origin)
+	}
+}
+
+func TestCronTool_AddJobSessionModeArgument(t *testing.T) {
+	tool := newTestCronTool(t)
+	ctx := WithToolContext(context.Background(), "cli", "direct")
+
+	result := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "monitor",
+		"at_seconds": float64(60),
+		"session":    "isolated",
+	})
+	if result.IsError {
+		t.Fatalf("add failed: %s", result.ForLLM)
+	}
+	jobs := tool.cronService.ListJobs(true)
+	if len(jobs) != 1 || jobs[0].Payload.SessionMode != config.CronSessionModeIsolated {
+		t.Fatalf("session mode not stored: %+v", jobs)
+	}
+
+	bad := tool.Execute(ctx, map[string]any{
+		"action":     "add",
+		"message":    "monitor",
+		"at_seconds": float64(60),
+		"session":    "nope",
+	})
+	if !bad.IsError {
+		t.Fatal("expected invalid session mode to be rejected")
+	}
+}
+
 func TestCronTool_ExecuteJobPublishesErrorWhenExecDisabled(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Tools.Exec.Enabled = false
@@ -1148,137 +1186,143 @@ func TestCronTool_ExecuteJobPublishesErrorWhenExecDisabled(t *testing.T) {
 	job.Payload.To = "direct"
 	job.Payload.Command = "df -h"
 
-	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
+	if got := executeTestCronJob(t, tool, job); got != "ok" {
 		t.Fatalf("ExecuteJob() = %q, want ok", got)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	var msg bus.OutboundMessage
-	select {
-	case msg = <-tool.msgBus.OutboundChan():
-		// got message
-	case <-ctx.Done():
-		t.Fatal("timeout waiting for outbound message")
-	}
+	msg := waitForOutboundMessage(t, tool)
 	if !strings.Contains(msg.Content, "command execution is disabled") {
 		t.Fatalf("expected exec disabled message, got: %s", msg.Content)
 	}
 }
 
-func TestCronTool_ExecuteJobPublishesAgentResponse(t *testing.T) {
-	executor := &stubJobExecutor{response: "generated reply"}
-	tool := newTestCronToolWithExecutorAndConfig(t, executor, config.DefaultConfig())
+func TestCronTool_ExecuteJobInjectsTriggerIntoSchedulingSession(t *testing.T) {
+	tool := newTestCronTool(t)
 
-	job := &cron.CronJob{ID: "job-1"}
+	job := &cron.CronJob{ID: "job-1", Name: "poem"}
+	job.Schedule = cron.CronSchedule{Kind: "cron", Expr: "0 9 * * *", TZ: "Asia/Jerusalem"}
 	job.Payload.Channel = "telegram"
-	job.Payload.To = "chat-1"
+	job.Payload.To = "-100123/5629"
 	job.Payload.Message = "send me a poem"
-
-	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
-		t.Fatalf("ExecuteJob() = %q, want ok", got)
+	job.Payload.SessionKey = "sk_v1_deadbeef"
+	job.Payload.AgentID = "main"
+	job.Payload.Origin = &cron.CronOrigin{
+		ChatType: "group",
+		TopicID:  "5629",
+		SenderID: "35243507",
+		Account:  "bot-a",
 	}
 
-	if !strings.HasPrefix(executor.lastKey, "agent:cron-job-1-") {
-		t.Fatalf("sessionKey = %q, want agent:cron-job-1-{uuid}", executor.lastKey)
+	if got := executeTestCronJob(t, tool, job); got != "dispatched" {
+		t.Fatalf("ExecuteJob() = %q, want dispatched", got)
 	}
-	if executor.lastChan != "telegram" || executor.lastChatID != "chat-1" {
-		t.Fatalf("executor target = %s/%s, want telegram/chat-1", executor.lastChan, executor.lastChatID)
+
+	msg := waitForInboundTrigger(t, tool)
+	if msg.SessionKey != "sk_v1_deadbeef" {
+		t.Fatalf("session key = %q, want the scheduling session", msg.SessionKey)
 	}
-	if executor.lastPrompt != "send me a poem" {
-		t.Fatalf("prompt = %q, want original message", executor.lastPrompt)
+	if msg.Channel != "telegram" || msg.ChatID != "-100123/5629" {
+		t.Fatalf("target = %s/%s, want telegram/-100123/5629", msg.Channel, msg.ChatID)
 	}
-	if executor.publishedResp != "generated reply" {
-		t.Fatalf("published response = %q, want generated reply", executor.publishedResp)
+	if msg.Context.ChatType != "group" || msg.Context.TopicID != "5629" {
+		t.Fatalf("origin scope lost: %+v", msg.Context)
 	}
-	if executor.publishedKey != executor.lastKey {
-		t.Fatalf("published sessionKey = %q, want %q", executor.publishedKey, executor.lastKey)
+	if msg.Context.SenderID != "35243507" || msg.Context.Account != "bot-a" {
+		t.Fatalf("origin identity lost: %+v", msg.Context)
 	}
-	if executor.publishedChan != "telegram" || executor.publishedChatID != "chat-1" {
-		t.Fatalf("published target = %s/%s, want telegram/chat-1", executor.publishedChan, executor.publishedChatID)
+	if msg.Sender.DisplayName != cronSenderName {
+		t.Fatalf("sender display name = %q, want %q", msg.Sender.DisplayName, cronSenderName)
+	}
+	if !strings.HasPrefix(msg.Content, "[cron] Scheduled job \"poem\" (id: job-1, 0 9 * * * Asia/Jerusalem)") {
+		t.Fatalf("missing cron header, got: %s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "send me a poem") {
+		t.Fatalf("scheduled instruction missing, got: %s", msg.Content)
 	}
 }
 
-func TestCronTool_ExecuteJobSkipsEmptyAgentResponse(t *testing.T) {
-	executor := &stubJobExecutor{}
-	tool := newTestCronToolWithExecutorAndConfig(t, executor, config.DefaultConfig())
+func TestCronTool_ExecuteJobIsolatedSessionMode(t *testing.T) {
+	tool := newTestCronTool(t)
 
-	job := &cron.CronJob{ID: "job-empty"}
+	job := &cron.CronJob{ID: "job-iso"}
 	job.Payload.Channel = "telegram"
 	job.Payload.To = "chat-1"
-	job.Payload.Message = "say nothing"
+	job.Payload.Message = "standalone monitor"
+	job.Payload.SessionKey = "sk_v1_deadbeef"
+	job.Payload.SessionMode = config.CronSessionModeIsolated
 
-	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
-		t.Fatalf("ExecuteJob() = %q, want ok", got)
+	if got := executeTestCronJob(t, tool, job); got != "dispatched" {
+		t.Fatalf("ExecuteJob() = %q, want dispatched", got)
 	}
 
-	if executor.publishedResp != "" {
-		t.Fatalf("unexpected published response: %q", executor.publishedResp)
+	msg := waitForInboundTrigger(t, tool)
+	if !strings.HasPrefix(msg.SessionKey, "agent:cron-job-iso-") {
+		t.Fatalf("session key = %q, want agent:cron-job-iso-{uuid}", msg.SessionKey)
 	}
 }
 
-func TestCronTool_ExecuteJobSkipsWhenMessageToolAlreadySent(t *testing.T) {
-	executor := &stubJobExecutor{response: "Sent.", alreadySent: true}
-	tool := newTestCronToolWithExecutorAndConfig(t, executor, config.DefaultConfig())
+func TestCronTool_ExecuteJobWithoutSessionKeyFallsBackToRouting(t *testing.T) {
+	tool := newTestCronTool(t)
 
-	job := &cron.CronJob{ID: "job-msg-sent"}
+	// Jobs written before the session key was recorded (and CLI-created jobs)
+	// must not get a synthetic key — routing picks the channel's own session.
+	job := &cron.CronJob{ID: "job-legacy"}
 	job.Payload.Channel = "telegram"
 	job.Payload.To = "chat-1"
-	job.Payload.Message = "send weather"
+	job.Payload.Message = "legacy reminder"
 
-	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
-		t.Fatalf("ExecuteJob() = %q, want ok", got)
+	if got := executeTestCronJob(t, tool, job); got != "dispatched" {
+		t.Fatalf("ExecuteJob() = %q, want dispatched", got)
 	}
 
-	if executor.publishedResp != "" {
-		t.Fatalf("expected no published response when message tool already sent, got: %q", executor.publishedResp)
+	msg := waitForInboundTrigger(t, tool)
+	if msg.SessionKey != "" {
+		t.Fatalf("session key = %q, want empty so routing decides", msg.SessionKey)
 	}
 }
 
-func TestCronTool_ExecuteJobRunsCommand(t *testing.T) {
+func TestCronTool_ExecuteJobInjectsCommandOutput(t *testing.T) {
 	tool := newTestCronToolWithConfig(t, config.DefaultConfig())
+
+	job := &cron.CronJob{ID: "job-cmd", Name: "watchdog"}
+	job.Payload.Channel = "cli"
+	job.Payload.To = "direct"
+	job.Payload.Message = "watch the queue"
+	job.Payload.Command = "echo cron-test-ok"
+	job.Payload.SessionKey = "sk_v1_deadbeef"
+
+	if got := executeTestCronJob(t, tool, job); got != "dispatched" {
+		t.Fatalf("ExecuteJob() = %q, want dispatched", got)
+	}
+
+	msg := waitForInboundTrigger(t, tool)
+	if msg.SessionKey != "sk_v1_deadbeef" {
+		t.Fatalf("session key = %q, want the scheduling session", msg.SessionKey)
+	}
+	if !strings.Contains(msg.Content, "cron-test-ok") {
+		t.Fatalf("expected command output in trigger, got: %s", msg.Content)
+	}
+	if !strings.Contains(msg.Content, "watch the queue") {
+		t.Fatalf("expected job purpose in trigger, got: %s", msg.Content)
+	}
+}
+
+func TestCronTool_ExecuteJobRunsCommandWithRawDelivery(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.CommandDelivery = config.CronCommandDeliveryRaw
+
+	tool := newTestCronToolWithConfig(t, cfg)
 	job := &cron.CronJob{}
 	job.Payload.Channel = "cli"
 	job.Payload.To = "direct"
 	job.Payload.Command = "echo cron-test-ok"
 
-	if got := tool.ExecuteJob(context.Background(), job); got != "ok" {
+	if got := executeTestCronJob(t, tool, job); got != "ok" {
 		t.Fatalf("ExecuteJob() = %q, want ok", got)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	var msg bus.OutboundMessage
-	select {
-	case msg = <-tool.msgBus.OutboundChan():
-	case <-ctx.Done():
-		t.Fatal("timeout waiting for outbound message")
-	}
+	msg := waitForOutboundMessage(t, tool)
 	if !strings.Contains(msg.Content, "cron-test-ok") {
 		t.Fatalf("expected command output containing 'cron-test-ok', got: %s", msg.Content)
-	}
-}
-
-func TestCronTool_ExecuteJobReturnsErrorWithoutPublish(t *testing.T) {
-	executor := &stubJobExecutor{
-		response: "this response must not be published",
-		err:      fmt.Errorf("agent failure"),
-	}
-	tool := newTestCronToolWithExecutorAndConfig(t, executor, config.DefaultConfig())
-
-	job := &cron.CronJob{ID: "job-err"}
-	job.Payload.Channel = "telegram"
-	job.Payload.To = "chat-1"
-	job.Payload.Message = "do something"
-
-	got := tool.ExecuteJob(context.Background(), job)
-	if !strings.Contains(got, "agent failure") {
-		t.Fatalf("ExecuteJob() = %q, want error message", got)
-	}
-
-	if executor.publishedResp != "" {
-		t.Fatalf("unexpected publish on error path: %q", executor.publishedResp)
 	}
 }

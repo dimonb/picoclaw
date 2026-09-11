@@ -29,12 +29,39 @@ type CronSchedule struct {
 	TZ      string `json:"tz,omitempty"`
 }
 
+// CronOrigin captures the parts of the scheduling turn's inbound context that
+// channel+chat_id alone cannot carry. Without them a firing cannot be replayed
+// into the session that scheduled the job: the session key is derived from the
+// full scope (chat type, topic, account, sender), not just the chat id.
+type CronOrigin struct {
+	Account   string `json:"account,omitempty"`
+	ChatType  string `json:"chatType,omitempty"`
+	TopicID   string `json:"topicId,omitempty"`
+	SpaceID   string `json:"spaceId,omitempty"`
+	SpaceType string `json:"spaceType,omitempty"`
+	SenderID  string `json:"senderId,omitempty"`
+}
+
 type CronPayload struct {
 	Kind    string `json:"kind"`
 	Message string `json:"message"`
 	Command string `json:"command,omitempty"`
 	Channel string `json:"channel,omitempty"`
 	To      string `json:"to,omitempty"`
+
+	// SessionKey is the session the job was scheduled from. A firing is
+	// injected into it so the agent sees the trigger in the same context that
+	// created it. Empty on jobs created before this field existed (and by the
+	// CLI, which has no session), in which case routing picks the channel's
+	// natural session.
+	SessionKey string `json:"sessionKey,omitempty"`
+	// AgentID is the agent that owned the scheduling turn.
+	AgentID string `json:"agentId,omitempty"`
+	// SessionMode is "origin" (inject into SessionKey) or "isolated" (a fresh
+	// throwaway session per firing). Empty means the configured default.
+	SessionMode string `json:"sessionMode,omitempty"`
+	// Origin holds the rest of the scheduling turn's inbound context.
+	Origin *CronOrigin `json:"origin,omitempty"`
 }
 
 type CronJobState struct {
@@ -422,31 +449,35 @@ func (cs *CronService) saveStoreUnsafe() error {
 	return fileutil.WriteFileAtomic(cs.storePath, data, 0o600)
 }
 
-func (cs *CronService) AddJob(
-	name string,
-	schedule CronSchedule,
-	message string,
-	channel, to string,
-) (*CronJob, error) {
+// AddJobInput describes a job to schedule. Payload.Kind defaults to
+// "agent_turn" when left empty.
+type AddJobInput struct {
+	Name     string
+	Schedule CronSchedule
+	Payload  CronPayload
+}
+
+func (cs *CronService) AddJob(input AddJobInput) (*CronJob, error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
 	now := time.Now().UnixMilli()
+	schedule := input.Schedule
 
 	// One-time tasks (at) should be deleted after execution
 	deleteAfterRun := (schedule.Kind == "at")
 
+	payload := input.Payload
+	if payload.Kind == "" {
+		payload.Kind = "agent_turn"
+	}
+
 	job := CronJob{
 		ID:       generateID(),
-		Name:     name,
+		Name:     input.Name,
 		Enabled:  true,
 		Schedule: schedule,
-		Payload: CronPayload{
-			Kind:    "agent_turn",
-			Message: message,
-			Channel: channel,
-			To:      to,
-		},
+		Payload:  payload,
 		State: CronJobState{
 			NextRunAtMS: cs.computeNextRun(&schedule, now),
 		},
@@ -507,6 +538,10 @@ func (cs *CronService) UpdateJob(job *CronJob) error {
 
 func cloneCronJob(job CronJob) CronJob {
 	clone := job
+	if job.Payload.Origin != nil {
+		origin := *job.Payload.Origin
+		clone.Payload.Origin = &origin
+	}
 	if job.Schedule.AtMS != nil {
 		atMS := *job.Schedule.AtMS
 		clone.Schedule.AtMS = &atMS

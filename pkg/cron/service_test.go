@@ -20,7 +20,13 @@ func TestSaveStore_FilePermissions(t *testing.T) {
 
 	cs := NewCronService(storePath, nil)
 
-	_, err := cs.AddJob("test", CronSchedule{Kind: "every", EveryMS: int64Ptr(60000)}, "hello", "cli", "direct")
+	_, err := cs.AddJob(
+		AddJobInput{
+			Name:     "test",
+			Schedule: CronSchedule{Kind: "every", EveryMS: int64Ptr(60000)},
+			Payload:  CronPayload{Message: "hello", Channel: "cli", To: "direct"},
+		},
+	)
 	if err != nil {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -52,7 +58,13 @@ func TestCronService_CRUD(t *testing.T) {
 
 	// Test AddJob
 	at := time.Now().Add(time.Hour).UnixMilli()
-	job, err := cs.AddJob("Task1", CronSchedule{Kind: "at", AtMS: &at}, "msg", "ch", "to")
+	job, err := cs.AddJob(
+		AddJobInput{
+			Name:     "Task1",
+			Schedule: CronSchedule{Kind: "at", AtMS: &at},
+			Payload:  CronPayload{Message: "msg", Channel: "ch", To: "to"},
+		},
+	)
 	if err != nil || job.ID == "" {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -87,7 +99,13 @@ func TestCronService_GetJobReturnsCopy(t *testing.T) {
 	defer os.Remove(path)
 
 	everyMS := int64(60_000)
-	job, err := cs.AddJob("Task1", CronSchedule{Kind: "every", EveryMS: &everyMS}, "msg", "ch", "to")
+	job, err := cs.AddJob(
+		AddJobInput{
+			Name:     "Task1",
+			Schedule: CronSchedule{Kind: "every", EveryMS: &everyMS},
+			Payload:  CronPayload{Message: "msg", Channel: "ch", To: "to"},
+		},
+	)
 	if err != nil {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -129,7 +147,13 @@ func TestCronService_UpdateJobRecomputesNextRunOnScheduleOrEnabledChange(t *test
 	defer os.Remove(path)
 
 	at := time.Now().Add(time.Hour).UnixMilli()
-	job, err := cs.AddJob("Task1", CronSchedule{Kind: "at", AtMS: &at}, "msg", "ch", "to")
+	job, err := cs.AddJob(
+		AddJobInput{
+			Name:     "Task1",
+			Schedule: CronSchedule{Kind: "at", AtMS: &at},
+			Payload:  CronPayload{Message: "msg", Channel: "ch", To: "to"},
+		},
+	)
 	if err != nil {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -179,7 +203,13 @@ func TestCronService_UpdateJobPreservesRunStateOnPayloadOnlyChange(t *testing.T)
 	defer os.Remove(path)
 
 	everyMS := int64(60_000)
-	job, err := cs.AddJob("Task1", CronSchedule{Kind: "every", EveryMS: &everyMS}, "msg", "ch", "to")
+	job, err := cs.AddJob(
+		AddJobInput{
+			Name:     "Task1",
+			Schedule: CronSchedule{Kind: "every", EveryMS: &everyMS},
+			Payload:  CronPayload{Message: "msg", Channel: "ch", To: "to"},
+		},
+	)
 	if err != nil {
 		t.Fatalf("AddJob failed: %v", err)
 	}
@@ -320,7 +350,13 @@ func TestCronService_ExecutionFlow(t *testing.T) {
 
 	// Add a job then runs 100ms from now
 	target := time.Now().Add(100 * time.Millisecond).UnixMilli()
-	job, _ := cs.AddJob("FastJob", CronSchedule{Kind: "at", AtMS: &target}, "", "", "")
+	job, _ := cs.AddJob(
+		AddJobInput{
+			Name:     "FastJob",
+			Schedule: CronSchedule{Kind: "at", AtMS: &target},
+			Payload:  CronPayload{Message: ""},
+		},
+	)
 
 	// Check for job execution with a timeout
 	success := false
@@ -353,7 +389,13 @@ func TestCronService_PersistenceIntegrity(t *testing.T) {
 	// write a job and persist
 	cs1 := NewCronService(tmpFile, nil)
 	at := int64(2000000000000)
-	cs1.AddJob("PersistMe", CronSchedule{Kind: "at", AtMS: &at}, "payload", "ch1", "")
+	cs1.AddJob(
+		AddJobInput{
+			Name:     "PersistMe",
+			Schedule: CronSchedule{Kind: "at", AtMS: &at},
+			Payload:  CronPayload{Message: "payload", Channel: "ch1"},
+		},
+	)
 
 	// check file exists
 	if _, err := os.Stat(tmpFile); os.IsNotExist(err) {
@@ -399,7 +441,10 @@ func TestCronService_ConcurrentAccess(t *testing.T) {
 			defer wg.Done()
 			for j := range iterations {
 				at := time.Now().Add(time.Hour).UnixMilli()
-				cs.AddJob(fmt.Sprintf("Job-%d-%d", id, j), CronSchedule{Kind: "at", AtMS: &at}, "", "", "")
+				cs.AddJob(AddJobInput{
+					Name:     fmt.Sprintf("Job-%d-%d", id, j),
+					Schedule: CronSchedule{Kind: "at", AtMS: &at},
+				})
 				time.Sleep(100 * time.Microsecond)
 			}
 		}(i)
