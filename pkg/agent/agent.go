@@ -211,6 +211,11 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 					continue
 				}
 
+				if msg.DeferWhileBusy {
+					al.deferUntilSessionIdle(ctx, msg, sessionKey)
+					continue
+				}
+
 				msg = al.prepareInboundMessageForAgent(ctx, msg)
 
 				// Another turn is already active (or reserved) for this session — enqueue
@@ -324,6 +329,70 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 			// }()
 		}
 	}
+}
+
+// deferredInboundPollInterval is how often a deferred message re-checks whether
+// its session has gone idle. Turns run for seconds to minutes, so half a second
+// is prompt without being busy work.
+const deferredInboundPollInterval = 500 * time.Millisecond
+
+// deferredInboundMaxWait bounds how long a deferred message waits for its
+// session. A turn that outlives this is stuck; a stale trigger delivered on top
+// of it would only add confusion, so the message is dropped with a warning.
+const deferredInboundMaxWait = 30 * time.Minute
+
+// deferUntilSessionIdle parks a DeferWhileBusy message until no turn is active
+// in its session, then republishes it so it takes the ordinary inbound path and
+// claims the session like any other message. If the session is busy again by
+// then it simply waits once more.
+func (al *AgentLoop) deferUntilSessionIdle(ctx context.Context, msg bus.InboundMessage, sessionKey string) {
+	logger.InfoCF("agent", "Session busy, deferring message until the turn ends",
+		map[string]any{
+			"channel":     msg.Channel,
+			"chat_id":     msg.ChatID,
+			"session_key": sessionKey,
+			"sender_id":   msg.SenderID,
+		})
+
+	go func() {
+		deadline := time.Now().Add(deferredInboundMaxWait)
+		ticker := time.NewTicker(deferredInboundPollInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+			if _, busy := al.activeTurnStates.Load(sessionKey); busy {
+				if time.Now().After(deadline) {
+					logger.WarnCF("agent", "Dropping deferred message: session never went idle",
+						map[string]any{
+							"channel":     msg.Channel,
+							"chat_id":     msg.ChatID,
+							"session_key": sessionKey,
+							"waited":      deferredInboundMaxWait.String(),
+						})
+					return
+				}
+				continue
+			}
+
+			pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			err := al.bus.PublishInbound(pubCtx, msg)
+			cancel()
+			if err != nil {
+				logger.WarnCF("agent", "Failed to republish deferred message",
+					map[string]any{
+						"channel":     msg.Channel,
+						"chat_id":     msg.ChatID,
+						"session_key": sessionKey,
+						"error":       err.Error(),
+					})
+			}
+			return
+		}
+	}()
 }
 
 // processMessageSync processes a message synchronously (for non-routable/system messages).

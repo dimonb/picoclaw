@@ -48,6 +48,14 @@ type InboundMessage struct {
 	MediaScope string         `json:"media_scope,omitempty"` // media lifecycle scope
 	SessionKey string         `json:"session_key"`
 
+	// DeferWhileBusy marks a machine-generated message (a cron firing) that
+	// must not interrupt a turn already running in its session. A user's
+	// follow-up is steered into the live turn — the model should hear it now.
+	// A scheduled trigger has no such claim: steering it in drops the answer
+	// the user was about to get and hands the model a second task mid-turn.
+	// Instead it waits for the session to go idle and arrives as its own turn.
+	DeferWhileBusy bool `json:"defer_while_busy,omitempty"`
+
 	// Convenience mirrors derived from Context for runtime consumers.
 	Channel   string `json:"channel"`
 	SenderID  string `json:"sender_id"`

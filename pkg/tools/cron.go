@@ -873,6 +873,10 @@ func (t *CronTool) dispatchTrigger(
 		Sender:     bus.SenderInfo{DisplayName: cronSenderName},
 		Content:    content,
 		SessionKey: sessionKey,
+		// A firing landing on a live turn must not be steered into it: that
+		// would drop the answer the user is waiting for and hand the model a
+		// second task mid-turn. Wait for the session instead.
+		DeferWhileBusy: true,
 	}); err != nil {
 		return "", fmt.Errorf("failed to dispatch cron trigger: %w", err)
 	}

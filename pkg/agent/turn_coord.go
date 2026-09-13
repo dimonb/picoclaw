@@ -105,10 +105,15 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 		if iteration > 1 {
 			// For subsequent iterations, read from exec.pendingMessages which
 			// is where ExecuteTools (or initial poll) deposits steering.
-			// We do NOT call dequeueSteeringMessagesForScope here because
-			// steering was already consumed from al.steering by ExecuteTools.
+			// We do NOT call dequeueSteeringMessages here because steering was
+			// already consumed from al.steering by ExecuteTools or CallLLM.
+			//
+			// Take, don't append: the local slice was already refreshed from
+			// exec.pendingMessages right after CallLLM, so when CallLLM itself
+			// deposited the steering (direct answer interrupted by a steering
+			// message) appending would inject every message twice.
 			if len(exec.pendingMessages) > 0 {
-				pendingMessages = append(pendingMessages, exec.pendingMessages...)
+				pendingMessages = exec.pendingMessages
 				exec.pendingMessages = nil
 			}
 		} else if !ts.opts.SkipInitialSteeringPoll {
