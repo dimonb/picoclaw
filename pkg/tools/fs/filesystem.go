@@ -350,13 +350,22 @@ func (t *ReadFileLinesTool) Description() string {
 // PagingHint implements toolshared.SelfPagingTool: the source is already a
 // file on disk, so an oversized result is paged by calling read_file again
 // rather than spilled to a second copy of it.
+//
+// Both hints warn that any status line inside the preview — this tool writes
+// "[END OF FILE]" or "[TRUNCATED ... offset=N]" as the second line of its
+// output, which the preview's head always keeps — describes the read that
+// produced the text, not the preview. Read literally after a preview, that
+// line claims the file ended where the preview was cut, or points at an
+// offset past the tail, skipping the omitted middle.
 func (t *ReadFileTool) PagingHint() string {
-	return "[Call read_file again on the same path with `offset` and `length` to read another part of it.]"
+	return "[Preview only — the middle was omitted. Call read_file again on the same path with `offset` " +
+		"and `length` to read any part of it; the status line above describes the earlier read, not this preview.]"
 }
 
 // PagingHint implements toolshared.SelfPagingTool. See ReadFileTool.PagingHint.
 func (t *ReadFileLinesTool) PagingHint() string {
-	return "[Call read_file again on the same path with `start_line` and `max_lines` to read another part of it.]"
+	return "[Preview only — the middle was omitted. Call read_file again on the same path with `start_line` " +
+		"and `max_lines` to read any part of it; the numbered lines above show where the gap is.]"
 }
 
 func (t *ReadFileTool) Parameters() map[string]any {

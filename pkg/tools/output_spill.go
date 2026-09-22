@@ -36,6 +36,10 @@ const (
 	// outputSpillMinPreviewBytes keeps a preview readable even under an
 	// absurdly small token threshold.
 	outputSpillMinPreviewBytes = 256
+	// maxPagingHintBytes bounds a tool's paging hint, the one part of the
+	// preview the policy does not size itself. Both real hints are around a
+	// hundred bytes; a longer one is ignored and the result spills instead.
+	maxPagingHintBytes = 512
 )
 
 var (
@@ -191,12 +195,10 @@ func (s *outputSpiller) applyOmitted(result *ToolResult, toolName, raw string, h
 	if !strings.Contains(result.ForLLM, largeBase64OmittedMessage) {
 		return
 	}
-	if hints.selfPaging != "" {
-		// The source is still readable through the tool itself, so a copy
-		// would be the same waste it is in apply.
-		result.ForLLM = strings.TrimSpace(result.ForLLM) + "\n" + hints.selfPaging
-		return
-	}
+	// A self-paging tool is NOT exempt here. The exemption in apply rests on
+	// the tool being able to serve the same bytes again; this payload was
+	// destroyed by the base64 normalizer, which fires again on every re-read,
+	// so the tool provably cannot. The file is the only way back to it.
 
 	path, err := s.write(toolName, raw)
 	if err != nil {

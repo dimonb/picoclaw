@@ -47,7 +47,9 @@ type PromptMetadataProvider interface {
 type SelfPagingTool interface {
 	// PagingHint is one sentence naming this tool and the arguments that
 	// fetch another part of the same result. An empty string opts back in to
-	// spilling.
+	// spilling, and so does a hint longer than a few hundred bytes — the
+	// registry ignores one that would itself blow the context budget the
+	// policy exists to keep.
 	PagingHint() string
 }
 
