@@ -558,3 +558,192 @@ func TestOutputSpill_RefusesSymlinkedSpillDir(t *testing.T) {
 		t.Fatalf("nothing may be written outside the workspace, found %d entries", len(entries))
 	}
 }
+
+// --- self-paging exemption ---
+
+type mockSelfPagingTool struct {
+	mockRegistryTool
+	hint string
+}
+
+func (m *mockSelfPagingTool) PagingHint() string { return m.hint }
+
+func TestOutputSpill_SelfPagingToolWritesNoFile(t *testing.T) {
+	workspace := t.TempDir()
+	s := newOutputSpiller(workspace, smallSpillPolicy())
+	text := numberedLines(100)
+	result := UserResult(text)
+	hint := "[Call read_file again on the same path with `start_line` and `max_lines` to read another part of it.]"
+
+	s.apply(result, "read_file", spillHints{readFile: true, exec: true, selfPaging: hint})
+
+	got := result.ForLLM
+	if _, err := os.Stat(filepath.Join(workspace, "tmp", outputSpillDirName)); !os.IsNotExist(err) {
+		t.Fatalf("a self-paging tool must not get a spill file, stat err=%v", err)
+	}
+	if strings.Contains(got, "saved to") {
+		t.Fatalf("no file means no path in the header:\n%s", got)
+	}
+	if !strings.Contains(got, "No copy was written; read the rest from the source") {
+		t.Fatalf("expected the self-paging reason, got:\n%s", got)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(got), hint) {
+		t.Fatalf("the preview must end with the tool's own paging hint, got:\n%s", got)
+	}
+	if strings.Contains(got, "grep -n") || strings.Contains(got, "send_file with that path") {
+		t.Fatalf("the generic spill hint must not be used for a self-paging tool:\n%s", got)
+	}
+	for _, want := range []string{"line 001:", "line 003:", "--- 94 lines (", "line 098:", "line 100:"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("preview missing %q:\n%s", want, got)
+		}
+	}
+	if estimateOutputTokens(got) > s.policy.MaxTokens {
+		t.Fatalf("preview still has to fit the budget: %d tokens", estimateOutputTokens(got))
+	}
+}
+
+func TestOutputSpill_SelfPagingToolUnderThresholdUntouched(t *testing.T) {
+	s := newOutputSpiller(t.TempDir(), smallSpillPolicy())
+	text := numberedLines(5)
+	result := UserResult(text)
+
+	s.apply(result, "read_file", spillHints{selfPaging: "[hint]"})
+
+	if result.ForLLM != text {
+		t.Fatalf("a small result must not change, got %q", result.ForLLM)
+	}
+}
+
+func TestRegistry_SelfPagingToolIsExemptFromSpill(t *testing.T) {
+	workspace := t.TempDir()
+	r := NewToolRegistry()
+	r.SetOutputSpill(workspace, smallSpillPolicy())
+	pager := &mockSelfPagingTool{
+		mockRegistryTool: *newMockTool("read_file", "reads files"),
+		hint:             "[Call read_file again on the same path with `offset` and `length` to read another part of it.]",
+	}
+	pager.result = UserResult(numberedLines(100))
+	r.Register(pager)
+
+	result := r.Execute(context.Background(), "read_file", nil)
+
+	if _, err := os.Stat(filepath.Join(workspace, "tmp", outputSpillDirName)); !os.IsNotExist(err) {
+		t.Fatalf("the registry must honor the opt-out, stat err=%v", err)
+	}
+	if !strings.Contains(result.ForLLM, "`offset` and `length`") {
+		t.Fatalf("expected the tool's own hint in the preview:\n%s", result.ForLLM)
+	}
+	if strings.Contains(result.ForLLM, "line 050:") {
+		t.Fatalf("an exempt result must still be cut, not passed through whole")
+	}
+}
+
+// The opt-out is per tool: a tool that does not declare it still spills.
+func TestRegistry_NonExemptToolStillSpillsAlongsideAnExemptOne(t *testing.T) {
+	workspace := t.TempDir()
+	r := NewToolRegistry()
+	r.SetOutputSpill(workspace, smallSpillPolicy())
+	pager := &mockSelfPagingTool{
+		mockRegistryTool: *newMockTool("read_file", "reads files"),
+		hint:             "[Call read_file again.]",
+	}
+	pager.result = UserResult(numberedLines(100))
+	r.Register(pager)
+	fetch := newMockTool("web_fetch", "fetches pages")
+	fetch.result = UserResult(numberedLines(100))
+	r.Register(fetch)
+
+	if got := r.Execute(context.Background(), "read_file", nil); strings.Contains(got.ForLLM, "saved to") {
+		t.Fatalf("read_file must not be spilled:\n%s", got.ForLLM)
+	}
+	result := r.Execute(context.Background(), "web_fetch", nil)
+
+	path := spilledPath(t, result.ForLLM)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("web_fetch content is not on disk anywhere else and must be spilled: %v", err)
+	}
+	if string(data) != numberedLines(100) {
+		t.Fatalf("spill file must hold the full web_fetch output")
+	}
+}
+
+// An empty hint opts back in to spilling, so a tool cannot disable the policy
+// by implementing the interface and returning nothing.
+func TestRegistry_EmptyPagingHintFallsBackToSpilling(t *testing.T) {
+	workspace := t.TempDir()
+	r := NewToolRegistry()
+	r.SetOutputSpill(workspace, smallSpillPolicy())
+	pager := &mockSelfPagingTool{mockRegistryTool: *newMockTool("quiet", "declares nothing"), hint: "  "}
+	pager.result = UserResult(numberedLines(100))
+	r.Register(pager)
+
+	result := r.Execute(context.Background(), "quiet", nil)
+
+	if _, err := os.Stat(spilledPath(t, result.ForLLM)); err != nil {
+		t.Fatalf("an empty hint must fall back to a spill file: %v", err)
+	}
+}
+
+// The real read_file tools must declare the opt-out in both modes, with the
+// argument names that actually page them.
+func TestReadFileTools_DeclareSelfPaging(t *testing.T) {
+	workspace := t.TempDir()
+	cases := []struct {
+		name string
+		tool Tool
+		want string
+	}{
+		{"bytes", NewReadFileBytesTool(workspace, false, 64*1024, nil), "`offset` and `length`"},
+		{"lines", NewReadFileLinesTool(workspace, false, 64*1024, nil), "`start_line` and `max_lines`"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			pager, ok := c.tool.(SelfPagingTool)
+			if !ok {
+				t.Fatalf("%s read_file must implement SelfPagingTool", c.name)
+			}
+			hint := pager.PagingHint()
+			if !strings.Contains(hint, c.want) {
+				t.Fatalf("hint must name the paging arguments %s, got %q", c.want, hint)
+			}
+			if !strings.Contains(hint, "read_file") {
+				t.Fatalf("hint must name the tool, got %q", hint)
+			}
+		})
+	}
+}
+
+// End to end through the registry with the real tool: a file larger than the
+// threshold is previewed, not copied.
+func TestRegistry_RealReadFileIsNotSpilled(t *testing.T) {
+	workspace := t.TempDir()
+	source := filepath.Join(workspace, "big.txt")
+	if err := os.WriteFile(source, []byte(numberedLines(800)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewToolRegistry()
+	r.SetOutputSpill(workspace, OutputSpillPolicy{MaxTokens: 2000, PreviewLines: 5})
+	r.Register(NewReadFileLinesTool(workspace, true, 1024*1024, nil))
+
+	result := r.Execute(context.Background(), "read_file", map[string]any{"path": source})
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+	spillDir := filepath.Join(workspace, "tmp", outputSpillDirName)
+	if _, err := os.Stat(spillDir); !os.IsNotExist(err) {
+		t.Fatalf("read_file must not leave a second copy of a file on disk, stat err=%v", err)
+	}
+	if !strings.Contains(result.ForLLM, "`start_line` and `max_lines`") {
+		t.Fatalf("expected the re-read hint naming the real arguments:\n%.400s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "No copy was written") {
+		t.Fatalf("expected the self-paging reason:\n%.400s", result.ForLLM)
+	}
+	if estimateOutputTokens(result.ForLLM) > 2000 {
+		t.Fatalf("an oversized read_file result must still be cut to fit the budget")
+	}
+}

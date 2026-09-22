@@ -347,6 +347,18 @@ func (t *ReadFileLinesTool) Description() string {
 	return "Read a UTF-8 text file from the filesystem. Output always includes line numbers in the format `LINE_NUMBER|LINE_CONTENT` (1-indexed). Supports partial reads via `start_line` and `max_lines` for large text files."
 }
 
+// PagingHint implements toolshared.SelfPagingTool: the source is already a
+// file on disk, so an oversized result is paged by calling read_file again
+// rather than spilled to a second copy of it.
+func (t *ReadFileTool) PagingHint() string {
+	return "[Call read_file again on the same path with `offset` and `length` to read another part of it.]"
+}
+
+// PagingHint implements toolshared.SelfPagingTool. See ReadFileTool.PagingHint.
+func (t *ReadFileLinesTool) PagingHint() string {
+	return "[Call read_file again on the same path with `start_line` and `max_lines` to read another part of it.]"
+}
+
 func (t *ReadFileTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",

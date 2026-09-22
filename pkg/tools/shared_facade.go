@@ -25,6 +25,7 @@ type (
 	AsyncExecutor          = toolshared.AsyncExecutor
 	PromptMetadata         = toolshared.PromptMetadata
 	PromptMetadataProvider = toolshared.PromptMetadataProvider
+	SelfPagingTool         = toolshared.SelfPagingTool
 	ToolResult             = toolshared.ToolResult
 )
 
