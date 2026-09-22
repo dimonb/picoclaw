@@ -189,9 +189,10 @@ func (p *CodexCliProvider) parseJSONLEvents(output string) (*LLMResponse, error)
 			if event.Usage != nil {
 				promptTokens := event.Usage.InputTokens + event.Usage.CachedInputTokens
 				usage = &UsageInfo{
-					PromptTokens:     promptTokens,
-					CompletionTokens: event.Usage.OutputTokens,
-					TotalTokens:      promptTokens + event.Usage.OutputTokens,
+					PromptTokens:       promptTokens,
+					CompletionTokens:   event.Usage.OutputTokens,
+					TotalTokens:        promptTokens + event.Usage.OutputTokens,
+					CachedPromptTokens: event.Usage.CachedInputTokens,
 				}
 			}
 		case "error":

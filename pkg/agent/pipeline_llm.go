@@ -582,7 +582,9 @@ func (p *Pipeline) CallLLM(
 	}
 	if exec.response.Usage != nil {
 		llmResponseFields["prompt_tokens"] = exec.response.Usage.PromptTokens
+		llmResponseFields["cached_prompt_tokens"] = exec.response.Usage.CachedPromptTokens
 		llmResponseFields["completion_tokens"] = exec.response.Usage.CompletionTokens
+		llmResponseFields["reasoning_tokens"] = exec.response.Usage.ReasoningTokens
 		llmResponseFields["total_tokens"] = exec.response.Usage.TotalTokens
 	}
 	logger.DebugCF("agent", "LLM response", llmResponseFields)

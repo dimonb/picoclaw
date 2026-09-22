@@ -288,7 +288,9 @@ func (fc *FallbackChain) ExecuteCandidate(
 				if resp != nil && resp.Usage != nil {
 					subSpan.SetAttributes(
 						attribute.Int("prompt_tokens", resp.Usage.PromptTokens),
+						attribute.Int("cached_prompt_tokens", resp.Usage.CachedPromptTokens),
 						attribute.Int("completion_tokens", resp.Usage.CompletionTokens),
+						attribute.Int("reasoning_tokens", resp.Usage.ReasoningTokens),
 					)
 				}
 				subSpan.End()
@@ -501,7 +503,9 @@ func (fc *FallbackChain) ExecuteImage(
 			if resp != nil && resp.Usage != nil {
 				subSpan.SetAttributes(
 					attribute.Int("prompt_tokens", resp.Usage.PromptTokens),
+					attribute.Int("cached_prompt_tokens", resp.Usage.CachedPromptTokens),
 					attribute.Int("completion_tokens", resp.Usage.CompletionTokens),
+					attribute.Int("reasoning_tokens", resp.Usage.ReasoningTokens),
 				)
 			}
 			subSpan.End()

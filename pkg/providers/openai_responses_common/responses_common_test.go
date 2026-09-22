@@ -395,7 +395,7 @@ func TestParseResponseBody_Reasoning(t *testing.T) {
 			"input_tokens": 10,
 			"output_tokens": 20,
 			"total_tokens": 30,
-			"input_tokens_details": {"cached_tokens": 0},
+			"input_tokens_details": {"cached_tokens": 4},
 			"output_tokens_details": {"reasoning_tokens": 10}
 		}
 	}`, string(responses.ResponseStatusCompleted)))
@@ -409,6 +409,15 @@ func TestParseResponseBody_Reasoning(t *testing.T) {
 	}
 	if result.ReasoningContent != "Thinking about it..." {
 		t.Errorf("ReasoningContent = %q, want %q", result.ReasoningContent, "Thinking about it...")
+	}
+	if result.Usage == nil {
+		t.Fatal("Usage should not be nil")
+	}
+	if result.Usage.CachedPromptTokens != 4 {
+		t.Errorf("CachedPromptTokens = %d, want 4", result.Usage.CachedPromptTokens)
+	}
+	if result.Usage.ReasoningTokens != 10 {
+		t.Errorf("ReasoningTokens = %d, want 10", result.Usage.ReasoningTokens)
 	}
 }
 
