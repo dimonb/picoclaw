@@ -194,6 +194,15 @@ func TestOutputSpill_DistinctOversizedForUserGetsOwnPreview(t *testing.T) {
 	if strings.Contains(result.ForUser, "saved to") || strings.Contains(result.ForUser, "read_file") {
 		t.Fatalf("a distinct ForUser preview carries no path and no tool hint:\n%s", result.ForUser)
 	}
+	if !strings.Contains(result.ForUser, "This user-facing copy is not saved") {
+		t.Fatalf("the reason must say the user copy was not saved, not blame a missing workspace:\n%s", result.ForUser)
+	}
+	if strings.Contains(result.ForUser, "no workspace") {
+		t.Fatalf(
+			"a workspace exists and the model's copy was written; the user must not be told otherwise:\n%s",
+			result.ForUser,
+		)
+	}
 	if estimateOutputTokens(result.ForUser) > s.policy.MaxTokens {
 		t.Fatalf("ForUser preview exceeds the threshold")
 	}
@@ -456,4 +465,96 @@ func TestRegistry_ExecOutputSpilledNotTruncated(t *testing.T) {
 		t.Fatalf("preview must show head and tail:\n%s", result.ForLLM)
 	}
 	t.Logf("preview:\n%s", result.ForLLM)
+}
+
+// Normalization replaces a large base64-like payload with a short marker
+// before the policy runs, so apply() sees only the marker. The bytes must
+// still reach a file — dropping them is what the removed MCP artifact writer
+// used to prevent.
+func TestRegistry_OmittedBase64PayloadIsStillSpilled(t *testing.T) {
+	workspace := t.TempDir()
+	r := NewToolRegistry()
+	r.SetOutputSpill(workspace, smallSpillPolicy())
+	payload := strings.Repeat("QUJD", 4000)
+	tool := newMockTool("dump", "returns base64")
+	tool.result = SilentResult(payload)
+	r.Register(tool)
+	r.Register(newMockTool("read_file", "reads"))
+
+	result := r.Execute(context.Background(), "dump", nil)
+
+	if !strings.Contains(result.ForLLM, largeBase64OmittedMessage) {
+		t.Fatalf("expected the payload to stay out of context, got:\n%.200s", result.ForLLM)
+	}
+	if strings.Contains(result.ForLLM, payload[:64]) {
+		t.Fatalf("the payload itself must not be inline")
+	}
+	m := regexp.MustCompile(`saved to (\S+)\]`).FindStringSubmatch(result.ForLLM)
+	if m == nil {
+		t.Fatalf("expected a saved-to path for the omitted payload, got:\n%s", result.ForLLM)
+	}
+	data, err := os.ReadFile(m[1])
+	if err != nil {
+		t.Fatalf("spill file unreadable: %v", err)
+	}
+	if string(data) != payload {
+		t.Fatalf("spill file must hold the raw payload, got %d of %d chars", len(data), len(payload))
+	}
+	if !strings.Contains(result.ForLLM, "read_file on that path") {
+		t.Fatalf("expected the hint to name the registered tools:\n%s", result.ForLLM)
+	}
+}
+
+func TestOutputSpill_OmittedPayloadUnderThresholdIsLeftAlone(t *testing.T) {
+	workspace := t.TempDir()
+	s := newOutputSpiller(workspace, smallSpillPolicy())
+	result := SilentResult(largeBase64OmittedMessage)
+
+	s.applyOmitted(result, "dump", "QUJD", spillHints{})
+
+	if result.ForLLM != largeBase64OmittedMessage {
+		t.Fatalf("a small raw payload needs no file, got %q", result.ForLLM)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "tmp", outputSpillDirName)); !os.IsNotExist(err) {
+		t.Fatalf("expected no spill directory, stat err=%v", err)
+	}
+}
+
+// A symlink planted at the spill directory would send both writes and the
+// sweep's deletions outside the workspace.
+func TestOutputSpill_RefusesSymlinkedSpillDir(t *testing.T) {
+	workspace := t.TempDir()
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim.txt")
+	if err := os.WriteFile(victim, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(victim, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(workspace, "tmp"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspace, "tmp", outputSpillDirName)); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	s := newOutputSpiller(workspace, smallSpillPolicy())
+	result := UserResult(numberedLines(100))
+	s.apply(result, "exec", spillHints{})
+
+	if !strings.Contains(result.ForLLM, "Full output not saved (write failed)") {
+		t.Fatalf("expected the write to be refused, got:\n%.300s", result.ForLLM)
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("a file outside the workspace must not be removed: %v", err)
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("nothing may be written outside the workspace, found %d entries", len(entries))
+	}
 }

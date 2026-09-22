@@ -1453,3 +1453,30 @@ func TestCronTool_ExecuteJobRunsCommandWithRawDelivery(t *testing.T) {
 		t.Fatalf("expected command output containing 'cron-test-ok', got: %s", msg.Content)
 	}
 }
+
+// A scheduled command runs through the exec tool directly, so the registry's
+// spill policy never sees it. Raw delivery posts straight to the chat and must
+// keep its own bound — without one, a chatty job floods the channel.
+func TestCronTool_RawDeliveryBoundsCommandOutput(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Tools.Cron.CommandDelivery = config.CronCommandDeliveryRaw
+
+	tool := newTestCronToolWithConfig(t, cfg)
+	job := &cron.CronJob{}
+	job.Payload.Channel = "cli"
+	job.Payload.To = "direct"
+	job.Payload.Command = "seq 1 4000 | sed -e 's/^/row /' -e 's/$/: 0123456789012345678901234567890123456789/'"
+
+	if got := executeTestCronJob(t, tool, job); got != "ok" {
+		t.Fatalf("ExecuteJob() = %q, want ok", got)
+	}
+
+	msg := waitForOutboundMessage(t, tool)
+	if len(msg.Content) > cronRawCommandOutputLimit+512 {
+		t.Fatalf("raw delivery published %d chars, want it bounded near %d",
+			len(msg.Content), cronRawCommandOutputLimit)
+	}
+	if !strings.Contains(msg.Content, "row 1:") {
+		t.Fatalf("expected the start of the output to survive, got: %.200s", msg.Content)
+	}
+}

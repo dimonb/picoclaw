@@ -28,6 +28,12 @@ const cronSenderName = "cron"
 // into the session, so a chatty script cannot flood the context window.
 const cronCommandOutputLimit = 4000
 
+// cronRawCommandOutputLimit caps what raw delivery posts straight to the chat.
+// A scheduled command runs through the exec tool directly rather than through
+// the tool registry, so the registry's spill policy never sees it and this is
+// the only bound on that path.
+const cronRawCommandOutputLimit = 10000
+
 // cronIsolatedSessionPrefix marks the throwaway sessions minted for firings in
 // isolated mode.
 const cronIsolatedSessionPrefix = "agent:cron-"
@@ -840,11 +846,12 @@ func (t *CronTool) executeCommandJob(
 	}
 
 	if t.commandDelivery == config.CronCommandDeliveryRaw {
+		commandOutput := utils.Truncate(result.ForLLM, cronRawCommandOutputLimit)
 		var output string
 		if result.IsError {
-			output = fmt.Sprintf("Error executing scheduled command: %s", result.ForLLM)
+			output = fmt.Sprintf("Error executing scheduled command: %s", commandOutput)
 		} else {
-			output = fmt.Sprintf("Scheduled command '%s' executed:\n%s", job.Payload.Command, result.ForLLM)
+			output = fmt.Sprintf("Scheduled command '%s' executed:\n%s", job.Payload.Command, commandOutput)
 		}
 		t.publishToChat(ctx, channel, chatID, output)
 		return "ok", nil

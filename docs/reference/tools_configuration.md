@@ -49,6 +49,10 @@ A tool result that would flood the model's context is not truncated and not inje
 
 Note: the spill file holds the raw output; the sensitive-data filter above applies to what the model sees inline, not to the file.
 
+A payload that never reaches the model at all — a large base64-like blob, which is replaced by a short marker before the policy runs — is still written to the same directory, and the marker gains the path, so the bytes stay reachable.
+
+Scheduled commands are not covered by this policy: `tools.cron` runs the exec tool directly rather than through the registry, so `session` delivery keeps its 4,000-character injection limit and `raw` delivery is capped before it is posted to the chat.
+
 ## Web Tools
 
 Web tools are used for web search and fetching.

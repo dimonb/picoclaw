@@ -61,7 +61,10 @@ func (r *ToolRegistry) SetOutputSpill(workspace string, policy OutputSpillPolicy
 
 // spillResult applies the registry's output policy to a result in place and
 // returns it. Used on the synchronous path and on async callbacks alike.
-func (r *ToolRegistry) spillResult(result *ToolResult, toolName string) *ToolResult {
+// rawForLLM is the content the tool produced before normalization, which may
+// have replaced an oversized payload with a marker (see applyOmitted); pass an
+// empty string where the two are the same.
+func (r *ToolRegistry) spillResult(result *ToolResult, toolName, rawForLLM string) *ToolResult {
 	if result == nil {
 		return nil
 	}
@@ -74,6 +77,7 @@ func (r *ToolRegistry) spillResult(result *ToolResult, toolName string) *ToolRes
 	}
 	r.mu.RUnlock()
 	spill.apply(result, toolName, hints)
+	spill.applyOmitted(result, toolName, rawForLLM, hints)
 	return result
 }
 
@@ -351,7 +355,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 	if asyncCallback != nil {
 		deliver := asyncCallback
 		asyncCallback = func(cbCtx context.Context, asyncResult *ToolResult) {
-			deliver(cbCtx, r.spillResult(asyncResult, name))
+			deliver(cbCtx, r.spillResult(asyncResult, name, ""))
 		}
 	}
 
@@ -401,8 +405,9 @@ func (r *ToolRegistry) ExecuteWithContext(
 		}
 	}
 
+	rawForLLM := result.ForLLM
 	result = normalizeToolResult(result, name, r.mediaStore, channel, chatID)
-	result = r.spillResult(result, name)
+	result = r.spillResult(result, name, rawForLLM)
 
 	duration := time.Since(start)
 
