@@ -34,14 +34,14 @@ func TestParseJSONLEvents_AgentMessage(t *testing.T) {
 	if resp.Usage == nil {
 		t.Fatal("Usage should not be nil")
 	}
-	if resp.Usage.PromptTokens != 150 {
-		t.Errorf("PromptTokens = %d, want 150", resp.Usage.PromptTokens)
+	if resp.Usage.PromptTokens != 100 { // input_tokens already includes the 50 cached
+		t.Errorf("PromptTokens = %d, want 100", resp.Usage.PromptTokens)
 	}
 	if resp.Usage.CompletionTokens != 20 {
 		t.Errorf("CompletionTokens = %d, want 20", resp.Usage.CompletionTokens)
 	}
-	if resp.Usage.TotalTokens != 170 {
-		t.Errorf("TotalTokens = %d, want 170", resp.Usage.TotalTokens)
+	if resp.Usage.TotalTokens != 120 { // 100 + 20
+		t.Errorf("TotalTokens = %d, want 120", resp.Usage.TotalTokens)
 	}
 	if resp.Usage.CachedPromptTokens != 50 {
 		t.Errorf("CachedPromptTokens = %d, want 50", resp.Usage.CachedPromptTokens)
@@ -446,8 +446,11 @@ func TestCodexCliProvider_MockCLI_Success(t *testing.T) {
 	if resp.Usage == nil {
 		t.Fatal("Usage should not be nil")
 	}
-	if resp.Usage.PromptTokens != 60 {
-		t.Errorf("PromptTokens = %d, want 60", resp.Usage.PromptTokens)
+	if resp.Usage.PromptTokens != 50 { // input_tokens already includes the 10 cached
+		t.Errorf("PromptTokens = %d, want 50", resp.Usage.PromptTokens)
+	}
+	if resp.Usage.CachedPromptTokens != 10 {
+		t.Errorf("CachedPromptTokens = %d, want 10", resp.Usage.CachedPromptTokens)
 	}
 	if resp.Usage.CompletionTokens != 15 {
 		t.Errorf("CompletionTokens = %d, want 15", resp.Usage.CompletionTokens)
