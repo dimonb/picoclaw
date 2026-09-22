@@ -747,3 +747,141 @@ func TestRegistry_RealReadFileIsNotSpilled(t *testing.T) {
 		t.Fatalf("an oversized read_file result must still be cut to fit the budget")
 	}
 }
+
+// The exemption rests on the tool being able to serve the same bytes again.
+// A payload the base64 normalizer destroyed cannot be re-served — the
+// normalizer fires again on every re-read — so it is spilled even for a
+// self-paging tool.
+func TestOutputSpill_SelfPagingToolStillSpillsAnOmittedPayload(t *testing.T) {
+	workspace := t.TempDir()
+	s := newOutputSpiller(workspace, smallSpillPolicy())
+	payload := strings.Repeat("QUJD", 4000)
+	result := SilentResult(largeBase64OmittedMessage)
+
+	s.applyOmitted(result, "read_file", payload, spillHints{selfPaging: "[Call read_file again.]"})
+
+	m := regexp.MustCompile(`saved to (\S+)\]`).FindStringSubmatch(result.ForLLM)
+	if m == nil {
+		t.Fatalf("an omitted payload must be spilled even for a self-paging tool, got:\n%s", result.ForLLM)
+	}
+	data, err := os.ReadFile(m[1])
+	if err != nil {
+		t.Fatalf("spill file unreadable: %v", err)
+	}
+	if string(data) != payload {
+		t.Fatalf("spill file must hold the raw payload")
+	}
+}
+
+func TestRegistry_OversizedPagingHintIsIgnoredAndResultSpills(t *testing.T) {
+	workspace := t.TempDir()
+	r := NewToolRegistry()
+	r.SetOutputSpill(workspace, smallSpillPolicy())
+	pager := &mockSelfPagingTool{
+		mockRegistryTool: *newMockTool("chatty", "returns an absurd hint"),
+		hint:             "[" + strings.Repeat("x", maxPagingHintBytes) + "]",
+	}
+	pager.result = UserResult(numberedLines(100))
+	r.Register(pager)
+
+	result := r.Execute(context.Background(), "chatty", nil)
+
+	if strings.Contains(result.ForLLM, strings.Repeat("x", 64)) {
+		t.Fatalf("an oversized hint must not reach the preview")
+	}
+	if _, err := os.Stat(spilledPath(t, result.ForLLM)); err != nil {
+		t.Fatalf("ignoring the hint must fall back to spilling: %v", err)
+	}
+	if estimateOutputTokens(result.ForLLM) > smallSpillPolicy().MaxTokens {
+		t.Fatalf("preview must stay inside the budget the hint would have blown")
+	}
+}
+
+func TestRegistry_PagingHintAtTheLimitIsKept(t *testing.T) {
+	workspace := t.TempDir()
+	r := NewToolRegistry()
+	r.SetOutputSpill(workspace, smallSpillPolicy())
+	hint := "[" + strings.Repeat("y", maxPagingHintBytes-2) + "]"
+	pager := &mockSelfPagingTool{mockRegistryTool: *newMockTool("edge", "hint at the limit"), hint: hint}
+	pager.result = UserResult(numberedLines(100))
+	r.Register(pager)
+
+	result := r.Execute(context.Background(), "edge", nil)
+
+	if !strings.Contains(result.ForLLM, hint) {
+		t.Fatalf("a hint exactly at the limit must be kept")
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "tmp", outputSpillDirName)); !os.IsNotExist(err) {
+		t.Fatalf("a kept hint means no file, stat err=%v", err)
+	}
+}
+
+// read_file writes its own status line as the second line of its output, and
+// the preview's head always keeps it. After a cut, that line describes the
+// earlier read and not the preview, so the hint has to say so — otherwise
+// "[END OF FILE]" reads as "you have the whole file" and the "offset=N" of a
+// truncated read resumes past the tail, skipping the omitted middle.
+func TestReadFileTools_PagingHintDiscountsTheEmbeddedStatusLine(t *testing.T) {
+	workspace := t.TempDir()
+	for _, c := range []struct{ name, want string }{
+		{"bytes", "`offset` "},
+		{"lines", "`start_line` "},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var tool Tool
+			if c.name == "bytes" {
+				tool = NewReadFileBytesTool(workspace, false, 64*1024, nil)
+			} else {
+				tool = NewReadFileLinesTool(workspace, false, 64*1024, nil)
+			}
+			hint := tool.(SelfPagingTool).PagingHint()
+			if !strings.Contains(hint, "the middle was omitted") {
+				t.Errorf("hint must say the preview omitted a middle section, got %q", hint)
+			}
+			if !strings.Contains(hint, c.want) {
+				t.Errorf("hint must name the paging argument %s, got %q", c.want, hint)
+			}
+			if len(hint) > maxPagingHintBytes {
+				t.Errorf("hint is %d bytes, over the %d limit, so it would be ignored", len(hint), maxPagingHintBytes)
+			}
+		})
+	}
+	var bytesTool Tool = NewReadFileBytesTool(workspace, false, 64*1024, nil)
+	bytesHint := bytesTool.(SelfPagingTool).PagingHint()
+	if !strings.Contains(bytesHint, "status line above describes the earlier read") {
+		t.Errorf("bytes mode writes [END OF FILE] / [TRUNCATED offset=N] into the head; the hint must "+
+			"discount it, got %q", bytesHint)
+	}
+}
+
+// End to end in BYTES mode, which is the default: an oversized read is cut,
+// no copy is written, and the preview carries the corrected hint.
+func TestRegistry_RealReadFileBytesModeIsNotSpilled(t *testing.T) {
+	workspace := t.TempDir()
+	source := filepath.Join(workspace, "big.txt")
+	if err := os.WriteFile(source, []byte(numberedLines(800)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewToolRegistry()
+	r.SetOutputSpill(workspace, OutputSpillPolicy{MaxTokens: 2000, PreviewLines: 5})
+	r.Register(NewReadFileBytesTool(workspace, true, 1024*1024, nil))
+
+	result := r.Execute(context.Background(), "read_file", map[string]any{"path": source})
+
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+	if _, err := os.Stat(filepath.Join(workspace, "tmp", outputSpillDirName)); !os.IsNotExist(err) {
+		t.Fatalf("bytes mode must not leave a second copy, stat err=%v", err)
+	}
+	if !strings.Contains(result.ForLLM, "`offset` ") {
+		t.Fatalf("expected the bytes-mode hint:\n%.400s", result.ForLLM)
+	}
+	if !strings.Contains(result.ForLLM, "the middle was omitted") {
+		t.Fatalf("the preview must warn that its middle is missing:\n%.400s", result.ForLLM)
+	}
+	if estimateOutputTokens(result.ForLLM) > 2000 {
+		t.Fatalf("an oversized read_file result must still fit the budget")
+	}
+}

@@ -77,7 +77,15 @@ func (r *ToolRegistry) spillResult(result *ToolResult, toolName, rawForLLM strin
 	}
 	if entry := r.tools[toolName]; entry != nil {
 		if pager, ok := entry.Tool.(SelfPagingTool); ok {
-			hints.selfPaging = strings.TrimSpace(pager.PagingHint())
+			// Clamp here so every implementation is bounded by construction:
+			// the hint is the one part of the preview the policy does not
+			// size, and an unbounded one would blow the budget it enforces.
+			if hint := strings.TrimSpace(pager.PagingHint()); len(hint) <= maxPagingHintBytes {
+				hints.selfPaging = hint
+			} else {
+				logger.WarnCF("tool", "Ignoring an oversized paging hint; spilling instead",
+					map[string]any{"tool": toolName, "hint_bytes": len(hint), "max": maxPagingHintBytes})
+			}
 		}
 	}
 	r.mu.RUnlock()
