@@ -885,3 +885,102 @@ func TestRegistry_RealReadFileBytesModeIsNotSpilled(t *testing.T) {
 		t.Fatalf("an oversized read_file result must still fit the budget")
 	}
 }
+
+// A symlink one level ABOVE the spill directory leaves the leaf a real
+// directory, so checking the leaf alone is not enough: writes and the sweep's
+// deletions would land outside the workspace. Every operation goes through an
+// os.Root on the workspace, which refuses traversal at every component.
+func TestOutputSpill_RefusesSymlinkAtAnIntermediateComponent(t *testing.T) {
+	parent := t.TempDir()
+	workspace := filepath.Join(parent, "ws")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	victim := filepath.Join(parent, "someones-notes.txt")
+	if err := os.WriteFile(victim, []byte("keep me"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(victim, old, old); err != nil {
+		t.Fatal(err)
+	}
+	// <workspace>/tmp -> the workspace's parent
+	if err := os.Symlink("..", filepath.Join(workspace, "tmp")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	s := newOutputSpiller(workspace, smallSpillPolicy())
+	result := UserResult(numberedLines(100))
+	s.apply(result, "exec", spillHints{})
+
+	if !strings.Contains(result.ForLLM, "Full output not saved (write failed)") {
+		t.Fatalf("the write must be refused, got:\n%.300s", result.ForLLM)
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("a file outside the workspace must not be removed: %v", err)
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// only ws/ and someones-notes.txt
+	if len(entries) != 2 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("nothing may be written outside the workspace, found %v", names)
+	}
+}
+
+// The same containment must hold on the applyOmitted path, which also writes.
+func TestOutputSpill_OmittedPayloadRefusesSymlinkAtAnIntermediateComponent(t *testing.T) {
+	parent := t.TempDir()
+	workspace := filepath.Join(parent, "ws")
+	if err := os.MkdirAll(workspace, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("..", filepath.Join(workspace, "tmp")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	s := newOutputSpiller(workspace, smallSpillPolicy())
+	result := SilentResult(largeBase64OmittedMessage)
+	s.applyOmitted(result, "dump", strings.Repeat("QUJD", 4000), spillHints{})
+
+	if strings.Contains(result.ForLLM, "saved to") {
+		t.Fatalf("no file may be claimed when the write was refused:\n%s", result.ForLLM)
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("nothing may be written outside the workspace, found %d entries", len(entries))
+	}
+}
+
+// Ordinary spilling still works and stays inside the workspace.
+func TestOutputSpill_WritesStayInsideTheWorkspaceRoot(t *testing.T) {
+	workspace := t.TempDir()
+	s := newOutputSpiller(workspace, smallSpillPolicy())
+	result := UserResult(numberedLines(100))
+
+	s.apply(result, "exec", spillHints{readFile: true})
+
+	path := spilledPath(t, result.ForLLM)
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("spill file unreadable: %v", err)
+	}
+	root, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(resolved, root+string(os.PathSeparator)) {
+		t.Fatalf("spill file resolved to %q, outside the workspace %q", resolved, root)
+	}
+	if filepath.Dir(resolved) != filepath.Join(root, "tmp", outputSpillDirName) {
+		t.Fatalf("spill file landed in %q, not the spill directory", filepath.Dir(resolved))
+	}
+}
