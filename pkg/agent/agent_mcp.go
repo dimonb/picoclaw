@@ -164,8 +164,6 @@ func (al *AgentLoop) ensureMCPInitialized(ctx context.Context) error {
 
 					mcpTool := tools.NewMCPTool(mcpManager, serverName, tool)
 					toolName := mcpTool.Name()
-					mcpTool.SetWorkspace(agent.Workspace)
-					mcpTool.SetMaxInlineTextRunes(al.cfg.Tools.MCP.GetMaxInlineTextChars())
 					mcpTool.SetEventPublisher(al.runtimeEvents)
 
 					if registerAsHidden {

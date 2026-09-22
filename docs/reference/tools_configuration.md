@@ -37,6 +37,18 @@ See [Sensitive Data Filtering](../security/sensitive_data_filtering.md) for full
 | `filter_sensitive_data` | bool | `true` | Enable/disable filtering |
 | `filter_min_length` | int | `8` | Minimum content length to trigger filtering |
 
+## Oversized Tool Output
+
+A tool result that would flood the model's context is not truncated and not injected whole. When the estimated size of a result exceeds `tools.output_spill.max_tokens`, PicoClaw writes the full output to `<workspace>/tmp/tool-output/<tool>-<timestamp>-<id>.txt` and gives the model a short header (tool, size, path), the first and last `preview_lines` lines of the output, and a hint to `read_file` the path, `exec` `grep -n` / `sed -n` on it, or `send_file` it to the user. This applies once, at the tool registry, so `exec`, MCP tools and every other tool are bounded the same way; error results (a failing command with a large stderr) are handled identically and stay errors. Spill files older than `max_age_hours` are removed the next time a result is spilled. An agent without a workspace keeps the head/tail cut but writes no file.
+
+| Config | Type | Default | Description |
+|--------|------|---------|-------------|
+| `output_spill.max_tokens` | int | `8000` | Estimated-token size above which a result is spilled to a file |
+| `output_spill.preview_lines` | int | `40` | Lines of head and of tail kept inline |
+| `output_spill.max_age_hours` | int | `24` | Age after which spill files are removed |
+
+Note: the spill file holds the raw output; the sensitive-data filter above applies to what the model sees inline, not to the file.
+
 ## Web Tools
 
 Web tools are used for web search and fetching.
@@ -626,9 +638,9 @@ For example:
 - `PICOCLAW_TOOLS_EXEC_ENABLE_DENY_PATTERNS=false`
 - `PICOCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES=10`
 - `PICOCLAW_TOOLS_MCP_ENABLED=true`
-- `PICOCLAW_TOOLS_MCP_MAX_INLINE_TEXT_CHARS=16384`
+- `PICOCLAW_TOOLS_OUTPUT_SPILL_MAX_TOKENS=8000`
 
 Note: Nested map-style config (for example `tools.mcp.servers.<name>.*`) is configured in `config.json` rather than
 environment variables.
 
-For MCP tools, `tools.mcp.max_inline_text_chars` controls how much text result is kept inline in model context. The threshold is counted in Unicode characters (Go runes), not bytes. For example, `16384` means up to 16,384 characters inline, which may occupy more than 16 KB for multibyte text such as CJK. Above this threshold, PicoClaw saves the MCP text result as a local artifact in the agent workspace and gives the model a short note plus a structured `[file:...]` artifact path instead of injecting the full payload into context.
+`tools.mcp.max_inline_text_chars` is deprecated and ignored: large MCP text results are bounded by `tools.output_spill` like every other tool's output (see [Oversized Tool Output](#oversized-tool-output)). A config that still sets it keeps loading and logs a warning at startup.

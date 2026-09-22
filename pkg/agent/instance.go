@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/isolation"
@@ -93,6 +94,11 @@ func NewAgentInstance(
 
 	toolsRegistry := tools.NewToolRegistry()
 	toolsRegistry.SetAllowlist(agentToolAllowlist)
+	toolsRegistry.SetOutputSpill(workspace, tools.OutputSpillPolicy{
+		MaxTokens:    cfg.Tools.OutputSpill.MaxTokens,
+		PreviewLines: cfg.Tools.OutputSpill.PreviewLines,
+		MaxAge:       time.Duration(cfg.Tools.OutputSpill.MaxAgeHours) * time.Hour,
+	})
 
 	if cfg.Tools.IsToolEnabled("read_file") {
 		maxReadFileSize := cfg.Tools.ReadFile.MaxReadFileSize

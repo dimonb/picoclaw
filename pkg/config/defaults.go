@@ -318,6 +318,11 @@ func DefaultConfig() *Config {
 		Tools: ToolsConfig{
 			FilterSensitiveData: true,
 			FilterMinLength:     8,
+			OutputSpill: OutputSpillConfig{
+				MaxTokens:    DefaultOutputSpillMaxTokens,
+				PreviewLines: DefaultOutputSpillPreviewLines,
+				MaxAgeHours:  DefaultOutputSpillMaxAgeHours,
+			},
 			MediaCleanup: MediaCleanupConfig{
 				ToolConfig: ToolConfig{
 					Enabled: true,
@@ -444,8 +449,7 @@ func DefaultConfig() *Config {
 					UseBM25:          true,
 					UseRegex:         false,
 				},
-				MaxInlineTextChars: DefaultMCPMaxInlineTextChars,
-				Servers:            map[string]MCPServerConfig{},
+				Servers: map[string]MCPServerConfig{},
 			},
 			AppendFile: ToolConfig{
 				Enabled: true,

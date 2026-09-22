@@ -488,10 +488,10 @@ func (t *ExecTool) runSync(ctx context.Context, command, cwd string) *ToolResult
 		output = execNoOutputPlaceholder
 	}
 
-	maxLen := 10000
-	if len(output) > maxLen {
-		output = output[:maxLen] + fmt.Sprintf("\n... (truncated, %d more chars)", len(output)-maxLen)
-	}
+	// No inline cut here: the registry spills oversized output to a file and
+	// hands the model a head/tail preview, so nothing is lost. Background
+	// sessions keep their own 1MB buffer cap; the marker it leaves simply
+	// ends up in the spill file.
 
 	if err != nil {
 		return &ToolResult{

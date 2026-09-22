@@ -284,14 +284,18 @@ func TestTurnProfileConfig_ValidationRejectsUnsupportedModes(t *testing.T) {
 	}
 }
 
-func TestDefaultConfig_MCPMaxInlineTextChars(t *testing.T) {
+func TestDefaultConfig_OutputSpill(t *testing.T) {
 	cfg := DefaultConfig()
-	if cfg.Tools.MCP.GetMaxInlineTextChars() != DefaultMCPMaxInlineTextChars {
-		t.Fatalf(
-			"DefaultConfig().Tools.MCP.GetMaxInlineTextChars() = %d, want %d",
-			cfg.Tools.MCP.GetMaxInlineTextChars(),
-			DefaultMCPMaxInlineTextChars,
-		)
+	got := cfg.Tools.OutputSpill
+	if got.MaxTokens != DefaultOutputSpillMaxTokens ||
+		got.PreviewLines != DefaultOutputSpillPreviewLines ||
+		got.MaxAgeHours != DefaultOutputSpillMaxAgeHours {
+		t.Fatalf("DefaultConfig().Tools.OutputSpill = %+v, want defaults %d/%d/%d",
+			got, DefaultOutputSpillMaxTokens, DefaultOutputSpillPreviewLines, DefaultOutputSpillMaxAgeHours)
+	}
+	if cfg.Tools.MCP.MaxInlineTextChars != 0 {
+		t.Fatalf("deprecated tools.mcp.max_inline_text_chars must have no default, got %d",
+			cfg.Tools.MCP.MaxInlineTextChars)
 	}
 }
 
@@ -606,7 +610,55 @@ func TestSaveConfig_DisabledEvolutionOmitsApplyMode(t *testing.T) {
 	assert.False(t, loaded.Evolution.AutoAppliesDrafts())
 }
 
-func TestLoadConfig_MCPMaxInlineTextChars(t *testing.T) {
+func TestLoadConfig_OutputSpill(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	raw := `{
+		"tools": {
+			"output_spill": {
+				"max_tokens": 2000,
+				"preview_lines": 10,
+				"max_age_hours": 6
+			}
+		}
+	}`
+	if err := os.WriteFile(configPath, []byte(raw), 0o644); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	got := cfg.Tools.OutputSpill
+	if got.MaxTokens != 2000 || got.PreviewLines != 10 || got.MaxAgeHours != 6 {
+		t.Fatalf("cfg.Tools.OutputSpill = %+v, want 2000/10/6", got)
+	}
+}
+
+func TestLoadConfig_OutputSpillEnvOverride(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"tools": {}}`), 0o644); err != nil {
+		t.Fatalf("WriteFile(configPath): %v", err)
+	}
+	t.Setenv("PICOCLAW_TOOLS_OUTPUT_SPILL_MAX_TOKENS", "1234")
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error: %v", err)
+	}
+	if cfg.Tools.OutputSpill.MaxTokens != 1234 {
+		t.Fatalf("cfg.Tools.OutputSpill.MaxTokens = %d, want 1234 from env", cfg.Tools.OutputSpill.MaxTokens)
+	}
+	if cfg.Tools.OutputSpill.PreviewLines != DefaultOutputSpillPreviewLines {
+		t.Fatalf("cfg.Tools.OutputSpill.PreviewLines = %d, want default", cfg.Tools.OutputSpill.PreviewLines)
+	}
+}
+
+// The deprecated MCP key must keep parsing so an older config still loads;
+// it is ignored (and warned about) rather than rejected.
+func TestLoadConfig_DeprecatedMCPMaxInlineTextCharsStillParses(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
 	raw := `{
@@ -625,8 +677,8 @@ func TestLoadConfig_MCPMaxInlineTextChars(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadConfig() error: %v", err)
 	}
-	if got := cfg.Tools.MCP.GetMaxInlineTextChars(); got != 2048 {
-		t.Fatalf("cfg.Tools.MCP.GetMaxInlineTextChars() = %d, want 2048", got)
+	if cfg.Tools.MCP.MaxInlineTextChars != 2048 {
+		t.Fatalf("cfg.Tools.MCP.MaxInlineTextChars = %d, want 2048 parsed", cfg.Tools.MCP.MaxInlineTextChars)
 	}
 }
 

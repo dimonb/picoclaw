@@ -1217,6 +1217,7 @@ type ToolsConfig struct {
 	// Content shorter than this will be returned unchanged for performance.
 	// Default: 8
 	FilterMinLength int                `json:"filter_min_length" yaml:"-"                env:"PICOCLAW_TOOLS_FILTER_MIN_LENGTH"`
+	OutputSpill     OutputSpillConfig  `json:"output_spill"      yaml:"-"`
 	Web             WebToolsConfig     `json:"web"               yaml:"web,omitempty"`
 	Cron            CronToolsConfig    `json:"cron"              yaml:"-"`
 	Exec            ExecConfig         `json:"exec"              yaml:"-"`
@@ -1376,19 +1377,50 @@ type MCPServerConfig struct {
 type MCPConfig struct {
 	ToolConfig `                    envPrefix:"PICOCLAW_TOOLS_MCP_"`
 	Discovery  ToolDiscoveryConfig `                                json:"discovery"`
-	// MaxInlineTextChars controls how much MCP text stays inline before it is saved as an artifact.
+	// MaxInlineTextChars is deprecated and ignored: large results from every
+	// tool, MCP included, are now spilled by tools.output_spill. The field is
+	// still parsed so a config that sets it keeps loading, and LoadConfig
+	// warns once when it is set.
 	MaxInlineTextChars int `json:"max_inline_text_chars,omitempty" env:"PICOCLAW_TOOLS_MCP_MAX_INLINE_TEXT_CHARS"`
 	// Servers is a map of server name to server configuration
 	Servers map[string]MCPServerConfig `json:"servers,omitempty"`
 }
 
-const DefaultMCPMaxInlineTextChars = 16 * 1024
+// OutputSpillConfig bounds how much of a tool result reaches the model inline.
+// A result whose estimated size exceeds MaxTokens is written in full to
+// <workspace>/tmp/tool-output/ and replaced by a head/tail preview that names
+// the file. It applies to every tool (exec, MCP, ...) at the registry.
+type OutputSpillConfig struct {
+	// MaxTokens is the estimated-token threshold above which a result is
+	// spilled. 0 means the default (8000).
+	MaxTokens int `json:"max_tokens" env:"PICOCLAW_TOOLS_OUTPUT_SPILL_MAX_TOKENS"`
+	// PreviewLines is how many lines of the head and of the tail stay
+	// inline. 0 means the default (40).
+	PreviewLines int `json:"preview_lines" env:"PICOCLAW_TOOLS_OUTPUT_SPILL_PREVIEW_LINES"`
+	// MaxAgeHours is how long spill files are kept; older ones are removed
+	// the next time a result is spilled. 0 means the default (24).
+	MaxAgeHours int `json:"max_age_hours" env:"PICOCLAW_TOOLS_OUTPUT_SPILL_MAX_AGE_HOURS"`
+}
 
-func (c *MCPConfig) GetMaxInlineTextChars() int {
-	if c.MaxInlineTextChars > 0 {
-		return c.MaxInlineTextChars
+const (
+	DefaultOutputSpillMaxTokens    = 8000
+	DefaultOutputSpillPreviewLines = 40
+	DefaultOutputSpillMaxAgeHours  = 24
+)
+
+// warnDeprecatedToolsConfig logs once for tool settings that still parse but
+// no longer do anything, naming what replaced them.
+func warnDeprecatedToolsConfig(cfg *Config) {
+	if cfg == nil {
+		return
 	}
-	return DefaultMCPMaxInlineTextChars
+	if cfg.Tools.MCP.MaxInlineTextChars != 0 {
+		logger.WarnCF(
+			"config",
+			"tools.mcp.max_inline_text_chars is deprecated and ignored; large tool results are spilled by tools.output_spill",
+			map[string]any{"max_inline_text_chars": cfg.Tools.MCP.MaxInlineTextChars},
+		)
+	}
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -1620,6 +1652,7 @@ func LoadConfig(path string) (*Config, error) {
 		return nil, err
 	}
 	applySkillsRegistryEnvCompat(cfg)
+	warnDeprecatedToolsConfig(cfg)
 
 	if err = InitChannelList(cfg.Channels); err != nil {
 		return nil, err
