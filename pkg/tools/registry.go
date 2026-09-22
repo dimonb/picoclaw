@@ -9,14 +9,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"github.com/sipeed/picoclaw/pkg/utils"
-	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/trace"
 )
 
 type ToolEntry struct {
@@ -31,6 +32,10 @@ type ToolRegistry struct {
 	version    atomic.Uint64 // incremented on Register/RegisterHidden for cache invalidation
 	mediaStore media.MediaStore
 	allowlist  map[string]struct{}
+	// spill bounds every result that leaves ExecuteWithContext. A registry
+	// without a workspace still applies the policy, with a head/tail cut
+	// instead of a file.
+	spill *outputSpiller
 }
 
 type mediaStoreAware interface {
@@ -40,7 +45,36 @@ type mediaStoreAware interface {
 func NewToolRegistry() *ToolRegistry {
 	return &ToolRegistry{
 		tools: make(map[string]*ToolEntry),
+		spill: newOutputSpiller("", OutputSpillPolicy{}),
 	}
+}
+
+// SetOutputSpill points oversized tool output at <workspace>/tmp/tool-output
+// and sets the policy that decides what is oversized. An empty workspace
+// keeps the policy but drops the file: results are cut to a head/tail
+// preview with a marker instead.
+func (r *ToolRegistry) SetOutputSpill(workspace string, policy OutputSpillPolicy) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.spill = newOutputSpiller(workspace, policy)
+}
+
+// spillResult applies the registry's output policy to a result in place and
+// returns it. Used on the synchronous path and on async callbacks alike.
+func (r *ToolRegistry) spillResult(result *ToolResult, toolName string) *ToolResult {
+	if result == nil {
+		return nil
+	}
+	r.mu.RLock()
+	spill := r.spill
+	hints := spillHints{
+		readFile: r.tools["read_file"] != nil,
+		exec:     r.tools["exec"] != nil,
+		sendFile: r.tools["send_file"] != nil,
+	}
+	r.mu.RUnlock()
+	spill.apply(result, toolName, hints)
+	return result
 }
 
 // SetAllowlist restricts registrations to the provided runtime tool names.
@@ -312,6 +346,15 @@ func (r *ToolRegistry) ExecuteWithContext(
 	// Always inject — tools validate what they require.
 	ctx = WithToolContext(ctx, channel, chatID)
 
+	// A result delivered later through the callback never comes back through
+	// this function, so bound it there too.
+	if asyncCallback != nil {
+		deliver := asyncCallback
+		asyncCallback = func(cbCtx context.Context, asyncResult *ToolResult) {
+			deliver(cbCtx, r.spillResult(asyncResult, name))
+		}
+	}
+
 	// If tool implements AsyncExecutor and callback is provided, use ExecuteAsync.
 	// The callback is a call parameter, not mutable state on the tool instance.
 	start := time.Now()
@@ -359,6 +402,7 @@ func (r *ToolRegistry) ExecuteWithContext(
 	}
 
 	result = normalizeToolResult(result, name, r.mediaStore, channel, chatID)
+	result = r.spillResult(result, name)
 
 	duration := time.Since(start)
 
@@ -503,6 +547,7 @@ func (r *ToolRegistry) Clone() *ToolRegistry {
 	clone := &ToolRegistry{
 		tools:      make(map[string]*ToolEntry, len(r.tools)),
 		mediaStore: r.mediaStore,
+		spill:      r.spill,
 	}
 	if r.allowlist != nil {
 		clone.allowlist = make(map[string]struct{}, len(r.allowlist))

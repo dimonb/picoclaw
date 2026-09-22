@@ -493,6 +493,11 @@
       "max_age_minutes": 30,
       "interval_minutes": 5
     },
+    "output_spill": {
+      "max_tokens": 8000,
+      "preview_lines": 40,
+      "max_age_hours": 24
+    },
     "append_file": {
       "enabled": true
     },

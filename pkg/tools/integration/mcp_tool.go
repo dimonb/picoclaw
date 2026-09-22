@@ -6,15 +6,12 @@ import (
 	"fmt"
 	"hash/fnv"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
-	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/media"
 	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
@@ -31,13 +28,11 @@ type MCPManager interface {
 
 // MCPTool wraps an MCP tool to implement the Tool interface
 type MCPTool struct {
-	manager            MCPManager
-	serverName         string
-	tool               *mcp.Tool
-	mediaStore         media.MediaStore
-	workspace          string
-	maxInlineTextRunes int
-	runtimeEvents      runtimeevents.Bus
+	manager       MCPManager
+	serverName    string
+	tool          *mcp.Tool
+	mediaStore    media.MediaStore
+	runtimeEvents runtimeevents.Bus
 }
 
 // MCPToolCallPayload describes MCP tool execution runtime events.
@@ -52,10 +47,9 @@ type MCPToolCallPayload struct {
 // NewMCPTool creates a new MCP tool wrapper
 func NewMCPTool(manager MCPManager, serverName string, tool *mcp.Tool) *MCPTool {
 	return &MCPTool{
-		manager:            manager,
-		serverName:         serverName,
-		tool:               tool,
-		maxInlineTextRunes: maxMCPInlineTextRunes,
+		manager:    manager,
+		serverName: serverName,
+		tool:       tool,
 	}
 }
 
@@ -63,22 +57,10 @@ func (t *MCPTool) SetMediaStore(store media.MediaStore) {
 	t.mediaStore = store
 }
 
-func (t *MCPTool) SetWorkspace(workspace string) {
-	t.workspace = strings.TrimSpace(workspace)
-}
-
-func (t *MCPTool) SetMaxInlineTextRunes(limit int) {
-	if limit > 0 {
-		t.maxInlineTextRunes = limit
-	}
-}
-
 // SetEventPublisher injects the runtime event bus used for MCP tool observations.
 func (t *MCPTool) SetEventPublisher(eventBus runtimeevents.Bus) {
 	t.runtimeEvents = eventBus
 }
-
-const maxMCPInlineTextRunes = 16 * 1024
 
 // sanitizeIdentifierComponent normalizes a string so it can be safely used
 // as part of a tool/function identifier for downstream providers.
@@ -358,18 +340,16 @@ func extractContentText(content []mcp.Content) string {
 	return sanitizeToolLLMContent(strings.Join(parts, "\n"))
 }
 
+// normalizeResultContent turns MCP content parts into a tool result. Text is
+// passed through whole: the tool registry bounds oversized results for every
+// tool, spilling the full text to a workspace file behind a head/tail preview.
 func (t *MCPTool) normalizeResultContent(ctx context.Context, content []mcp.Content) *ToolResult {
 	llmParts := make([]string, 0, len(content))
-	rawTextParts := make([]string, 0, len(content))
 	mediaRefs := make([]string, 0, len(content))
 
 	for _, c := range content {
 		switch v := c.(type) {
 		case *mcp.TextContent:
-			rawText := strings.TrimSpace(v.Text)
-			if rawText != "" {
-				rawTextParts = append(rawTextParts, rawText)
-			}
 			safeText := strings.TrimSpace(sanitizeToolLLMContent(v.Text))
 			if safeText != "" {
 				llmParts = append(llmParts, safeText)
@@ -405,12 +385,9 @@ func (t *MCPTool) normalizeResultContent(ctx context.Context, content []mcp.Cont
 		case *mcp.ResourceLink:
 			llmParts = append(llmParts, summarizeResourceLink(v))
 		case *mcp.EmbeddedResource:
-			ref, note, rawText := t.storeEmbeddedResource(ctx, v)
+			ref, note, _ := t.storeEmbeddedResource(ctx, v)
 			if ref != "" {
 				mediaRefs = append(mediaRefs, ref)
-			}
-			if rawText != "" {
-				rawTextParts = append(rawTextParts, rawText)
 			}
 			if note != "" {
 				llmParts = append(llmParts, note)
@@ -420,79 +397,9 @@ func (t *MCPTool) normalizeResultContent(ctx context.Context, content []mcp.Cont
 		}
 	}
 
-	forLLM := strings.Join(compactStrings(llmParts), "\n")
-	rawText := strings.Join(compactStrings(rawTextParts), "\n")
-	if artifactResult := t.persistLargeTextArtifact(rawText); artifactResult != nil {
-		artifactResult.Media = mediaRefs
-		return artifactResult
-	}
-
-	result := &ToolResult{
-		ForLLM: forLLM,
+	return &ToolResult{
+		ForLLM: strings.Join(compactStrings(llmParts), "\n"),
 		Media:  mediaRefs,
-	}
-	return result
-}
-
-func (t *MCPTool) persistLargeTextArtifact(text string) *ToolResult {
-	text = strings.TrimSpace(text)
-	limit := t.maxInlineTextRunes
-	if limit <= 0 {
-		limit = maxMCPInlineTextRunes
-	}
-	size := utf8.RuneCountInString(text)
-	if text == "" || size <= limit || t.workspace == "" {
-		return nil
-	}
-
-	dir := filepath.Join(t.workspace, ".artifacts", "mcp")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return t.largeTextArtifactFallback(text, err)
-	}
-	// TODO: Add lifecycle cleanup/retention for MCP artifact files.
-
-	pattern := fmt.Sprintf(
-		"%s_%s_*.txt",
-		sanitizeIdentifierComponent(t.serverName),
-		sanitizeIdentifierComponent(t.tool.Name),
-	)
-	tmpFile, err := os.CreateTemp(dir, pattern)
-	if err != nil {
-		return t.largeTextArtifactFallback(text, err)
-	}
-	path := tmpFile.Name()
-	if _, err = tmpFile.WriteString(text); err != nil {
-		_ = tmpFile.Close()
-		_ = os.Remove(path)
-		return t.largeTextArtifactFallback(text, err)
-	}
-	if err = tmpFile.Close(); err != nil {
-		_ = os.Remove(path)
-		return t.largeTextArtifactFallback(text, err)
-	}
-
-	return &ToolResult{
-		ForLLM: fmt.Sprintf(
-			"[MCP returned a large text result (%d chars); omitted from model context and saved as a local artifact.]",
-			size,
-		),
-		ArtifactTags: []string{"[file:" + path + "]"},
-	}
-}
-
-func (t *MCPTool) largeTextArtifactFallback(text string, err error) *ToolResult {
-	size := utf8.RuneCountInString(text)
-	logger.WarnCF("tool", "Failed to persist large MCP text artifact", map[string]any{
-		"server": t.serverName,
-		"tool":   t.tool.Name,
-		"chars":  size,
-		"error":  err.Error(),
-	})
-	return &ToolResult{
-		ForLLM: fmt.Sprintf(
-			"[MCP returned a large text result (%d chars); omitted from model context because artifact persistence failed.]",
-			size,
-		),
 	}
 }
 

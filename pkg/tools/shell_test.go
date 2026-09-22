@@ -223,15 +223,16 @@ func TestShellTool_StderrCapture(t *testing.T) {
 	}
 }
 
-// TestShellTool_OutputTruncation verifies long output is truncated
-func TestShellTool_OutputTruncation(t *testing.T) {
+// TestShellTool_LongOutputKeptWhole verifies the tool no longer cuts long
+// output itself: bounding it is the registry's job (see output_spill.go),
+// and a cut here would lose the tail before the spill file is written.
+func TestShellTool_LongOutputKeptWhole(t *testing.T) {
 	tool, err := NewExecTool("", false)
 	if err != nil {
 		t.Errorf("unable to configure exec tool: %s", err)
 	}
 
 	ctx := context.Background()
-	// Generate long output (>10000 chars)
 	args := map[string]any{
 		"action":  "run",
 		"command": "python3 -c \"print('x' * 20000)\" || echo " + strings.Repeat("x", 20000),
@@ -239,9 +240,14 @@ func TestShellTool_OutputTruncation(t *testing.T) {
 
 	result := tool.Execute(ctx, args)
 
-	// Should have truncation message or be truncated
-	if len(result.ForLLM) > 15000 {
-		t.Errorf("Expected output to be truncated, got length: %d", len(result.ForLLM))
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+	if strings.Count(result.ForLLM, "x") != 20000 {
+		t.Errorf("expected all 20000 chars of output, got %d", strings.Count(result.ForLLM, "x"))
+	}
+	if strings.Contains(result.ForLLM, "truncated") {
+		t.Errorf("expected no truncation marker at the tool level, got: %q", result.ForLLM[len(result.ForLLM)-80:])
 	}
 }
 

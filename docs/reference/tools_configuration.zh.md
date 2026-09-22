@@ -39,6 +39,18 @@ PicoClaw 的工具配置位于 `config.json` 的 `tools` 字段中。
 | `filter_sensitive_data` | bool | `true` | 启用/禁用过滤 |
 | `filter_min_length` | int | `8` | 触发过滤的最小内容长度 |
 
+## 超大工具输出
+
+会撑爆模型上下文的工具结果既不会被截断，也不会整段注入。当结果的估算大小超过 `tools.output_spill.max_tokens` 时，PicoClaw 会把完整输出写入 `<workspace>/tmp/tool-output/<tool>-<timestamp>-<id>.txt`，并只给模型一个简短的头部（工具名、大小、文件路径）、输出的前后各 `preview_lines` 行，以及一条提示：可以用 `read_file` 读取该路径、用 `exec` 对它执行 `grep -n` / `sed -n`，或用 `send_file` 把文件发给用户。该策略只在工具注册表这一处生效，因此 `exec`、MCP 工具以及其他所有工具都受同样的约束；错误结果（例如 stderr 很大的失败命令）同样处理，并且仍然保持为错误。超过 `max_age_hours` 的溢出文件会在下一次溢出时被删除。没有工作区的 agent 仍会保留首尾预览，但不会写文件。
+
+| 配置项 | 类型 | 默认值 | 描述 |
+|--------|------|--------|------|
+| `output_spill.max_tokens` | int | `8000` | 超过该估算 token 数的结果会被溢出到文件 |
+| `output_spill.preview_lines` | int | `40` | 内联保留的首部和尾部行数 |
+| `output_spill.max_age_hours` | int | `24` | 溢出文件保留的小时数 |
+
+注意：溢出文件保存的是原始输出；上面的敏感数据过滤只作用于模型内联看到的内容，不作用于该文件。`tools.mcp.max_inline_text_chars` 已废弃并被忽略。
+
 ## Web 工具
 
 Web 工具用于网页搜索和抓取。
