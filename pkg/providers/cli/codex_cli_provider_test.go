@@ -43,6 +43,9 @@ func TestParseJSONLEvents_AgentMessage(t *testing.T) {
 	if resp.Usage.TotalTokens != 170 {
 		t.Errorf("TotalTokens = %d, want 170", resp.Usage.TotalTokens)
 	}
+	if resp.Usage.CachedPromptTokens != 50 {
+		t.Errorf("CachedPromptTokens = %d, want 50", resp.Usage.CachedPromptTokens)
+	}
 	if len(resp.ToolCalls) != 0 {
 		t.Errorf("ToolCalls should be empty, got %d", len(resp.ToolCalls))
 	}

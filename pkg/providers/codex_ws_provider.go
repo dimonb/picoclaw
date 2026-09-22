@@ -253,9 +253,24 @@ type wsContentPart struct {
 }
 
 type wsUsage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
-	TotalTokens  int `json:"total_tokens"`
+	InputTokens         int                   `json:"input_tokens"`
+	OutputTokens        int                   `json:"output_tokens"`
+	TotalTokens         int                   `json:"total_tokens"`
+	InputTokensDetails  wsInputTokensDetails  `json:"input_tokens_details"`
+	OutputTokensDetails wsOutputTokensDetails `json:"output_tokens_details"`
+}
+
+// wsInputTokensDetails breaks down input_tokens: cached_tokens is the prefix
+// the backend served from its prompt cache and is already counted in
+// input_tokens.
+type wsInputTokensDetails struct {
+	CachedTokens int `json:"cached_tokens"`
+}
+
+// wsOutputTokensDetails breaks down output_tokens: reasoning_tokens is already
+// counted in output_tokens.
+type wsOutputTokensDetails struct {
+	ReasoningTokens int `json:"reasoning_tokens"`
 }
 
 // ---------- provider ----------
@@ -1274,9 +1289,11 @@ func parseWSResponse(items []wsOutputItem, usage wsUsage) *LLMResponse {
 			total = usage.InputTokens + usage.OutputTokens
 		}
 		resp.Usage = &UsageInfo{
-			PromptTokens:     usage.InputTokens,
-			CompletionTokens: usage.OutputTokens,
-			TotalTokens:      total,
+			PromptTokens:       usage.InputTokens,
+			CompletionTokens:   usage.OutputTokens,
+			TotalTokens:        total,
+			CachedPromptTokens: usage.InputTokensDetails.CachedTokens,
+			ReasoningTokens:    usage.OutputTokensDetails.ReasoningTokens,
 		}
 	}
 	return resp

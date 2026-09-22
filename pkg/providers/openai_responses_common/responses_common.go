@@ -262,9 +262,11 @@ func parseResponse(apiResp *responses.Response) *protocoltypes.LLMResponse {
 	var usage *protocoltypes.UsageInfo
 	if apiResp.Usage.TotalTokens > 0 {
 		usage = &protocoltypes.UsageInfo{
-			PromptTokens:     int(apiResp.Usage.InputTokens),
-			CompletionTokens: int(apiResp.Usage.OutputTokens),
-			TotalTokens:      int(apiResp.Usage.TotalTokens),
+			PromptTokens:       int(apiResp.Usage.InputTokens),
+			CompletionTokens:   int(apiResp.Usage.OutputTokens),
+			TotalTokens:        int(apiResp.Usage.TotalTokens),
+			CachedPromptTokens: int(apiResp.Usage.InputTokensDetails.CachedTokens),
+			ReasoningTokens:    int(apiResp.Usage.OutputTokensDetails.ReasoningTokens),
 		}
 	}
 

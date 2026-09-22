@@ -53,6 +53,13 @@ type UsageInfo struct {
 	PromptTokens     int `json:"prompt_tokens"`
 	CompletionTokens int `json:"completion_tokens"`
 	TotalTokens      int `json:"total_tokens"`
+	// CachedPromptTokens is the share of PromptTokens the provider served from
+	// its prompt cache (OpenAI input_tokens_details.cached_tokens, Anthropic
+	// cache_read_input_tokens). Zero when the provider does not report it.
+	CachedPromptTokens int `json:"cached_prompt_tokens,omitempty"`
+	// ReasoningTokens is the share of CompletionTokens spent on reasoning
+	// (OpenAI output_tokens_details.reasoning_tokens). Zero when not reported.
+	ReasoningTokens int `json:"reasoning_tokens,omitempty"`
 }
 
 // CacheControl marks a content block for LLM-side prefix caching.
