@@ -51,6 +51,8 @@ Note: the spill file holds the raw output; the sensitive-data filter above appli
 
 A payload that never reaches the model at all — a large base64-like blob, which is replaced by a short marker before the policy runs — is still written to the same directory, and the marker gains the path, so the bytes stay reachable.
 
+A tool that can re-serve its own output is exempt from the file: `read_file` reads a file that is already on disk and pages it through `offset`/`length` (byte mode) or `start_line`/`max_lines` (line mode), so an oversized result is cut to the same head/tail preview but no copy is written and the hint sends the model back to the same path. `web_fetch` is not exempt — its content exists nowhere else, so the file is the only way back to it. A tool declares the exemption by implementing `SelfPagingTool` and returning the sentence that names its own paging arguments.
+
 Scheduled commands are not covered by this policy: `tools.cron` runs the exec tool directly rather than through the registry, so `session` delivery keeps its 4,000-character injection limit and `raw` delivery is capped before it is posted to the chat.
 
 ## Web Tools

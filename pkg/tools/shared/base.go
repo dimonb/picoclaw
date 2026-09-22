@@ -33,6 +33,24 @@ type PromptMetadataProvider interface {
 	PromptMetadata() PromptMetadata
 }
 
+// SelfPagingTool is implemented by a tool that can serve another part of the
+// same result when the model calls it again — its output is a view of
+// something that already exists, typically a file on disk. The registry's
+// output-spill policy writes no file for such a tool: a copy would be waste,
+// and a copy's path would send the model somewhere other than the source.
+// An oversized result is still cut to a head/tail preview, with PagingHint
+// telling the model how to reach the rest.
+//
+// The hint belongs to the tool because only the tool knows the arguments that
+// page it — read_file names offset/length in byte mode and start_line/max_lines
+// in line mode.
+type SelfPagingTool interface {
+	// PagingHint is one sentence naming this tool and the arguments that
+	// fetch another part of the same result. An empty string opts back in to
+	// spilling.
+	PagingHint() string
+}
+
 // --- Request-scoped tool context (channel / chatID) ---
 //
 // Carried via context.Value so that concurrent tool calls each receive

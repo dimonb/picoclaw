@@ -75,6 +75,11 @@ func (r *ToolRegistry) spillResult(result *ToolResult, toolName, rawForLLM strin
 		exec:     r.tools["exec"] != nil,
 		sendFile: r.tools["send_file"] != nil,
 	}
+	if entry := r.tools[toolName]; entry != nil {
+		if pager, ok := entry.Tool.(SelfPagingTool); ok {
+			hints.selfPaging = strings.TrimSpace(pager.PagingHint())
+		}
+	}
 	r.mu.RUnlock()
 	spill.apply(result, toolName, hints)
 	spill.applyOmitted(result, toolName, rawForLLM, hints)

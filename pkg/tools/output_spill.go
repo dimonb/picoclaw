@@ -40,6 +40,9 @@ const (
 
 var (
 	errNoOutputSpillDir = errors.New("no workspace configured for tool output")
+	// errSelfPagingTool marks a result the producing tool can re-serve, so no
+	// copy of it is written.
+	errSelfPagingTool = errors.New("tool pages its own output")
 	// errUserCopyNotSpilled marks the user-facing copy of a result whose text
 	// differs from what the model sees: only one copy is written to a file.
 	errUserCopyNotSpilled = errors.New("user-facing copy not saved separately")
@@ -115,6 +118,11 @@ type spillHints struct {
 	readFile bool
 	exec     bool
 	sendFile bool
+	// selfPaging is the hint of a tool that can re-serve its own output (see
+	// toolshared.SelfPagingTool). When set, no file is written and this is the
+	// line the preview ends with, pointing the model back at the source
+	// instead of at a copy of it.
+	selfPaging string
 }
 
 func estimateOutputTokens(text string) int {
@@ -124,7 +132,8 @@ func estimateOutputTokens(text string) int {
 // apply rewrites result in place when its ForLLM exceeds the policy. ForUser
 // gets the same preview when it mirrored ForLLM, and its own file-less
 // head/tail cut when it is a different oversized text. Error results are
-// treated the same and stay errors.
+// treated the same and stay errors. A tool that pages its own output is cut
+// to a preview without a file — see spillHints.selfPaging.
 func (s *outputSpiller) apply(result *ToolResult, toolName string, hints spillHints) {
 	if s == nil || result == nil {
 		return
@@ -135,10 +144,17 @@ func (s *outputSpiller) apply(result *ToolResult, toolName string, hints spillHi
 	}
 
 	mirrored := result.ForUser == text
-	path, err := s.write(toolName, text)
-	if err != nil && !errors.Is(err, errNoOutputSpillDir) {
-		logger.WarnCF("tool", "Failed to save oversized tool output; keeping a head/tail preview only",
-			map[string]any{"tool": toolName, "chars": utf8.RuneCountInString(text), "error": err.Error()})
+
+	var path string
+	var err error
+	if hints.selfPaging != "" {
+		err = errSelfPagingTool
+	} else {
+		path, err = s.write(toolName, text)
+		if err != nil && !errors.Is(err, errNoOutputSpillDir) {
+			logger.WarnCF("tool", "Failed to save oversized tool output; keeping a head/tail preview only",
+				map[string]any{"tool": toolName, "chars": utf8.RuneCountInString(text), "error": err.Error()})
+		}
 	}
 	preview := s.preview(text, toolName, path, err, result.IsError, hints)
 	result.ForLLM = preview
@@ -156,6 +172,7 @@ func (s *outputSpiller) apply(result *ToolResult, toolName string, hints spillHi
 			"chars":         utf8.RuneCountInString(text),
 			"preview_chars": utf8.RuneCountInString(preview),
 			"path":          path,
+			"self_paging":   hints.selfPaging != "",
 		})
 }
 
@@ -172,6 +189,12 @@ func (s *outputSpiller) applyOmitted(result *ToolResult, toolName, raw string, h
 		return
 	}
 	if !strings.Contains(result.ForLLM, largeBase64OmittedMessage) {
+		return
+	}
+	if hints.selfPaging != "" {
+		// The source is still readable through the tool itself, so a copy
+		// would be the same waste it is in apply.
+		result.ForLLM = strings.TrimSpace(result.ForLLM) + "\n" + hints.selfPaging
 		return
 	}
 
@@ -299,6 +322,8 @@ func (s *outputSpiller) preview(
 		b.WriteString("Full output not saved (no workspace); only the head and tail are shown.]\n")
 	case errors.Is(writeErr, errUserCopyNotSpilled):
 		b.WriteString("This user-facing copy is not saved; only the head and tail are shown.]\n")
+	case errors.Is(writeErr, errSelfPagingTool):
+		b.WriteString("No copy was written; read the rest from the source. Only the head and tail are shown.]\n")
 	default:
 		b.WriteString("Full output not saved (write failed); only the head and tail are shown.]\n")
 	}
@@ -322,7 +347,13 @@ func (s *outputSpiller) preview(
 		b.WriteString("\n")
 	}
 
-	if path != "" {
+	switch {
+	case hints.selfPaging != "":
+		// The source is still where the model got it; send it back there
+		// rather than to a copy.
+		b.WriteString(hints.selfPaging)
+		b.WriteString("\n")
+	case path != "":
 		if hint := spillHintLine(hints); hint != "" {
 			b.WriteString(hint)
 			b.WriteString("\n")
