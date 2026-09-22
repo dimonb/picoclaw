@@ -38,7 +38,16 @@ const (
 	outputSpillMinPreviewBytes = 256
 )
 
-var errNoOutputSpillDir = errors.New("no workspace configured for tool output")
+var (
+	errNoOutputSpillDir = errors.New("no workspace configured for tool output")
+	// errUserCopyNotSpilled marks the user-facing copy of a result whose text
+	// differs from what the model sees: only one copy is written to a file.
+	errUserCopyNotSpilled = errors.New("user-facing copy not saved separately")
+	// errOutputSpillDirNotOwned marks a spill directory that is not a real
+	// directory the workspace owns — a symlink there would send writes and
+	// deletions outside the workspace.
+	errOutputSpillDirNotOwned = errors.New("spill directory is not a directory inside the workspace")
+)
 
 // OutputSpillPolicy says when a tool result is too large to stay inline and
 // how much of it the model still sees. Zero values mean the defaults.
@@ -65,7 +74,9 @@ func (p OutputSpillPolicy) withDefaults() OutputSpillPolicy {
 }
 
 // previewBytes is the byte budget for each of the head and the tail. It is a
-// quarter of the threshold so a preview can never itself trip the policy.
+// quarter of the threshold, so at any sane threshold the preview stays well
+// under it; the floor below wins only for a threshold so small that a
+// readable preview matters more.
 func (p OutputSpillPolicy) previewBytes() int {
 	// The estimator counts 2.5 characters per token.
 	thresholdChars := p.MaxTokens * 5 / 2
@@ -136,7 +147,7 @@ func (s *outputSpiller) apply(result *ToolResult, toolName string, hints spillHi
 	case mirrored:
 		result.ForUser = preview
 	case result.ForUser != "" && estimateOutputTokens(result.ForUser) > s.policy.MaxTokens:
-		result.ForUser = s.preview(result.ForUser, toolName, "", errNoOutputSpillDir, result.IsError, spillHints{})
+		result.ForUser = s.preview(result.ForUser, toolName, "", errUserCopyNotSpilled, result.IsError, spillHints{})
 	}
 
 	logger.InfoCF("tool", "Oversized tool output spilled",
@@ -148,6 +159,41 @@ func (s *outputSpiller) apply(result *ToolResult, toolName string, hints spillHi
 		})
 }
 
+// applyOmitted covers the one case apply cannot see: normalization replaced a
+// payload with a short marker before the policy ran, so the bytes are already
+// gone from the result. Spilling the raw text keeps them reachable instead of
+// dropping them, which is what the MCP-specific artifact writer used to do for
+// base64-like payloads.
+func (s *outputSpiller) applyOmitted(result *ToolResult, toolName, raw string, hints spillHints) {
+	if s == nil || result == nil {
+		return
+	}
+	if raw == "" || estimateOutputTokens(raw) <= s.policy.MaxTokens {
+		return
+	}
+	if !strings.Contains(result.ForLLM, largeBase64OmittedMessage) {
+		return
+	}
+
+	path, err := s.write(toolName, raw)
+	if err != nil {
+		if !errors.Is(err, errNoOutputSpillDir) {
+			logger.WarnCF("tool", "Failed to save omitted tool payload",
+				map[string]any{"tool": toolName, "chars": utf8.RuneCountInString(raw), "error": err.Error()})
+		}
+		return
+	}
+
+	note := fmt.Sprintf("[Full payload (%d chars) saved to %s]", utf8.RuneCountInString(raw), path)
+	if hint := spillHintLine(hints); hint != "" {
+		note += "\n" + hint
+	}
+	result.ForLLM = strings.TrimSpace(result.ForLLM) + "\n" + note
+
+	logger.InfoCF("tool", "Omitted tool payload spilled",
+		map[string]any{"tool": toolName, "chars": utf8.RuneCountInString(raw), "path": path})
+}
+
 // write stores text under the spill directory and returns its path. It
 // sweeps expired files first, at most once per outputSpillSweepInterval.
 func (s *outputSpiller) write(toolName, text string) (string, error) {
@@ -156,6 +202,15 @@ func (s *outputSpiller) write(toolName, text string) (string, error) {
 	}
 	if err := os.MkdirAll(s.dir, 0o700); err != nil {
 		return "", err
+	}
+	// MkdirAll and CreateTemp follow a symlink, and so would the sweep's
+	// deletions. A command the model ran could have planted one here, so
+	// refuse anything that is not a real directory; the caller degrades to a
+	// head/tail preview.
+	if info, err := os.Lstat(s.dir); err != nil {
+		return "", err
+	} else if !info.IsDir() {
+		return "", errOutputSpillDirNotOwned
 	}
 	s.sweep(time.Now())
 
@@ -180,8 +235,8 @@ func (s *outputSpiller) write(toolName, text string) (string, error) {
 }
 
 // sweep removes spill files older than the policy's MaxAge. Only regular
-// .txt files are considered, so nothing a user parked in the directory is
-// touched.
+// .txt files are considered, so subdirectories, symlinks and other extensions
+// are left alone; the directory is spill-owned, so any expired .txt in it goes.
 func (s *outputSpiller) sweep(now time.Time) {
 	s.mu.Lock()
 	if now.Sub(s.lastSweep) < outputSpillSweepInterval {
@@ -242,6 +297,8 @@ func (s *outputSpiller) preview(
 		fmt.Fprintf(&b, "Full output saved to %s]\n", path)
 	case errors.Is(writeErr, errNoOutputSpillDir):
 		b.WriteString("Full output not saved (no workspace); only the head and tail are shown.]\n")
+	case errors.Is(writeErr, errUserCopyNotSpilled):
+		b.WriteString("This user-facing copy is not saved; only the head and tail are shown.]\n")
 	default:
 		b.WriteString("Full output not saved (write failed); only the head and tail are shown.]\n")
 	}

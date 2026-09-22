@@ -49,7 +49,13 @@ PicoClaw 的工具配置位于 `config.json` 的 `tools` 字段中。
 | `output_spill.preview_lines` | int | `40` | 内联保留的首部和尾部行数 |
 | `output_spill.max_age_hours` | int | `24` | 溢出文件保留的小时数 |
 
-注意：溢出文件保存的是原始输出；上面的敏感数据过滤只作用于模型内联看到的内容，不作用于该文件。`tools.mcp.max_inline_text_chars` 已废弃并被忽略。
+注意：溢出文件保存的是原始输出；上面的敏感数据过滤只作用于模型内联看到的内容，不作用于该文件。`tools.mcp.max_inline_text_chars` 已废弃并被忽略（设置后仍可加载，但会在启动时打印一条警告）。
+
+完全不会进入模型上下文的负载（例如在该策略生效前就被替换成简短标记的大段 base64 数据）同样会写入该目录，并在标记中附上文件路径，因此原始字节仍然可以取回。
+
+定时任务不受该策略约束：`tools.cron` 直接调用 exec 工具而不经过工具注册表，因此 `session` 投递仍使用 4000 字符的注入上限，`raw` 投递则在发送到聊天前单独截断。
+
+环境变量示例：`PICOCLAW_TOOLS_OUTPUT_SPILL_MAX_TOKENS=8000`。
 
 ## Web 工具
 
