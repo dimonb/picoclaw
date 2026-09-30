@@ -35,6 +35,18 @@ const (
 	wsWriteTimeout = 30 * time.Second
 )
 
+// Read deadlines for one streamed response. Vars so tests can shrink them.
+var (
+	// wsReadIdleTimeout bounds the silence between two events. It restarts on
+	// every event: a long tool call streams argument deltas for minutes, and
+	// a deadline counted from the start of the response cut those off
+	// mid-generation (and the in-place retry regenerated the same long call).
+	wsReadIdleTimeout = 120 * time.Second
+	// wsResponseMaxDuration caps the whole response so a stream that keeps
+	// trickling events can still never hold a turn forever.
+	wsResponseMaxDuration = 10 * time.Minute
+)
+
 // ---------- request structs ----------
 
 type wsRequest struct {
@@ -538,11 +550,17 @@ func (p *CodexWSProvider) drainStream(
 	argsByItem := map[string]strings.Builder{}
 	itemsByID := map[string]wsOutputItem{}
 
-	// 120s read deadline so we never hang indefinitely.
-	_ = sess.conn.SetReadDeadline(time.Now().Add(120 * time.Second))
+	// Idle deadline restarted per event, clamped to an overall cap, so we
+	// never hang indefinitely yet never cut off a response that is progressing.
+	hardDeadline := time.Now().Add(wsResponseMaxDuration)
 	defer sess.conn.SetReadDeadline(time.Time{})
 
 	for {
+		deadline := time.Now().Add(wsReadIdleTimeout)
+		if deadline.After(hardDeadline) {
+			deadline = hardDeadline
+		}
+		_ = sess.conn.SetReadDeadline(deadline)
 		_, msg, readErr := sess.conn.ReadMessage()
 		if readErr != nil {
 			err = fmt.Errorf("ws read: %w", readErr)
