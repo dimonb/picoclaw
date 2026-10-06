@@ -24,6 +24,14 @@ const (
 		content_rowid='message_id',
 		tokenize="trigram"
 	)`
+	// sqlDeleteSummaryFTS removes old.summary_id's row from summaries_fts
+	// inside a summaries trigger.
+	sqlDeleteSummaryFTS = `DELETE FROM summaries_fts WHERE rowid IN (
+				SELECT rowid FROM summaries_fts
+				WHERE summaries_fts MATCH 'summary_id:"' || replace(old.summary_id, '"', '""') || '"'
+					AND summary_id = old.summary_id
+			) AND length(old.summary_id) >= 3;
+			DELETE FROM summaries_fts WHERE length(old.summary_id) < 3 AND summary_id = old.summary_id;`
 	sqlCheckFTS5Available    = `CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_check USING fts5(content)`
 	sqlCheckTrigramAvailable = `CREATE VIRTUAL TABLE IF NOT EXISTS _trigram_check USING fts5(content, tokenize="trigram")`
 	sqlDropFTS5Check         = `DROP TABLE IF EXISTS _fts5_check`
@@ -136,15 +144,21 @@ func runSchema(db *sql.DB) error {
 		`DROP TRIGGER IF EXISTS summaries_ad`,
 		`DROP TRIGGER IF EXISTS summaries_au`,
 
-		// FTS5 triggers to keep summaries_fts in sync with summaries table
+		// FTS5 triggers to keep summaries_fts in sync with summaries table.
+		// summaries has no INTEGER PRIMARY KEY, so its rowids are not stable
+		// across VACUUM and summaries_fts keeps its own rows. A plain
+		// WHERE summary_id = ... scans every FTS row; the delete instead finds
+		// the row through the index with a phrase match on summary_id and then
+		// filters exactly. Trigram cannot match ids shorter than 3 characters,
+		// so those fall back to the scan (generated ids are far longer).
 		`CREATE TRIGGER summaries_ai AFTER INSERT ON summaries BEGIN
 			INSERT INTO summaries_fts (summary_id, content) VALUES (new.summary_id, new.content);
 		END`,
 		`CREATE TRIGGER summaries_ad AFTER DELETE ON summaries BEGIN
-			DELETE FROM summaries_fts WHERE summary_id = old.summary_id;
+			` + sqlDeleteSummaryFTS + `
 		END`,
-		`CREATE TRIGGER summaries_au AFTER UPDATE ON summaries BEGIN
-			DELETE FROM summaries_fts WHERE summary_id = old.summary_id;
+		`CREATE TRIGGER summaries_au AFTER UPDATE OF content ON summaries BEGIN
+			` + sqlDeleteSummaryFTS + `
 			INSERT INTO summaries_fts (summary_id, content) VALUES (new.summary_id, new.content);
 		END`,
 	}

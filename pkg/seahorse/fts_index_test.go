@@ -250,3 +250,134 @@ func TestRunSchemaRebuildsLegacyMessagesFTS(t *testing.T) {
 		t.Errorf("after re-run, %d legacy messages indexed, want 2", got)
 	}
 }
+
+func countSummaryRows(t *testing.T, s *Store, summaryID string) int {
+	t.Helper()
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM summaries_fts WHERE summary_id = ?`, summaryID).
+		Scan(&n); err != nil {
+		t.Fatalf("count summaries_fts rows for %q: %v", summaryID, err)
+	}
+	return n
+}
+
+// summaries_fts keeps its own rows (summaries rowids are not VACUUM-stable),
+// so its delete path must reach the row through the FTS index, not by
+// scanning every row for a matching summary_id.
+func TestSummariesFTSDeleteUsesIndex(t *testing.T) {
+	s := openTestStore(t)
+
+	body := strings.ReplaceAll(sqlDeleteSummaryFTS, "old.summary_id", "?")
+	first := body[:strings.Index(body, ";")]
+	id := "sum_18a2b3c4d5e6f708"
+	rows, err := s.db.Query(`EXPLAIN QUERY PLAN `+first, id, id, id)
+	if err != nil {
+		t.Fatalf("explain summaries_fts delete: %v", err)
+	}
+	defer rows.Close()
+	var plan strings.Builder
+	for rows.Next() {
+		var rid, parent, notUsed int
+		var detail string
+		if err := rows.Scan(&rid, &parent, &notUsed, &detail); err != nil {
+			t.Fatalf("scan plan row: %v", err)
+		}
+		plan.WriteString(detail + "\n")
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("plan rows: %v", err)
+	}
+	// FTS5 reports a MATCH-driven scan as "INDEX 0:M<col>" and a rowid lookup
+	// as "INDEX 0:="; a bare "INDEX 0:" is a full scan of the table.
+	for _, line := range strings.Split(strings.TrimSpace(plan.String()), "\n") {
+		if strings.HasSuffix(line, "VIRTUAL TABLE INDEX 0:") {
+			t.Errorf("summaries_fts delete scans the whole index:\n%s", plan.String())
+		}
+	}
+	if !strings.Contains(plan.String(), ":M") {
+		t.Errorf("summaries_fts delete does not use MATCH:\n%s", plan.String())
+	}
+
+	if body := triggerSQL(t, s, "summaries_au"); !strings.Contains(body, "UPDATE OF content") {
+		t.Errorf("summaries_au fires on any column update:\n%s", body)
+	}
+}
+
+func TestSummariesFTSStaysInSync(t *testing.T) {
+	s := openTestStore(t)
+
+	if _, err := s.db.Exec(`INSERT INTO conversations (session_key) VALUES ('sums')`); err != nil {
+		t.Fatalf("insert conversation: %v", err)
+	}
+	ids := []string{
+		"sum_18a2b3c4d5e6f701", "sum_18a2b3c4d5e6f702", "sum_18a2b3c4d5e6f703",
+		`sum_"quoted"`, "ab",
+	}
+	for _, id := range ids {
+		if _, err := s.db.Exec(`INSERT INTO summaries (summary_id, conversation_id, kind, content)
+			VALUES (?, 1, 'leaf', 'summary body ' || ?)`, id, id); err != nil {
+			t.Fatalf("insert summary %q: %v", id, err)
+		}
+	}
+
+	// Ids sharing a prefix must not take each other's rows with them.
+	if _, err := s.db.Exec(`DELETE FROM summaries WHERE summary_id = ?`, "sum_18a2b3c4d5e6f702"); err != nil {
+		t.Fatalf("delete summary: %v", err)
+	}
+	for _, id := range ids {
+		want := 1
+		if id == "sum_18a2b3c4d5e6f702" {
+			want = 0
+		}
+		if got := countSummaryRows(t, s, id); got != want {
+			t.Errorf("summaries_fts rows for %q = %d, want %d", id, got, want)
+		}
+	}
+
+	// Quoted and too-short-for-trigram ids are deleted too.
+	for _, id := range []string{`sum_"quoted"`, "ab"} {
+		if _, err := s.db.Exec(`DELETE FROM summaries WHERE summary_id = ?`, id); err != nil {
+			t.Fatalf("delete summary %q: %v", id, err)
+		}
+		if got := countSummaryRows(t, s, id); got != 0 {
+			t.Errorf("summaries_fts still has %d rows for deleted %q", got, id)
+		}
+	}
+
+	segments := func() int {
+		var n int
+		if err := s.db.QueryRow(`SELECT count(*) FROM summaries_fts_data`).Scan(&n); err != nil {
+			t.Fatalf("count summaries_fts_data: %v", err)
+		}
+		return n
+	}
+	before := segments()
+	if _, err := s.db.Exec(
+		`UPDATE summaries SET model = 'm' WHERE summary_id = ?`,
+		"sum_18a2b3c4d5e6f701",
+	); err != nil {
+		t.Fatalf("update model: %v", err)
+	}
+	if after := segments(); after != before {
+		t.Errorf("non-content update wrote to summaries_fts (%d -> %d segments)", before, after)
+	}
+
+	if _, err := s.db.Exec(
+		`UPDATE summaries SET content = 'rewritten digest' WHERE summary_id = ?`,
+		"sum_18a2b3c4d5e6f701",
+	); err != nil {
+		t.Fatalf("update content: %v", err)
+	}
+	var n int
+	if err := s.db.QueryRow(`SELECT count(*) FROM summaries_fts WHERE summaries_fts MATCH 'rewritten'`).
+		Scan(&n); err != nil {
+		t.Fatalf("match rewritten: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("rewritten summary indexed %d times, want 1", n)
+	}
+	if got := countSummaryRows(t, s, "sum_18a2b3c4d5e6f701"); got != 1 {
+		t.Errorf("summaries_fts rows after content update = %d, want 1", got)
+	}
+	ftsIntegrityCheck(t, s, "summaries_fts")
+}
