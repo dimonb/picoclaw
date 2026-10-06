@@ -3,6 +3,7 @@ package seahorse
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
@@ -14,9 +15,13 @@ const (
 		content,
 		tokenize="trigram"
 	)`
+	// messages_fts is an external-content index over messages.content keyed by
+	// rowid = message_id, so the sync triggers address rows by rowid instead of
+	// scanning the whole index for a matching column value.
 	sqlCreateMessagesFTS = `CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-		message_id,
 		content,
+		content='messages',
+		content_rowid='message_id',
 		tokenize="trigram"
 	)`
 	sqlCheckFTS5Available    = `CREATE VIRTUAL TABLE IF NOT EXISTS _fts5_check USING fts5(content)`
@@ -112,9 +117,6 @@ func runSchema(db *sql.DB) error {
 		// FTS5 virtual table with trigram tokenizer for CJK support
 		sqlCreateSummariesFTS,
 
-		// FTS5 virtual table for message search with trigram tokenizer
-		sqlCreateMessagesFTS,
-
 		// Indexes for common query patterns
 		`CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_messages_created ON messages(conversation_id, created_at)`,
@@ -133,9 +135,6 @@ func runSchema(db *sql.DB) error {
 		`DROP TRIGGER IF EXISTS summaries_ai`,
 		`DROP TRIGGER IF EXISTS summaries_ad`,
 		`DROP TRIGGER IF EXISTS summaries_au`,
-		`DROP TRIGGER IF EXISTS messages_ai`,
-		`DROP TRIGGER IF EXISTS messages_ad`,
-		`DROP TRIGGER IF EXISTS messages_au`,
 
 		// FTS5 triggers to keep summaries_fts in sync with summaries table
 		`CREATE TRIGGER summaries_ai AFTER INSERT ON summaries BEGIN
@@ -148,24 +147,16 @@ func runSchema(db *sql.DB) error {
 			DELETE FROM summaries_fts WHERE summary_id = old.summary_id;
 			INSERT INTO summaries_fts (summary_id, content) VALUES (new.summary_id, new.content);
 		END`,
-
-		// FTS5 triggers to keep messages_fts in sync with messages table
-		`CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
-			INSERT INTO messages_fts (message_id, content) VALUES (new.message_id, new.content);
-		END`,
-		`CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
-			DELETE FROM messages_fts WHERE message_id = old.message_id;
-		END`,
-		`CREATE TRIGGER messages_au AFTER UPDATE ON messages BEGIN
-			DELETE FROM messages_fts WHERE message_id = old.message_id;
-			INSERT INTO messages_fts (message_id, content) VALUES (new.message_id, new.content);
-		END`,
 	}
 
 	for _, s := range stmts {
 		if _, err := db.Exec(s); err != nil {
 			return err
 		}
+	}
+
+	if err := ensureMessagesFTS(db); err != nil {
+		return err
 	}
 
 	if err := ensureConversationsHistoryRevisionColumn(db); err != nil {
@@ -185,6 +176,82 @@ func runSchema(db *sql.DB) error {
 	}
 	if err := ensureMessagesAttachmentsColumn(db); err != nil {
 		return err
+	}
+	return nil
+}
+
+// messagesFTSTriggers keep the external-content messages_fts in step with
+// messages. Rows are addressed by rowid (= message_id), and an external-content
+// delete must be given the exact content that was indexed, which old.content is.
+// The update trigger fires only when content changes: stamping
+// channel_message_id or metadata after a send must not re-index the message.
+var messagesFTSTriggers = []string{
+	`CREATE TRIGGER messages_ai AFTER INSERT ON messages BEGIN
+		INSERT INTO messages_fts (rowid, content) VALUES (new.message_id, new.content);
+	END`,
+	`CREATE TRIGGER messages_ad AFTER DELETE ON messages BEGIN
+		INSERT INTO messages_fts (messages_fts, rowid, content) VALUES ('delete', old.message_id, old.content);
+	END`,
+	`CREATE TRIGGER messages_au AFTER UPDATE OF content ON messages BEGIN
+		INSERT INTO messages_fts (messages_fts, rowid, content) VALUES ('delete', old.message_id, old.content);
+		INSERT INTO messages_fts (rowid, content) VALUES (new.message_id, new.content);
+	END`,
+}
+
+// ensureMessagesFTS creates messages_fts as an external-content table and
+// replaces the legacy layout, which stored its own copy of every message with
+// message_id as a plain column: deleting one row scanned the whole index, so
+// clearing a large conversation held the write lock for minutes. The legacy
+// rowids do not match message_id, so the index is dropped and rebuilt from
+// messages. Everything runs in one transaction: a failure leaves the old
+// table and triggers in place.
+func ensureMessagesFTS(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("messages_fts: begin: %w", err)
+	}
+	defer tx.Rollback()
+
+	var ddl string
+	err = tx.QueryRow(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'messages_fts'`).Scan(&ddl)
+	switch {
+	case err == sql.ErrNoRows:
+		ddl = ""
+	case err != nil:
+		return fmt.Errorf("messages_fts: read schema: %w", err)
+	}
+	legacy := ddl != "" && !strings.Contains(ddl, "content_rowid")
+
+	stmts := []string{
+		`DROP TRIGGER IF EXISTS messages_ai`,
+		`DROP TRIGGER IF EXISTS messages_ad`,
+		`DROP TRIGGER IF EXISTS messages_au`,
+	}
+	if legacy {
+		stmts = append(stmts, `DROP TABLE messages_fts`)
+	}
+	if ddl == "" || legacy {
+		stmts = append(stmts,
+			sqlCreateMessagesFTS,
+			`INSERT INTO messages_fts (messages_fts) VALUES ('rebuild')`,
+		)
+	}
+	stmts = append(stmts, messagesFTSTriggers...)
+
+	for _, s := range stmts {
+		if _, err := tx.Exec(s); err != nil {
+			return fmt.Errorf("messages_fts: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("messages_fts: commit: %w", err)
+	}
+	if legacy {
+		logger.InfoCF(
+			"seahorse",
+			"Rebuilt messages_fts as an external-content index; run VACUUM to reclaim the space of the old copy",
+			nil,
+		)
 	}
 	return nil
 }
@@ -277,7 +344,9 @@ func ensureMessagesChannelIDColumn(db *sql.DB) error {
 			return fmt.Errorf("add messages.channel_message_id: %w", err)
 		}
 	}
-	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages(channel_message_id)`); err != nil {
+	if _, err := db.Exec(
+		`CREATE INDEX IF NOT EXISTS idx_messages_channel_id ON messages(channel_message_id)`,
+	); err != nil {
 		return fmt.Errorf("create index idx_messages_channel_id: %w", err)
 	}
 	return nil

@@ -1867,7 +1867,7 @@ func (s *Store) searchMessagesFTS(ctx context.Context, input SearchInput) ([]Sea
 
 	// First, get total count (bm25 conflicts with window functions in FTS5)
 	countQuery := `SELECT COUNT(*) FROM messages_fts f
-		JOIN messages m ON f.message_id = m.message_id
+		JOIN messages m ON m.message_id = f.rowid
 		WHERE ` + whereStr
 	var totalCount int
 	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&totalCount); err != nil {
@@ -1877,7 +1877,7 @@ func (s *Store) searchMessagesFTS(ctx context.Context, input SearchInput) ([]Sea
 	// Then, get actual results with bm25 ranking
 	dataQuery := `SELECT m.message_id, m.conversation_id, m.role, m.content, m.created_at, bm25(messages_fts) as rank
 		FROM messages_fts f
-		JOIN messages m ON f.message_id = m.message_id
+		JOIN messages m ON m.message_id = f.rowid
 		WHERE ` + whereStr + ` ORDER BY rank`
 
 	dataArgs := append([]any{}, args...) // copy args
