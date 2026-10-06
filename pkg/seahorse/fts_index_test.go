@@ -77,15 +77,15 @@ func TestMessagesFTSStaysInSyncThroughClear(t *testing.T) {
 		t.Fatalf("create conversation: %v", err)
 	}
 	for i := 0; i < 50; i++ {
-		if _, err := s.AddMessage(ctx, keep.ConversationID, "user", "keeper payload", 3); err != nil {
+		if _, err = s.AddMessage(ctx, keep.ConversationID, "user", "keeper payload", 3); err != nil {
 			t.Fatalf("add keep message: %v", err)
 		}
-		if _, err := s.AddMessage(ctx, drop.ConversationID, "user", "dropped payload", 3); err != nil {
+		if _, err = s.AddMessage(ctx, drop.ConversationID, "user", "dropped payload", 3); err != nil {
 			t.Fatalf("add drop message: %v", err)
 		}
 	}
 
-	if err := s.ClearConversation(ctx, drop.ConversationID); err != nil {
+	if err = s.ClearConversation(ctx, drop.ConversationID); err != nil {
 		t.Fatalf("ClearConversation: %v", err)
 	}
 
