@@ -729,6 +729,17 @@ func TestAgentLoop_Steering_InitialPoll(t *testing.T) {
 	}
 }
 
+func waitForPendingSteering(t *testing.T, al *AgentLoop) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for al.steering.len() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("timeout waiting for the late message to enter the steering queue")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "agent-test-*")
 	if err != nil {
@@ -797,6 +808,9 @@ func TestAgentLoop_Run_AutoContinuesLateSteeringMessage(t *testing.T) {
 		t.Fatalf("publish late inbound: %v", err)
 	}
 
+	// Release the first call only once the late message is queued as steering;
+	// otherwise the first turn can finish before the run loop picks it up.
+	waitForPendingSteering(t, al)
 	close(provider.releaseFirstCall)
 
 	subCtx, subCancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -931,6 +945,9 @@ func TestAgentLoop_Run_QueuedVoiceMessageIsTranscribedBeforeSteering(t *testing.
 		t.Fatalf("publish late voice inbound: %v", err)
 	}
 
+	// Release the first call only once the late message is queued as steering;
+	// otherwise the first turn can finish before the run loop picks it up.
+	waitForPendingSteering(t, al)
 	close(provider.releaseFirstCall)
 
 	subCtx, subCancel := context.WithTimeout(context.Background(), 5*time.Second)
