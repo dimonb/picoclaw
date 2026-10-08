@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
 
 func fakeOpenAISearch(t *testing.T, status int, output string, got *map[string]any, hdr *http.Header) string {
@@ -73,6 +75,36 @@ func TestOpenAISearchProviderRequestAndOutput(t *testing.T) {
 	settings := body["settings"].(map[string]any)
 	if settings["external_web_access"] != true || body["max_output_tokens"] != float64(openAISearchDefaultMaxToken) {
 		t.Fatalf("settings = %v, max_output_tokens = %v", settings, body["max_output_tokens"])
+	}
+}
+
+func TestOpenAISearchProviderFollowsTurnModelAndSession(t *testing.T) {
+	var body map[string]any
+	endpoint := fakeOpenAISearch(t, http.StatusOK, "ok", &body, nil)
+	opts := testOpenAIOpts(endpoint)
+	opts.OpenAIModel = ""
+	p := newOpenAISearchProvider(opts, http.DefaultClient)
+
+	search := func(model, sessionKey string) (string, string) {
+		ctx := toolshared.WithToolModel(context.Background(), model)
+		ctx = toolshared.WithToolSessionContext(ctx, "main", sessionKey, nil)
+		if _, err := p.Search(ctx, "q", 3, ""); err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		return body["model"].(string), body["id"].(string)
+	}
+
+	model, idA := search("gpt-6.1-sol", "session-a")
+	if model != "gpt-6.1-sol" {
+		t.Fatalf("model = %q, want the turn's model", model)
+	}
+	if model, _ = search("openai/z-ai/glm-5.3", "session-a"); model != openAISearchDefaultModel {
+		t.Fatalf("model = %q, want the default for a non-OpenAI turn model", model)
+	}
+	_, idA2 := search("gpt-6.1-sol", "session-a")
+	_, idB := search("gpt-6.1-sol", "session-b")
+	if idA != idA2 || idA == idB {
+		t.Fatalf("session ids a=%q a2=%q b=%q: want stable per session, distinct across", idA, idA2, idB)
 	}
 }
 

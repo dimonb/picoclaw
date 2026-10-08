@@ -72,6 +72,7 @@ var (
 	ctxKeySessionKey       = &toolCtxKey{"sessionKey"}
 	ctxKeySessionScope     = &toolCtxKey{"sessionScope"}
 	ctxKeyOriginContext    = &toolCtxKey{"originContext"}
+	ctxKeyModel            = &toolCtxKey{"model"}
 )
 
 // WithToolContext returns a child context carrying channel and chatID.
@@ -161,6 +162,18 @@ func ToolSessionKey(ctx context.Context) string {
 	if !ok {
 		return ""
 	}
+	return v
+}
+
+// WithToolModel returns a child context carrying the model the turn's LLM call
+// used, for tools that call a model-scoped backend themselves.
+func WithToolModel(ctx context.Context, model string) context.Context {
+	return context.WithValue(ctx, ctxKeyModel, model)
+}
+
+// ToolModel extracts the active turn's model from ctx, or "" if unset.
+func ToolModel(ctx context.Context) string {
+	v, _ := ctx.Value(ctxKeyModel).(string)
 	return v
 }
 

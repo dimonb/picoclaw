@@ -594,6 +594,7 @@ toolLoop:
 			ts.opts.Dispatch.SessionScope,
 		)
 		execCtx = tools.WithToolOriginContext(execCtx, ts.opts.Dispatch.InboundContext)
+		execCtx = tools.WithToolModel(execCtx, exec.llmModel)
 		toolResult := ts.agent.Tools.ExecuteWithContext(
 			execCtx,
 			toolName,
