@@ -15,6 +15,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/auth"
 	oauthprovider "github.com/sipeed/picoclaw/pkg/providers/oauth"
+	toolshared "github.com/sipeed/picoclaw/pkg/tools/shared"
 )
 
 const (
@@ -22,9 +23,11 @@ const (
 	// (codex-rs/codex-api/src/endpoint/search.rs: "alpha/search" relative to the
 	// ChatGPT Codex base URL). It is internal and unversioned: keep another
 	// backend enabled to fall back on.
-	openAISearchEndpoint        = "https://chatgpt.com/backend-api/codex/alpha/search"
-	openAISearchTimeout         = 60 * time.Second
-	openAISearchDefaultModel    = "gpt-5.5"
+	openAISearchEndpoint = "https://chatgpt.com/backend-api/codex/alpha/search"
+	openAISearchTimeout  = 60 * time.Second
+	// openAISearchDefaultModel is used when the turn's own model is not an
+	// OpenAI one (a non-Codex fallback); Codex passes its turn model.
+	openAISearchDefaultModel    = "gpt-6.1-sol"
 	openAISearchDefaultMaxToken = 2000
 	openAISearchUserAgent       = "codex_cli_rs/0.160.0 (picoclaw)"
 	openAISearchMaxErrorBody    = 512
@@ -34,6 +37,10 @@ const (
 // its text (U+E200 "cite" U+E202 "turn0search0" U+E201). They point into the
 // Codex client's own result store, which picoclaw does not have.
 var openAICitationMarker = regexp.MustCompile("[^]*")
+
+// openAISearchSessionNamespace derives a stable search session id per picoclaw
+// session, as Codex sends its thread id.
+var openAISearchSessionNamespace = uuid.MustParse("6f1c2a52-4d0e-4c39-9a57-2f3d8f0b7c11")
 
 // OpenAISearchProvider searches through OpenAI's standalone web search with
 // the ChatGPT (Codex) OAuth login.
@@ -86,9 +93,6 @@ func newOpenAISearchProvider(opts WebSearchToolOptions, client *http.Client) *Op
 		tokenSource = oauthprovider.CreateCodexTokenSource()
 	}
 	model := strings.TrimSpace(opts.OpenAIModel)
-	if model == "" {
-		model = openAISearchDefaultModel
-	}
 	maxTokens := opts.OpenAIMaxOutputTokens
 	if maxTokens <= 0 {
 		maxTokens = openAISearchDefaultMaxToken
@@ -118,8 +122,8 @@ func (p *OpenAISearchProvider) Search(ctx context.Context, query string, count i
 		responseLength = "medium"
 	}
 	body, err := json.Marshal(openAISearchRequest{
-		ID:    p.sessionID,
-		Model: p.model,
+		ID:    p.requestSessionID(ctx),
+		Model: p.requestModel(ctx),
 		Commands: openAISearchCommands{
 			SearchQuery:    []openAISearchQuery{{Q: query, Recency: openAISearchRecencyDays(rangeCode)}},
 			ResponseLength: responseLength,
@@ -174,6 +178,27 @@ func (p *OpenAISearchProvider) Search(ctx context.Context, query string, count i
 		return fmt.Sprintf("No results for: %s", query), nil
 	}
 	return fmt.Sprintf("Results for: %s (via OpenAI)\n\n%s", query, output), nil
+}
+
+// requestModel picks the model the search runs as: the configured one, else the
+// turn's model as Codex does, else the default when the turn ran on a model the
+// endpoint does not serve.
+func (p *OpenAISearchProvider) requestModel(ctx context.Context) string {
+	if p.model != "" {
+		return p.model
+	}
+	model := strings.TrimPrefix(strings.TrimSpace(toolshared.ToolModel(ctx)), "openai/")
+	if strings.HasPrefix(model, "gpt-") && !strings.Contains(model, "/") {
+		return model
+	}
+	return openAISearchDefaultModel
+}
+
+func (p *OpenAISearchProvider) requestSessionID(ctx context.Context) string {
+	if key := toolshared.ToolSessionKey(ctx); key != "" {
+		return uuid.NewSHA1(openAISearchSessionNamespace, []byte(key)).String()
+	}
+	return p.sessionID
 }
 
 // openAISearchRecencyDays maps the tool's range filter onto the endpoint's

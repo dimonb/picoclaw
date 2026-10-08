@@ -355,6 +355,7 @@ func TestCodexProvider_ChatRoundTrip(t *testing.T) {
 
 	provider := NewCodexProvider("test-token", "acc-123")
 	provider.client = createOpenAITestClient(server.URL, "test-token", "acc-123")
+	provider.enableWebSearch = true // off by default; this test covers the hosted-tool path
 
 	messages := []Message{{Role: "user", Content: "Hello"}}
 	// Pass native_search so Codex injects built-in web search (mirrors agent loop when prefer_native is true).

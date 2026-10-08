@@ -1019,7 +1019,8 @@ type SogouConfig struct {
 // `picoclaw auth login --provider openai`, not an API key.
 type OpenAISearchConfig struct {
 	Enabled bool `json:"enabled" env:"PICOCLAW_TOOLS_WEB_OPENAI_ENABLED"`
-	// Model is sent with the request; the endpoint requires one.
+	// Model overrides the model the search runs as. Empty follows the turn's
+	// model, as Codex does.
 	Model string `json:"model" env:"PICOCLAW_TOOLS_WEB_OPENAI_MODEL"`
 	// MaxOutputTokens caps the returned page text (uncapped it runs to ~20K chars).
 	MaxOutputTokens int `json:"max_output_tokens" env:"PICOCLAW_TOOLS_WEB_OPENAI_MAX_OUTPUT_TOKENS"`

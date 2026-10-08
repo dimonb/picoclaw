@@ -95,6 +95,14 @@ func ToolSessionKey(ctx context.Context) string {
 	return toolshared.ToolSessionKey(ctx)
 }
 
+func WithToolModel(ctx context.Context, model string) context.Context {
+	return toolshared.WithToolModel(ctx, model)
+}
+
+func ToolModel(ctx context.Context) string {
+	return toolshared.ToolModel(ctx)
+}
+
 func ToolSessionScope(ctx context.Context) *session.SessionScope {
 	return toolshared.ToolSessionScope(ctx)
 }

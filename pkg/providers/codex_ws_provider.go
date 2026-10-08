@@ -355,8 +355,12 @@ func NewCodexWSProvider(token, accountID string) *CodexWSProvider {
 	}
 	_ = token // token fetched fresh via tokenSource
 	p := &CodexWSProvider{
-		tokenSource:     createCodexTokenSource(),
-		enableWebSearch: true,
+		tokenSource: createCodexTokenSource(),
+		// The hosted web_search tool is off: the Codex backend rejects it on
+		// Responses Lite ("not supported by rustponsesapi"), and Codex itself
+		// searches through the standalone endpoint, which web_search's OpenAI
+		// backend calls.
+		enableWebSearch: false,
 		baseURL:         baseURL,
 		sessions:        make(map[string]*wsSessionState),
 		done:            make(chan struct{}),

@@ -366,7 +366,6 @@ func DefaultConfig() *Config {
 				},
 				OpenAI: OpenAISearchConfig{
 					Enabled:         true,
-					Model:           "gpt-5.5",
 					MaxOutputTokens: 2000,
 				},
 				Gemini: GeminiSearchConfig{

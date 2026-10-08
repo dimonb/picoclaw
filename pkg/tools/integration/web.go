@@ -2072,6 +2072,9 @@ func searchAndLog(
 		"range":       rangeCode,
 		"duration_ms": time.Since(start).Milliseconds(),
 	}
+	if openai, ok := provider.(*OpenAISearchProvider); ok {
+		fields["model"] = openai.requestModel(ctx)
+	}
 	if err != nil {
 		fields["error"] = err.Error()
 		logger.WarnCF("web_search", "web_search (client-side) failed", fields)

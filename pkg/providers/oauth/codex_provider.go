@@ -45,9 +45,13 @@ func NewCodexProvider(token, accountID string) *CodexProvider {
 	}
 	client := openai.NewClient(opts...)
 	return &CodexProvider{
-		client:          &client,
-		accountID:       accountID,
-		enableWebSearch: true,
+		client:    &client,
+		accountID: accountID,
+		// The hosted web_search tool is off: the Codex backend rejects it on
+		// Responses Lite ("not supported by rustponsesapi"), and Codex itself
+		// searches through the standalone endpoint, which web_search's OpenAI
+		// backend calls.
+		enableWebSearch: false,
 	}
 }
 
