@@ -67,15 +67,9 @@ func (p *Pipeline) CallLLM(
 			}
 			return false
 		}()
-	if exec.useNativeSearch {
-		filtered := make([]providers.ToolDefinition, 0, len(exec.providerToolDefs))
-		for _, td := range exec.providerToolDefs {
-			if td.Function.Name != "web_search" {
-				filtered = append(filtered, td)
-			}
-		}
-		exec.providerToolDefs = filtered
-	}
+	// The client-side web_search tool stays in the list even with native search:
+	// a native provider swaps it for its hosted tool itself, and keeping it lets a
+	// fallback provider, or a provider whose hosted tool was rejected, still search.
 
 	exec.callMessages = exec.messages
 	if exec.gracefulTerminal {

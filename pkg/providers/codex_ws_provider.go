@@ -257,6 +257,16 @@ type wsOutputItem struct {
 	Name      string          `json:"name,omitempty"`
 	CallID    string          `json:"call_id,omitempty"`
 	Arguments string          `json:"arguments,omitempty"`
+	Status    string          `json:"status,omitempty"`
+	// Action is set on web_search_call items: what the hosted search did.
+	Action *wsWebSearchAction `json:"action,omitempty"`
+}
+
+type wsWebSearchAction struct {
+	Type    string   `json:"type"`
+	Query   string   `json:"query,omitempty"`
+	Queries []string `json:"queries,omitempty"`
+	URL     string   `json:"url,omitempty"`
 }
 
 type wsContentPart struct {
@@ -331,6 +341,11 @@ type CodexWSProvider struct {
 	// turn would pay the rejection round-trip again.
 	effortMu        sync.Mutex
 	effortFallbacks map[string]string
+
+	// nativeSearchOffUntil (unix nanos) suspends the hosted web_search tool after
+	// the server rejected it, so turns stop paying the rejection round-trip and
+	// use the client-side web_search function instead until it is retried.
+	nativeSearchOffUntil atomic.Int64
 }
 
 func NewCodexWSProvider(token, accountID string) *CodexWSProvider {
@@ -358,6 +373,48 @@ func (p *CodexWSProvider) GetDefaultModel() string { return codexDefaultModel }
 func (p *CodexWSProvider) SupportsThinking() bool  { return true }
 func (p *CodexWSProvider) SupportsNativeSearch() bool {
 	return p.enableWebSearch
+}
+
+// nativeSearchSuspendFor is how long a hosted web_search rejection keeps the
+// provider on the client-side tool before it tries the hosted one again.
+const nativeSearchSuspendFor = time.Hour
+
+func (p *CodexWSProvider) nativeSearchSuspended() bool {
+	return time.Now().UnixNano() < p.nativeSearchOffUntil.Load()
+}
+
+// isHostedSearchRejection reports whether err is the server refusing the
+// hosted web_search tool ("Hosted tool 'web_search' requires authorization and
+// metering that are not supported ..."), which no retry of the same request
+// can get past.
+func isHostedSearchRejection(err error) bool {
+	var serverErr *wsServerError
+	if !errors.As(err, &serverErr) {
+		return false
+	}
+	msg := strings.ToLower(serverErr.Msg)
+	return strings.Contains(msg, "hosted tool") && strings.Contains(msg, "web_search")
+}
+
+// logHostedWebSearch records a search Codex ran with its built-in (hosted)
+// web_search tool. It happens server-side and never goes through picoclaw's
+// client-side web_search tool, so this is the only trace of it.
+func logHostedWebSearch(item wsOutputItem) {
+	fields := map[string]any{"status": item.Status}
+	if a := item.Action; a != nil {
+		fields["action"] = a.Type
+		queries := a.Queries
+		if len(queries) == 0 && a.Query != "" {
+			queries = []string{a.Query}
+		}
+		if len(queries) > 0 {
+			fields["queries"] = strings.Join(queries, " | ")
+		}
+		if a.URL != "" {
+			fields["url"] = a.URL
+		}
+	}
+	logger.InfoCF("provider.codex_ws", "web_search (Codex hosted)", fields)
 }
 
 // Close tears down all WebSocket connections and stops the cleanup goroutine.
@@ -637,6 +694,8 @@ func (p *CodexWSProvider) drainStream(
 				if sb, ok := argsByItem[item.ID]; ok {
 					item.Arguments = sb.String()
 				}
+			} else if item.Type == "web_search_call" {
+				logHostedWebSearch(item)
 			}
 			itemsByID[item.ID] = item
 			if onItem != nil {
@@ -811,7 +870,7 @@ func (p *CodexWSProvider) chatStream(
 				"reason":    substitutionReason,
 			})
 	}
-	useNativeSearch := p.enableWebSearch && (options["native_search"] == true)
+	useNativeSearch := p.enableWebSearch && (options["native_search"] == true) && !p.nativeSearchSuspended()
 	wsTools := translateToolsForWS(tools, useNativeSearch)
 
 	// Separate system prompt from conversation messages.
@@ -1009,6 +1068,18 @@ func (p *CodexWSProvider) chatStream(
 				effortRetries++
 				continue
 			}
+		}
+		// The server can refuse the hosted web_search tool outright (it did on
+		// 2026-10-08 for every model). Drop it for a while and resend with the
+		// client-side web_search function, which the tool list still carries,
+		// rather than failing the turn and cooling down every codex model.
+		if useNativeSearch && isHostedSearchRejection(lastErr) {
+			useNativeSearch = false
+			p.nativeSearchOffUntil.Store(time.Now().Add(nativeSearchSuspendFor).UnixNano())
+			wsTools = translateToolsForWS(tools, false)
+			logger.WarnCF("provider.codex_ws", "Server rejected the hosted web_search tool, retrying with the client-side one",
+				map[string]any{"error": lastErr.Error(), "suspend_for": nativeSearchSuspendFor.String()})
+			continue
 		}
 		// Server-side rejection (usage limit / failed response): reconnecting
 		// would just hit the same error. Fail fast so the fallback chain can
