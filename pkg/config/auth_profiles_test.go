@@ -29,7 +29,7 @@ func TestLoadConfig_AuthProfilesExpandIntoFallbackEntries(t *testing.T) {
 		t.Fatalf("LoadConfig: %v", err)
 	}
 
-	var names []string
+	names := make([]string, 0, len(cfg.ModelList))
 	for _, m := range cfg.ModelList {
 		names = append(names, m.ModelName)
 	}
@@ -65,7 +65,7 @@ func TestLoadConfig_AuthProfilesExpandIntoFallbackEntries(t *testing.T) {
 		t.Errorf("sol61@b lost the entry's settings: %+v", b)
 	}
 
-	if err := SaveConfig(configPath, cfg); err != nil {
+	if err = SaveConfig(configPath, cfg); err != nil {
 		t.Fatalf("SaveConfig: %v", err)
 	}
 	saved, err := os.ReadFile(configPath)

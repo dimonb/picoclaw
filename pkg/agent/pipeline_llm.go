@@ -725,11 +725,13 @@ func providerForFallbackCandidate(
 	candidate providers.FallbackCandidate,
 ) (providers.LLMProvider, error) {
 	if agent != nil {
-		if cp, ok := agent.CandidateProviders[candidate.StableKey()]; ok && cp != nil {
-			return cp, nil
-		}
-		if cp, ok := agent.CandidateProviders[providers.ModelKey(candidate.Provider, candidate.Model)]; ok && cp != nil {
-			return cp, nil
+		for _, key := range []string{
+			candidate.StableKey(),
+			providers.ModelKey(candidate.Provider, candidate.Model),
+		} {
+			if cp, ok := agent.CandidateProviders[key]; ok && cp != nil {
+				return cp, nil
+			}
 		}
 	}
 	if activeProvider == nil {

@@ -2059,7 +2059,7 @@ func expandAuthProfileModels(models []*ModelConfig) []*ModelConfig {
 
 		primary := *m
 		primary.profileFallbacks = nil
-		var virtual []*ModelConfig
+		virtual := make([]*ModelConfig, 0, len(profiles)-1)
 		for _, profile := range profiles[1:] {
 			entry := *m
 			entry.ModelName = m.ModelName + "@" + profile
