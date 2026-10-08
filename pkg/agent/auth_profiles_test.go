@@ -41,7 +41,7 @@ func TestAuthProfilesFailOverAcrossLoginsBeforeModels(t *testing.T) {
 	}
 
 	candidates := resolveModelCandidates(cfg, "", "sol61", []string{"gpt-5.5"})
-	var order []string
+	order := make([]string, 0, len(candidates))
 	for _, c := range candidates {
 		order = append(order, c.DisplayName)
 	}
