@@ -199,8 +199,7 @@ func (p *Pipeline) CallLLM(
 				ts.agent,
 				exec.activeProvider,
 				exec.activeCandidates,
-				candidate.Provider,
-				candidate.Model,
+				candidate,
 			)
 			if err != nil {
 				return nil, err
@@ -255,7 +254,11 @@ func (p *Pipeline) CallLLM(
 					"agent",
 					fmt.Sprintf("Fallback: succeeded with %s/%s after %d attempts",
 						fbResult.Provider, fbResult.Model, len(fbResult.Attempts)+1),
-					map[string]any{"agent_id": ts.agent.ID, "iteration": iteration},
+					map[string]any{
+						"agent_id":   ts.agent.ID,
+						"iteration":  iteration,
+						"model_name": modelAliasFromCandidateIdentityKey(fbResult.IdentityKey),
+					},
 				)
 			}
 			for _, candidate := range exec.activeCandidates {
@@ -719,16 +722,18 @@ func providerForFallbackCandidate(
 	agent *AgentInstance,
 	activeProvider providers.LLMProvider,
 	activeCandidates []providers.FallbackCandidate,
-	provider string,
-	model string,
+	candidate providers.FallbackCandidate,
 ) (providers.LLMProvider, error) {
 	if agent != nil {
-		if cp, ok := agent.CandidateProviders[providers.ModelKey(provider, model)]; ok && cp != nil {
+		if cp, ok := agent.CandidateProviders[candidate.StableKey()]; ok && cp != nil {
+			return cp, nil
+		}
+		if cp, ok := agent.CandidateProviders[providers.ModelKey(candidate.Provider, candidate.Model)]; ok && cp != nil {
 			return cp, nil
 		}
 	}
 	if activeProvider == nil {
-		return nil, fmt.Errorf("fallback model %q has no active provider", model)
+		return nil, fmt.Errorf("fallback model %q has no active provider", candidate.Model)
 	}
 	return activeProvider, nil
 }

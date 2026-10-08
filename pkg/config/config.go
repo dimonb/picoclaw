@@ -847,6 +847,12 @@ type ModelConfig struct {
 
 	APIKeys SecureStrings `json:"api_keys,omitzero" yaml:"api_keys,omitempty"` // API authentication keys (multiple keys for failover)
 
+	// AuthProfiles lists the stored OAuth logins this model runs on, in
+	// failover order ("default" is the plain `auth login`; others come from
+	// `auth login --profile <name>`). Load expands every profile after the
+	// first into a "<model_name>@<profile>" entry that the entry fails over to.
+	AuthProfiles []string `json:"auth_profiles,omitempty"`
+
 	// Enabled indicates whether this model entry is active. When omitted in
 	// existing configs, the field is inferred during load: models with API keys
 	// or the reserved "local-model" name are auto-enabled.
@@ -857,6 +863,27 @@ type ModelConfig struct {
 	// isVirtual marks this model as a virtual model generated from multi-key expansion.
 	// Virtual models should not be persisted to config files.
 	isVirtual bool
+	// profileFallbacks names the "<model_name>@<profile>" entries expanded from
+	// AuthProfiles. Kept apart from Fallbacks so that saving the config does
+	// not write them back and stack them up on the next load.
+	profileFallbacks []string
+}
+
+// AuthProfile returns the OAuth login this entry authenticates with: the first
+// of AuthProfiles, or "" for the default login.
+func (c *ModelConfig) AuthProfile() string {
+	for _, profile := range c.AuthProfiles {
+		if profile = strings.TrimSpace(profile); profile != "" {
+			return profile
+		}
+	}
+	return ""
+}
+
+// ProfileFallbacks returns the model names expanded from AuthProfiles, in
+// failover order, for the caller to try right after this entry.
+func (c *ModelConfig) ProfileFallbacks() []string {
+	return c.profileFallbacks
 }
 
 // APIKey returns the first API key from apiKeys
@@ -1681,6 +1708,7 @@ func LoadConfig(path string) (*Config, error) {
 
 	// Expand multi-key configs into separate entries for key-level failover
 	cfg.ModelList = expandMultiKeyModels(cfg.ModelList)
+	cfg.ModelList = expandAuthProfileModels(cfg.ModelList)
 
 	// Validate model_list for uniqueness and required fields
 	if err = cfg.ValidateModelList(); err != nil {
@@ -2004,6 +2032,47 @@ func expandMultiKeyModels(models []*ModelConfig) []*ModelConfig {
 		expanded = append(expanded, primaryEntry)
 	}
 
+	return expanded
+}
+
+// expandAuthProfileModels gives every OAuth login after the first in
+// AuthProfiles its own virtual "<model_name>@<profile>" entry, so each login is
+// a separate fallback candidate with its own provider and its own cooldown:
+// one account hitting its usage limit then moves the turn to the next one.
+func expandAuthProfileModels(models []*ModelConfig) []*ModelConfig {
+	expanded := make([]*ModelConfig, 0, len(models))
+	for _, m := range models {
+		var profiles []string
+		seen := make(map[string]bool)
+		for _, profile := range m.AuthProfiles {
+			profile = strings.ToLower(strings.TrimSpace(profile))
+			if profile == "" || seen[profile] {
+				continue
+			}
+			seen[profile] = true
+			profiles = append(profiles, profile)
+		}
+		if len(profiles) <= 1 {
+			expanded = append(expanded, m)
+			continue
+		}
+
+		primary := *m
+		primary.profileFallbacks = nil
+		var virtual []*ModelConfig
+		for _, profile := range profiles[1:] {
+			entry := *m
+			entry.ModelName = m.ModelName + "@" + profile
+			entry.AuthProfiles = []string{profile}
+			entry.Fallbacks = nil
+			entry.isVirtual = true
+			entry.profileFallbacks = nil
+			virtual = append(virtual, &entry)
+			primary.profileFallbacks = append(primary.profileFallbacks, entry.ModelName)
+		}
+		expanded = append(expanded, &primary)
+		expanded = append(expanded, virtual...)
+	}
 	return expanded
 }
 

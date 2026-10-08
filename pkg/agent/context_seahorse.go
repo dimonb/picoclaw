@@ -189,8 +189,7 @@ func agentLoopToCompleteFn(al *AgentLoop) seahorse.CompleteFn {
 						agent,
 						agent.Provider,
 						candidates,
-						candidate.Provider,
-						candidate.Model,
+						candidate,
 					)
 					if perr != nil {
 						return nil, perr
@@ -221,8 +220,7 @@ func agentLoopToCompleteFn(al *AgentLoop) seahorse.CompleteFn {
 				agent,
 				agent.Provider,
 				candidates,
-				candidates[0].Provider,
-				candidates[0].Model,
+				candidates[0],
 			); perr == nil {
 				provider = p
 			}

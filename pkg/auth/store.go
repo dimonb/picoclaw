@@ -45,6 +45,20 @@ func (c *AuthCredential) NeedsRefresh() bool {
 	return time.Now().Add(5 * time.Minute).After(c.ExpiresAt)
 }
 
+// DefaultProfile names the credential stored under the bare provider key.
+const DefaultProfile = "default"
+
+// ProfileKey returns the store key for one login of a provider: the bare
+// provider for the default profile, "<provider>:<profile>" for any other, so
+// several accounts of one provider can be stored side by side.
+func ProfileKey(provider, profile string) string {
+	profile = strings.ToLower(strings.TrimSpace(profile))
+	if profile == "" || profile == DefaultProfile {
+		return provider
+	}
+	return provider + ":" + profile
+}
+
 func authFilePath() string {
 	return filepath.Join(config.GetHome(), "auth.json")
 }

@@ -137,6 +137,7 @@ This design also enables **multi-agent support** with flexible provider selectio
 | `streaming.enabled` | bool | No | Opt-in for provider streaming on this model entry. Defaults to `false` and also requires the active channel's `settings.streaming.enabled` to be `true`. |
 | `rpm` | int | No | Per-minute request rate limit                                                                                                                                                                                                               |
 | `fallbacks` | string[] | No | Fallback model names for automatic failover                                                                                                                                                                                                 |
+| `auth_profiles` | string[] | No | OAuth logins to run this model on, in failover order (`codex-ws`, and `openai` with `auth_method: oauth`). See [Several ChatGPT accounts](#several-chatgpt-accounts-auth_profiles) |
 | `enabled` | bool | No | Whether this model entry is active (default: `true`)                                                                                                                                                                                        |
 
 When streaming is disabled, omit the `streaming` block. Writing `"streaming": {"enabled": false}` is optional and not needed in generated or hand-written config.
@@ -562,6 +563,42 @@ rejects the configured level, PicoClaw reads the supported list out of the
 rejection, retries on the nearest level, and remembers the substitution for the
 rest of the process — the turn succeeds and logs
 `Model rejected the reasoning effort, retrying with the nearest supported one`.
+
+#### Several ChatGPT accounts (`auth_profiles`)
+
+One ChatGPT account has one usage quota. To keep working when it runs out, log
+in to more accounts as named profiles and list them on the model:
+
+```bash
+picoclaw auth login --provider openai                      # profile "default"
+picoclaw auth login --provider openai --profile b --device-code
+```
+
+```json
+{
+  "model_list": [
+    {"model_name": "sol61", "provider": "codex-ws", "model": "gpt-6.1-sol",
+     "auth_method": "oauth", "auth_profiles": ["default", "b"]},
+    {"model_name": "gpt-5.5", "provider": "codex-ws", "model": "gpt-5.5",
+     "auth_method": "oauth", "auth_profiles": ["default", "b"]}
+  ],
+  "agents": {"defaults": {"model_name": "sol61", "model_fallbacks": ["gpt-5.5"]}}
+}
+```
+
+Every profile after the first becomes its own entry named
+`<model_name>@<profile>` (`sol61@b`), tried right after the entry and before
+the next model: `sol61` → `sol61@b` → `gpt-5.5` → `gpt-5.5@b`. Each one has its
+own connection and its own cooldown. When an account answers
+`usage_limit_reached`, it is skipped until the reset time the backend reports,
+and the turn continues on the next account. The expanded entries are not written
+back to `config.json`. You can also select one directly (`/model sol61@b`).
+
+A named profile is stored in `auth.json` under `openai:<profile>`; `picoclaw auth
+status` lists it and `picoclaw auth logout --provider openai --profile b` removes
+only it. Keep each account in one `auth.json`: OpenAI rotates the refresh token
+on every refresh, so a second copy of the same login is signed out by the
+first refresh.
 
 ### Provider Architecture
 

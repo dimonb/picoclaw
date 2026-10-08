@@ -8,6 +8,7 @@ func newLoginCommand() *cobra.Command {
 		useDeviceCode bool
 		useOauth      bool
 		noBrowser     bool
+		profile       string
 	)
 
 	cmd := &cobra.Command{
@@ -15,7 +16,7 @@ func newLoginCommand() *cobra.Command {
 		Short: "Login via OAuth or paste token",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return authLoginCmd(provider, useDeviceCode, useOauth, noBrowser)
+			return authLoginCmd(provider, profile, useDeviceCode, useOauth, noBrowser)
 		},
 	}
 
@@ -27,6 +28,10 @@ func newLoginCommand() *cobra.Command {
 	cmd.Flags().BoolVar(
 		&useOauth, "setup-token", false,
 		"Use setup-token flow for Anthropic (from `claude setup-token`)",
+	)
+	cmd.Flags().StringVar(
+		&profile, "profile", "",
+		"Store the login as a named profile (openai only), so several accounts can back auth_profiles",
 	)
 	_ = cmd.MarkFlagRequired("provider")
 
