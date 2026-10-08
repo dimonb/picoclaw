@@ -117,6 +117,47 @@ func TestSendFileTool_Success(t *testing.T) {
 	}
 }
 
+func TestSendFileTool_SeveralFilesInOneCall(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "solution_92.png")
+	second := filepath.Join(dir, "solution_93.png")
+	for _, f := range []string{first, second} {
+		if err := os.WriteFile(f, []byte("fake png"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	store := media.NewFileMediaStore()
+	tool := NewSendFileTool(dir, true, 0, store)
+	tool.SetContext("telegram", "chat456")
+
+	result := tool.Execute(context.Background(), map[string]any{
+		"path":  first,
+		"paths": []any{second, first},
+	})
+	if result.IsError {
+		t.Fatalf("unexpected error: %s", result.ForLLM)
+	}
+	if len(result.Media) != 2 || !result.ResponseHandled {
+		t.Fatalf("media = %v, handled = %v; want both files in one handled result", result.Media, result.ResponseHandled)
+	}
+	for i, want := range []string{"solution_92.png", "solution_93.png"} {
+		_, meta, err := store.ResolveWithMeta(result.Media[i])
+		if err != nil || meta.Filename != want {
+			t.Errorf("media[%d] = %q (err %v), want %q", i, meta.Filename, err, want)
+		}
+	}
+
+	// One bad path sends nothing.
+	bad := tool.Execute(context.Background(), map[string]any{
+		"path":  first,
+		"paths": []any{filepath.Join(dir, "missing.png")},
+	})
+	if !bad.IsError || len(bad.Media) != 0 {
+		t.Fatalf("bad path: result = %+v, want an error and no media", bad)
+	}
+}
+
 func TestSendFileTool_CustomFilename(t *testing.T) {
 	dir := t.TempDir()
 	testFile := filepath.Join(dir, "img.jpg")

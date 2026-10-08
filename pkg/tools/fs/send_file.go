@@ -53,7 +53,8 @@ func NewSendFileTool(
 
 func (t *SendFileTool) Name() string { return "send_file" }
 func (t *SendFileTool) Description() string {
-	return "Send a local file (image, document, etc.) to the user on the current chat channel."
+	return "Send local files (images, documents, etc.) to the user on the current chat channel. " +
+		"Sending ends your turn, so send every file in one call: use paths for several files."
 }
 
 func (t *SendFileTool) Parameters() map[string]any {
@@ -64,9 +65,14 @@ func (t *SendFileTool) Parameters() map[string]any {
 				"type":        "string",
 				"description": "Path to the local file. Relative paths are resolved from workspace.",
 			},
+			"paths": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "More files to send in the same call, in order after path.",
+			},
 			"filename": map[string]any{
 				"type":        "string",
-				"description": "Optional display filename. Defaults to the basename of path.",
+				"description": "Optional display filename for path. Defaults to its basename.",
 			},
 		},
 		"required": []string{"path"},
@@ -105,44 +111,75 @@ func (t *SendFileTool) Execute(ctx context.Context, args map[string]any) *ToolRe
 		return ErrorResult("media store not configured")
 	}
 
+	paths := []string{path}
+	if extra, ok := args["paths"].([]any); ok {
+		for _, p := range extra {
+			if ps, ok := p.(string); ok && strings.TrimSpace(ps) != "" && ps != path {
+				paths = append(paths, ps)
+			}
+		}
+	}
+	filename, _ := args["filename"].(string)
+
+	// Validate every file before registering any, so a bad path sends nothing.
+	resolvedPaths := make([]string, 0, len(paths))
+	for _, p := range paths {
+		resolved, errResult := t.checkFile(p)
+		if errResult != nil {
+			return errResult
+		}
+		resolvedPaths = append(resolvedPaths, resolved)
+	}
+
+	scope := fmt.Sprintf("tool:send_file:%s:%s", channel, chatID)
+	refs := make([]string, 0, len(resolvedPaths))
+	names := make([]string, 0, len(resolvedPaths))
+	for i, resolved := range resolvedPaths {
+		name := filepath.Base(resolved)
+		if i == 0 && filename != "" {
+			name = filename
+		}
+		ref, err := t.mediaStore.Store(resolved, media.MediaMeta{
+			Filename:      name,
+			ContentType:   detectMediaType(resolved),
+			Source:        "tool:send_file",
+			CleanupPolicy: media.CleanupPolicyForgetOnly,
+		}, scope)
+		if err != nil {
+			return ErrorResult(fmt.Sprintf("failed to register media: %v", err))
+		}
+		refs = append(refs, ref)
+		names = append(names, fmt.Sprintf("%q", name))
+	}
+
+	msg := fmt.Sprintf("File %s sent to user", names[0])
+	if len(names) > 1 {
+		msg = fmt.Sprintf("Files %s sent to user", strings.Join(names, ", "))
+	}
+	return MediaResult(msg, refs).WithResponseHandled()
+}
+
+// checkFile resolves path against the workspace rules and checks it is a
+// regular file within the size limit.
+func (t *SendFileTool) checkFile(path string) (string, *ToolResult) {
 	resolved, err := validatePathWithAllowPaths(path, t.workspace, t.restrict, t.allowPaths)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("invalid path: %v", err))
+		return "", ErrorResult(fmt.Sprintf("invalid path %q: %v", path, err))
 	}
-
 	info, err := os.Stat(resolved)
 	if err != nil {
-		return ErrorResult(fmt.Sprintf("file not found: %v", err))
+		return "", ErrorResult(fmt.Sprintf("file not found: %v", err))
 	}
 	if info.IsDir() {
-		return ErrorResult("path is a directory, expected a file")
+		return "", ErrorResult(fmt.Sprintf("%q is a directory, expected a file", path))
 	}
 	if info.Size() > int64(t.maxFileSize) {
-		return ErrorResult(fmt.Sprintf(
-			"file too large: %d bytes (max %d bytes)",
-			info.Size(), t.maxFileSize,
+		return "", ErrorResult(fmt.Sprintf(
+			"file too large: %q is %d bytes (max %d bytes)",
+			path, info.Size(), t.maxFileSize,
 		))
 	}
-
-	filename, _ := args["filename"].(string)
-	if filename == "" {
-		filename = filepath.Base(resolved)
-	}
-
-	mediaType := detectMediaType(resolved)
-	scope := fmt.Sprintf("tool:send_file:%s:%s", channel, chatID)
-
-	ref, err := t.mediaStore.Store(resolved, media.MediaMeta{
-		Filename:      filename,
-		ContentType:   mediaType,
-		Source:        "tool:send_file",
-		CleanupPolicy: media.CleanupPolicyForgetOnly,
-	}, scope)
-	if err != nil {
-		return ErrorResult(fmt.Sprintf("failed to register media: %v", err))
-	}
-
-	return MediaResult(fmt.Sprintf("File %q sent to user", filename), []string{ref}).WithResponseHandled()
+	return resolved, nil
 }
 
 // detectMediaType determines the MIME type of a file.
