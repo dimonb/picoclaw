@@ -449,19 +449,31 @@ func buildAllowReadPatterns(cfg *config.Config) []*regexp.Regexp {
 	}
 
 	compiled := compilePatterns(configured)
-	mediaDirPattern := regexp.MustCompile(mediaTempDirPattern())
-	for _, pattern := range compiled {
-		if pattern.String() == mediaDirPattern.String() {
-			return compiled
-		}
+	// Inbound media lands in the temp dir and, with the archive on, in the
+	// archive root; both sit outside the workspace, and the [image:...] tags
+	// the model gets point there.
+	dirs := []string{media.TempDir()}
+	if cfg != nil && cfg.Media.Archive.Enabled && strings.TrimSpace(cfg.Media.Archive.Root) != "" {
+		dirs = append(dirs, cfg.Media.Archive.Root)
 	}
-
-	return append(compiled, mediaDirPattern)
+	for _, dir := range dirs {
+		compiled = appendPatternOnce(compiled, regexp.MustCompile(dirPattern(dir)))
+	}
+	return compiled
 }
 
-func mediaTempDirPattern() string {
+func appendPatternOnce(patterns []*regexp.Regexp, p *regexp.Regexp) []*regexp.Regexp {
+	for _, existing := range patterns {
+		if existing.String() == p.String() {
+			return patterns
+		}
+	}
+	return append(patterns, p)
+}
+
+func dirPattern(dir string) string {
 	sep := regexp.QuoteMeta(string(os.PathSeparator))
-	return "^" + regexp.QuoteMeta(filepath.Clean(media.TempDir())) + "(?:" + sep + "|$)"
+	return "^" + regexp.QuoteMeta(filepath.Clean(dir)) + "(?:" + sep + "|$)"
 }
 
 // Close releases resources held by the agent's session store.

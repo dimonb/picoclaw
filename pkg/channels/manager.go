@@ -2028,8 +2028,22 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 				"error":   err.Error(),
 			})
 		}
+		// Detach the old instance now, while it is still the one under this
+		// name. A changed channel is in both removed and added, so a deferred
+		// lookup by name would find (and close) the new instance's worker.
+		if m.mux != nil {
+			m.unregisterChannelHTTPHandler(name, channel)
+		}
+		oldWorker := m.workers[name]
+		delete(m.workers, name)
+		delete(m.channels, name)
 		deferFuncs = append(deferFuncs, func() {
-			m.UnregisterChannel(name)
+			if oldWorker != nil {
+				close(oldWorker.queue)
+				<-oldWorker.done
+				close(oldWorker.mediaQueue)
+				<-oldWorker.mediaDone
+			}
 		})
 	}
 	dispatchCtx, cancel := context.WithCancel(ctx)
