@@ -1461,6 +1461,9 @@ type WebSearchTool struct {
 	provider         SearchProvider
 	maxResults       int
 	providerResolver func(query string) (SearchProvider, int)
+	// fallbackResolver picks a backend without OpenAI, for when the OpenAI
+	// search (an internal, unversioned endpoint) fails.
+	fallbackResolver func(query string) (SearchProvider, int)
 }
 
 type WebSearchToolOptions struct {
@@ -1480,6 +1483,13 @@ type WebSearchToolOptions struct {
 	SogouEnabled          bool
 	DuckDuckGoMaxResults  int
 	DuckDuckGoEnabled     bool
+	OpenAIEnabled         bool
+	OpenAIModel           string
+	OpenAIMaxOutputTokens int
+	// OpenAITokenSource and OpenAIEndpoint override the Codex OAuth login and
+	// the endpoint (tests).
+	OpenAITokenSource     func() (string, string, error)
+	OpenAIEndpoint        string
 	GeminiAPIKey          string
 	GeminiModel           string
 	GeminiMaxResults      int
@@ -1520,6 +1530,9 @@ func WebSearchToolOptionsFromConfig(cfg *config.Config) WebSearchToolOptions {
 		SogouEnabled:          cfg.Tools.Web.Sogou.Enabled,
 		DuckDuckGoMaxResults:  cfg.Tools.Web.DuckDuckGo.MaxResults,
 		DuckDuckGoEnabled:     cfg.Tools.Web.DuckDuckGo.Enabled,
+		OpenAIEnabled:         cfg.Tools.Web.OpenAI.Enabled,
+		OpenAIModel:           cfg.Tools.Web.OpenAI.Model,
+		OpenAIMaxOutputTokens: cfg.Tools.Web.OpenAI.MaxOutputTokens,
 		GeminiAPIKey:          cfg.Tools.Web.Gemini.APIKey.String(),
 		GeminiModel:           cfg.Tools.Web.Gemini.Model,
 		GeminiMaxResults:      cfg.Tools.Web.Gemini.MaxResults,
@@ -1553,6 +1566,7 @@ func ResolveWebSearchProviderName(opts WebSearchToolOptions, query string) (stri
 
 var (
 	knownWebSearchProviders = []string{
+		"openai",
 		"sogou",
 		"duckduckgo",
 		"gemini",
@@ -1564,7 +1578,7 @@ var (
 		"glm_search",
 		"baidu_search",
 	}
-	autoPrimaryWebSearchProviders  = []string{"perplexity", "brave", "kagi", "searxng", "tavily", "gemini"}
+	autoPrimaryWebSearchProviders  = []string{"openai", "perplexity", "brave", "kagi", "searxng", "tavily", "gemini"}
 	autoFallbackWebSearchProviders = []string{"baidu_search", "glm_search"}
 )
 
@@ -1580,6 +1594,8 @@ func isKnownWebSearchProvider(name string) bool {
 
 func (opts WebSearchToolOptions) providerReady(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "openai":
+		return opts.OpenAIEnabled && (opts.OpenAITokenSource != nil || openAICredentialReady())
 	case "sogou":
 		return opts.SogouEnabled
 	case "duckduckgo":
@@ -1656,6 +1672,15 @@ func (opts WebSearchToolOptions) providerByName(name string) (SearchProvider, in
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "", "auto":
 		return nil, 0, nil
+	case "openai":
+		if !opts.providerReady("openai") {
+			return nil, 0, nil
+		}
+		client, err := utils.CreateHTTPClient(opts.Proxy, openAISearchTimeout)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to create HTTP client for OpenAI search: %w", err)
+		}
+		return newOpenAISearchProvider(opts, client), 10, nil
 	case "sogou":
 		if !opts.providerReady("sogou") {
 			return nil, 0, nil
@@ -1913,11 +1938,21 @@ func NewWebSearchTool(opts WebSearchToolOptions) (*WebSearchTool, error) {
 		return nil, nil
 	}
 
-	return &WebSearchTool{
+	tool := &WebSearchTool{
 		provider:         provider,
 		maxResults:       maxResults,
 		providerResolver: resolver,
-	}, nil
+	}
+	if opts.providerReady("openai") {
+		withoutOpenAI := opts
+		withoutOpenAI.OpenAIEnabled = false
+		fallback, err := withoutOpenAI.buildProviderResolver()
+		if err != nil {
+			return nil, err
+		}
+		tool.fallbackResolver = fallback
+	}
+	return tool, nil
 }
 
 func (t *WebSearchTool) Name() string {
@@ -1972,9 +2007,13 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]any) *ToolR
 	if err != nil {
 		return ErrorResult(err.Error())
 	}
-	count := maxResults
+	requested := 0
 	if count64 > 0 && count64 <= 10 {
-		count = min(int(count64), maxResults)
+		requested = int(count64)
+	}
+	count := maxResults
+	if requested > 0 {
+		count = min(requested, maxResults)
 	}
 
 	rangeCode, err := normalizeSearchRange("")
@@ -1992,8 +2031,36 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]any) *ToolR
 		}
 	}
 
-	// Says which backend served the search: provider-hosted searches (Codex's
-	// built-in web_search) never reach this tool and are logged by the provider.
+	result, err := searchAndLog(ctx, provider, query, count, rangeCode)
+	if _, isOpenAI := provider.(*OpenAISearchProvider); err != nil && isOpenAI && t.fallbackResolver != nil {
+		if fallback, fallbackMax := t.fallbackResolver(query); fallback != nil {
+			fallbackCount := fallbackMax
+			if requested > 0 {
+				fallbackCount = min(requested, fallbackMax)
+			}
+			result, err = searchAndLog(ctx, fallback, query, fallbackCount, rangeCode)
+		}
+	}
+	if err != nil {
+		return ErrorResult(fmt.Sprintf("search failed: %v", err))
+	}
+
+	return &ToolResult{
+		ForLLM:  result,
+		ForUser: result,
+	}
+}
+
+// searchAndLog runs one search and logs which backend served it. Searches a
+// provider runs with its hosted tool (Codex's built-in web_search) never reach
+// this tool and are logged by the provider.
+func searchAndLog(
+	ctx context.Context,
+	provider SearchProvider,
+	query string,
+	count int,
+	rangeCode string,
+) (string, error) {
 	backend := fmt.Sprintf("%T", provider) // e.g. *integrationtools.DuckDuckGoSearchProvider
 	backend = strings.TrimSuffix(backend[strings.LastIndex(backend, ".")+1:], "SearchProvider")
 	start := time.Now()
@@ -2008,15 +2075,11 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]any) *ToolR
 	if err != nil {
 		fields["error"] = err.Error()
 		logger.WarnCF("web_search", "web_search (client-side) failed", fields)
-		return ErrorResult(fmt.Sprintf("search failed: %v", err))
+		return "", err
 	}
 	fields["result_len"] = len(result)
 	logger.InfoCF("web_search", "web_search (client-side)", fields)
-
-	return &ToolResult{
-		ForLLM:  result,
-		ForUser: result,
-	}
+	return result, nil
 }
 
 type WebFetchTool struct {

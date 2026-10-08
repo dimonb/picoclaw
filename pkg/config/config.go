@@ -1013,6 +1013,18 @@ type SogouConfig struct {
 	MaxResults int  `json:"max_results" env:"PICOCLAW_TOOLS_WEB_SOGOU_MAX_RESULTS"`
 }
 
+// OpenAISearchConfig is OpenAI's web search behind the ChatGPT (Codex) login:
+// the standalone search endpoint the Codex app calls for models on Responses
+// Lite, which no longer accept the hosted web_search tool. It needs
+// `picoclaw auth login --provider openai`, not an API key.
+type OpenAISearchConfig struct {
+	Enabled bool `json:"enabled" env:"PICOCLAW_TOOLS_WEB_OPENAI_ENABLED"`
+	// Model is sent with the request; the endpoint requires one.
+	Model string `json:"model" env:"PICOCLAW_TOOLS_WEB_OPENAI_MODEL"`
+	// MaxOutputTokens caps the returned page text (uncapped it runs to ~20K chars).
+	MaxOutputTokens int `json:"max_output_tokens" env:"PICOCLAW_TOOLS_WEB_OPENAI_MAX_OUTPUT_TOKENS"`
+}
+
 type GeminiSearchConfig struct {
 	Enabled    bool         `json:"enabled"          yaml:"-"                 env:"PICOCLAW_TOOLS_WEB_GEMINI_ENABLED"`
 	APIKey     SecureString `json:"api_key,omitzero" yaml:"api_key,omitempty" env:"PICOCLAW_TOOLS_WEB_GEMINI_API_KEY"`
@@ -1069,6 +1081,7 @@ type WebToolsConfig struct {
 	Kagi        KagiConfig         `yaml:"kagi,omitempty"                                         json:"kagi"`
 	Sogou       SogouConfig        `yaml:"-"                                                      json:"sogou"`
 	DuckDuckGo  DuckDuckGoConfig   `yaml:"-"                                                      json:"duckduckgo"`
+	OpenAI      OpenAISearchConfig `yaml:"-"                                                      json:"openai"`
 	Gemini      GeminiSearchConfig `yaml:"gemini,omitempty"                                       json:"gemini"`
 	Perplexity  PerplexityConfig   `yaml:"perplexity,omitempty"                                   json:"perplexity"`
 	SearXNG     SearXNGConfig      `yaml:"-"                                                      json:"searxng"`
