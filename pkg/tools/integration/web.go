@@ -1992,10 +1992,25 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]any) *ToolR
 		}
 	}
 
+	// Says which backend served the search: provider-hosted searches (Codex's
+	// built-in web_search) never reach this tool and are logged by the provider.
+	backend := strings.TrimSuffix(strings.TrimPrefix(fmt.Sprintf("%T", provider), "*integration."), "SearchProvider")
+	start := time.Now()
 	result, err := provider.Search(ctx, query, count, rangeCode)
+	fields := map[string]any{
+		"backend":     backend,
+		"query":       query,
+		"count":       count,
+		"range":       rangeCode,
+		"duration_ms": time.Since(start).Milliseconds(),
+	}
 	if err != nil {
+		fields["error"] = err.Error()
+		logger.WarnCF("web_search", "web_search (client-side) failed", fields)
 		return ErrorResult(fmt.Sprintf("search failed: %v", err))
 	}
+	fields["result_len"] = len(result)
+	logger.InfoCF("web_search", "web_search (client-side)", fields)
 
 	return &ToolResult{
 		ForLLM:  result,
