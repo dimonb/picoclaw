@@ -1994,7 +1994,8 @@ func (t *WebSearchTool) Execute(ctx context.Context, args map[string]any) *ToolR
 
 	// Says which backend served the search: provider-hosted searches (Codex's
 	// built-in web_search) never reach this tool and are logged by the provider.
-	backend := strings.TrimSuffix(strings.TrimPrefix(fmt.Sprintf("%T", provider), "*integration."), "SearchProvider")
+	backend := fmt.Sprintf("%T", provider) // e.g. *integrationtools.DuckDuckGoSearchProvider
+	backend = strings.TrimSuffix(backend[strings.LastIndex(backend, ".")+1:], "SearchProvider")
 	start := time.Now()
 	result, err := provider.Search(ctx, query, count, rangeCode)
 	fields := map[string]any{
