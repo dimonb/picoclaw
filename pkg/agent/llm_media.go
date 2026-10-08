@@ -153,8 +153,7 @@ func (p *Pipeline) routeMediaTurn(ts *turnState, exec *turnExecution) error {
 		ts.agent,
 		ts.agent.Provider,
 		targetCandidates,
-		firstCandidate.Provider,
-		firstCandidate.Model,
+		firstCandidate,
 	); err != nil {
 		return err
 	} else if provider != nil {

@@ -214,6 +214,7 @@ func NewAgentInstance(
 
 	candidateProviders := make(map[string]providers.LLMProvider)
 	populateCandidateProvidersFromNames(cfg, workspace, fallbacks, candidateProviders)
+	populateCandidateProvidersFromNames(cfg, workspace, authProfileModelNames(cfg), candidateProviders)
 	if strings.TrimSpace(defaults.ImageModel) != "" {
 		imageNames := append([]string{defaults.ImageModel}, defaults.ImageModelFallbacks...)
 		populateCandidateProvidersFromNames(cfg, workspace, imageNames, candidateProviders)
@@ -313,6 +314,11 @@ func populateCandidateProvidersFromNames(
 		}
 		protocol, modelID := providers.ExtractProtocol(mc)
 		key := providers.ModelKey(protocol, modelID)
+		if len(mc.AuthProfiles) > 0 {
+			// Entries of one model on different logins share provider/model,
+			// so they are told apart by their model_name.
+			key = modelConfigIdentityKey(mc)
+		}
 		if _, exists := out[key]; exists {
 			continue
 		}
@@ -324,6 +330,24 @@ func populateCandidateProvidersFromNames(
 		}
 		out[key] = p
 	}
+}
+
+// authProfileModelNames lists every model_list entry bound to an OAuth login
+// profile. Each needs its own provider, keyed by model_name, so that a
+// fallback onto another login of the same model never reuses the first
+// login's provider; listing them all also covers models chosen later by
+// /model or a hook.
+func authProfileModelNames(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	var names []string
+	for _, mc := range cfg.ModelList {
+		if mc != nil && len(mc.AuthProfiles) > 0 {
+			names = append(names, mc.ModelName)
+		}
+	}
+	return names
 }
 
 // resolvePrimaryProviderForAgent resolves a dedicated provider for the active

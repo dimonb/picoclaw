@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
@@ -279,13 +280,40 @@ func buildCodexParams(
 }
 
 func CreateCodexTokenSource() func() (string, string, error) {
+	return CreateCodexTokenSourceForProfile(auth.DefaultProfile)
+}
+
+// codexRefreshMu serializes token refreshes. OpenAI rotates the refresh token
+// on every refresh, so two providers refreshing one login at once would leave
+// the loser holding a revoked token; under the lock the second one re-reads
+// the store and finds the fresh access token instead.
+var codexRefreshMu sync.Mutex
+
+// CreateCodexTokenSourceForProfile returns a token source for one stored
+// ChatGPT login: profile "" or "default" is the "openai" entry, any other is
+// "openai:<profile>" (picoclaw auth login --provider openai --profile <name>).
+func CreateCodexTokenSourceForProfile(profile string) func() (string, string, error) {
+	key := auth.ProfileKey("openai", profile)
 	return func() (string, string, error) {
-		cred, err := auth.GetCredential("openai")
+		cred, err := auth.GetCredential(key)
 		if err != nil {
 			return "", "", fmt.Errorf("loading auth credentials: %w", err)
 		}
 		if cred == nil {
-			return "", "", fmt.Errorf("no credentials for openai. Run: picoclaw auth login --provider openai")
+			return "", "", fmt.Errorf("no credentials for %s. Run: %s", key, codexLoginHint(profile))
+		}
+		if cred.AuthMethod != "oauth" || !cred.NeedsRefresh() || cred.RefreshToken == "" {
+			return cred.AccessToken, cred.AccountID, nil
+		}
+
+		codexRefreshMu.Lock()
+		defer codexRefreshMu.Unlock()
+		cred, err = auth.GetCredential(key)
+		if err != nil {
+			return "", "", fmt.Errorf("loading auth credentials: %w", err)
+		}
+		if cred == nil {
+			return "", "", fmt.Errorf("no credentials for %s. Run: %s", key, codexLoginHint(profile))
 		}
 
 		if cred.AuthMethod == "oauth" && cred.NeedsRefresh() && cred.RefreshToken != "" {
@@ -297,7 +325,7 @@ func CreateCodexTokenSource() func() (string, string, error) {
 			if refreshed.AccountID == "" {
 				refreshed.AccountID = cred.AccountID
 			}
-			if err := auth.SetCredential("openai", refreshed); err != nil {
+			if err := auth.SetCredential(key, refreshed); err != nil {
 				return "", "", fmt.Errorf("saving refreshed token: %w", err)
 			}
 			return refreshed.AccessToken, refreshed.AccountID, nil
@@ -305,4 +333,11 @@ func CreateCodexTokenSource() func() (string, string, error) {
 
 		return cred.AccessToken, cred.AccountID, nil
 	}
+}
+
+func codexLoginHint(profile string) string {
+	if auth.ProfileKey("openai", profile) == "openai" {
+		return "picoclaw auth login --provider openai"
+	}
+	return "picoclaw auth login --provider openai --profile " + strings.ToLower(strings.TrimSpace(profile))
 }

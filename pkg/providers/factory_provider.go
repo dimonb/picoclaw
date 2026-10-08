@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/auth"
 	"github.com/sipeed/picoclaw/pkg/config"
 	anthropicmessages "github.com/sipeed/picoclaw/pkg/providers/anthropic_messages"
 	"github.com/sipeed/picoclaw/pkg/providers/azure"
@@ -31,27 +32,42 @@ func createClaudeAuthProvider() (LLMProvider, error) {
 }
 
 // createCodexWSAuthProvider creates a WebSocket-based Codex provider using OAuth credentials.
-func createCodexWSAuthProvider() (LLMProvider, error) {
-	cred, err := getCredential("openai")
+// profile selects the stored ChatGPT login (see auth.ProfileKey).
+func createCodexWSAuthProvider(profile string) (LLMProvider, error) {
+	cred, err := codexCredential(profile)
 	if err != nil {
-		return nil, fmt.Errorf("loading auth credentials: %w", err)
+		return nil, err
 	}
-	if cred == nil {
-		return nil, fmt.Errorf("no credentials for openai. Run: picoclaw auth login --provider openai")
-	}
-	return NewCodexWSProvider(cred.AccessToken, cred.AccountID), nil
+	provider := NewCodexWSProvider(cred.AccessToken, cred.AccountID)
+	provider.tokenSource = createCodexTokenSourceForProfile(profile)
+	return provider, nil
 }
 
 // createCodexAuthProvider creates a Codex provider using OAuth credentials from auth store.
-func createCodexAuthProvider() (LLMProvider, error) {
-	cred, err := getCredential("openai")
+func createCodexAuthProvider(profile string) (LLMProvider, error) {
+	cred, err := codexCredential(profile)
+	if err != nil {
+		return nil, err
+	}
+	return NewCodexProviderWithTokenSource(
+		cred.AccessToken, cred.AccountID, createCodexTokenSourceForProfile(profile),
+	), nil
+}
+
+func codexCredential(profile string) (*auth.AuthCredential, error) {
+	key := auth.ProfileKey("openai", profile)
+	cred, err := getCredential(key)
 	if err != nil {
 		return nil, fmt.Errorf("loading auth credentials: %w", err)
 	}
 	if cred == nil {
-		return nil, fmt.Errorf("no credentials for openai. Run: picoclaw auth login --provider openai")
+		hint := "picoclaw auth login --provider openai"
+		if key != "openai" {
+			hint += " --profile " + strings.TrimPrefix(key, "openai:")
+		}
+		return nil, fmt.Errorf("no credentials for %s. Run: %s", key, hint)
 	}
-	return NewCodexProviderWithTokenSource(cred.AccessToken, cred.AccountID, createCodexTokenSource()), nil
+	return cred, nil
 }
 
 // ExtractProtocol extracts the effective protocol and model identifier from a
@@ -121,7 +137,7 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 	case "openai":
 		// OpenAI with OAuth/token auth (Codex-style)
 		if authMethod == "oauth" || authMethod == "token" {
-			provider, err := createCodexAuthProvider()
+			provider, err := createCodexAuthProvider(cfg.AuthProfile())
 			if err != nil {
 				return nil, "", err
 			}
@@ -354,7 +370,7 @@ func CreateProviderFromConfig(cfg *config.ModelConfig) (LLMProvider, string, err
 		return finalizeProviderFromConfig(NewClaudeCliProvider(workspace), modelID, cfg)
 
 	case "codex-ws", "codexws":
-		provider, err := createCodexWSAuthProvider()
+		provider, err := createCodexWSAuthProvider(cfg.AuthProfile())
 		if err != nil {
 			return nil, "", err
 		}

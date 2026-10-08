@@ -58,3 +58,7 @@ func createClaudeTokenSource() func() (string, error) {
 func createCodexTokenSource() func() (string, string, error) {
 	return oauthprovider.CreateCodexTokenSource()
 }
+
+func createCodexTokenSourceForProfile(profile string) func() (string, string, error) {
+	return oauthprovider.CreateCodexTokenSourceForProfile(profile)
+}

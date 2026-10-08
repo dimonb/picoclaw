@@ -163,7 +163,8 @@ func resolveModelCandidates(
 	seen := make(map[string]bool)
 	candidates := make([]providers.FallbackCandidate, 0, 1+len(fallbacks))
 
-	addCandidate := func(raw string) {
+	var addCandidate func(raw string)
+	addCandidate = func(raw string) {
 		candidate, ok := resolveModelCandidate(cfg, defaultProvider, raw)
 		if !ok {
 			return
@@ -175,6 +176,14 @@ func resolveModelCandidates(
 		}
 		seen[key] = true
 		candidates = append(candidates, candidate)
+
+		// The same model on the entry's other OAuth logins comes next, before
+		// any other model: an account out of quota moves to the next account.
+		if mc := lookupModelConfigByRef(cfg, raw, defaultProvider); mc != nil {
+			for _, name := range mc.ProfileFallbacks() {
+				addCandidate(name)
+			}
+		}
 	}
 
 	addCandidate(primary)

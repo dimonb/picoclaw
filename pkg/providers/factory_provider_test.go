@@ -1599,3 +1599,57 @@ func TestCreateProviderFromConfig_InvalidToolSchemaTransform(t *testing.T) {
 		t.Fatalf("error = %v, want mention tool_schema_transform", err)
 	}
 }
+
+func TestCreateProviderFromConfig_CodexWSUsesAuthProfileLogin(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv(config.EnvHome, dir)
+	if err := auth.SetCredential("openai", &auth.AuthCredential{
+		AccessToken: "token-a", AccountID: "acct-a", AuthMethod: "oauth",
+	}); err != nil {
+		t.Fatalf("SetCredential(openai): %v", err)
+	}
+	if err := auth.SetCredential(auth.ProfileKey("openai", "b"), &auth.AuthCredential{
+		AccessToken: "token-b", AccountID: "acct-b", AuthMethod: "oauth",
+	}); err != nil {
+		t.Fatalf("SetCredential(openai:b): %v", err)
+	}
+
+	for _, tc := range []struct {
+		profiles    []string
+		wantToken   string
+		wantAccount string
+	}{
+		{nil, "token-a", "acct-a"},
+		{[]string{"default", "b"}, "token-a", "acct-a"},
+		{[]string{"b"}, "token-b", "acct-b"},
+	} {
+		provider, _, err := CreateProviderFromConfig(&config.ModelConfig{
+			ModelName: "sol61", Provider: "codex-ws", Model: "gpt-6.1-sol",
+			AuthMethod: "oauth", AuthProfiles: tc.profiles,
+		})
+		if err != nil {
+			t.Fatalf("profiles %v: CreateProviderFromConfig: %v", tc.profiles, err)
+		}
+		ws, ok := provider.(*CodexWSProvider)
+		if !ok {
+			t.Fatalf("profiles %v: provider = %T, want *CodexWSProvider", tc.profiles, provider)
+		}
+		token, account, err := ws.tokenSource()
+		if err != nil {
+			t.Fatalf("profiles %v: tokenSource: %v", tc.profiles, err)
+		}
+		if token != tc.wantToken || account != tc.wantAccount {
+			t.Errorf("profiles %v: token/account = %q/%q, want %q/%q",
+				tc.profiles, token, account, tc.wantToken, tc.wantAccount)
+		}
+		ws.Close()
+	}
+
+	_, _, err := CreateProviderFromConfig(&config.ModelConfig{
+		ModelName: "sol61@c", Provider: "codex-ws", Model: "gpt-6.1-sol",
+		AuthMethod: "oauth", AuthProfiles: []string{"c"},
+	})
+	if err == nil || !strings.Contains(err.Error(), "--profile c") {
+		t.Fatalf("missing profile error = %v, want a login hint naming --profile c", err)
+	}
+}

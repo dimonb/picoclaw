@@ -21,10 +21,13 @@ const (
 	defaultAnthropicModel = "claude-sonnet-4.6"
 )
 
-func authLoginCmd(provider string, useDeviceCode bool, useOauth bool, noBrowser bool) error {
+func authLoginCmd(provider, profile string, useDeviceCode bool, useOauth bool, noBrowser bool) error {
+	if auth.ProfileKey(provider, profile) != provider && provider != "openai" {
+		return fmt.Errorf("--profile is supported for openai only")
+	}
 	switch provider {
 	case "openai":
-		return authLoginOpenAI(useDeviceCode, noBrowser)
+		return authLoginOpenAI(profile, useDeviceCode, noBrowser)
 	case "anthropic":
 		return authLoginAnthropic(useOauth)
 	case "google-antigravity", "antigravity":
@@ -34,7 +37,7 @@ func authLoginCmd(provider string, useDeviceCode bool, useOauth bool, noBrowser 
 	}
 }
 
-func authLoginOpenAI(useDeviceCode bool, noBrowser bool) error {
+func authLoginOpenAI(profile string, useDeviceCode bool, noBrowser bool) error {
 	cfg := auth.OpenAIOAuthConfig()
 
 	var cred *auth.AuthCredential
@@ -50,8 +53,19 @@ func authLoginOpenAI(useDeviceCode bool, noBrowser bool) error {
 		return fmt.Errorf("login failed: %w", err)
 	}
 
-	if err = auth.SetCredential("openai", cred); err != nil {
+	key := auth.ProfileKey("openai", profile)
+	if err = auth.SetCredential(key, cred); err != nil {
 		return fmt.Errorf("failed to save credentials: %w", err)
+	}
+
+	if key != "openai" {
+		// An extra account only backs the models that list it in
+		// auth_profiles; the config's models and default stay as they are.
+		fmt.Printf("Login successful! Saved as profile %q.\n", strings.TrimPrefix(key, "openai:"))
+		if cred.AccountID != "" {
+			fmt.Printf("Account: %s\n", cred.AccountID)
+		}
+		return nil
 	}
 
 	appCfg, err := internal.LoadConfig()
@@ -330,7 +344,14 @@ func authLoginPasteToken(provider string) error {
 	return nil
 }
 
-func authLogoutCmd(provider string) error {
+func authLogoutCmd(provider, profile string) error {
+	if key := auth.ProfileKey(provider, profile); provider != "" && key != provider {
+		if err := auth.DeleteCredential(key); err != nil {
+			return fmt.Errorf("failed to remove credentials: %w", err)
+		}
+		fmt.Printf("Logged out from %s\n", key)
+		return nil
+	}
 	if provider != "" {
 		if err := auth.DeleteCredential(provider); err != nil {
 			return fmt.Errorf("failed to remove credentials: %w", err)
