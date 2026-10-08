@@ -1077,8 +1077,11 @@ func (p *CodexWSProvider) chatStream(
 			useNativeSearch = false
 			p.nativeSearchOffUntil.Store(time.Now().Add(nativeSearchSuspendFor).UnixNano())
 			wsTools = translateToolsForWS(tools, false)
-			logger.WarnCF("provider.codex_ws", "Server rejected the hosted web_search tool, retrying with the client-side one",
-				map[string]any{"error": lastErr.Error(), "suspend_for": nativeSearchSuspendFor.String()})
+			logger.WarnCF(
+				"provider.codex_ws",
+				"Server rejected the hosted web_search tool, retrying with the client-side one",
+				map[string]any{"error": lastErr.Error(), "suspend_for": nativeSearchSuspendFor.String()},
+			)
 			continue
 		}
 		// Server-side rejection (usage limit / failed response): reconnecting
