@@ -117,6 +117,10 @@ func (t *WhisperTranscriber) TranscribeData(
 		return nil, fmt.Errorf("failed to write model field: %w", err)
 	}
 
+	if err = writeHintFields(ctx, writer); err != nil {
+		return nil, err
+	}
+
 	if err = writer.WriteField("response_format", "json"); err != nil {
 		logger.ErrorCF("voice", "Failed to write whisper response_format field", map[string]any{"error": err})
 		return nil, fmt.Errorf("failed to write response_format field: %w", err)
@@ -162,6 +166,10 @@ func (t *WhisperTranscriber) Transcribe(ctx context.Context, audioFilePath strin
 
 	if err = writer.WriteField("model", t.modelID); err != nil {
 		return nil, fmt.Errorf("failed to write model field: %w", err)
+	}
+
+	if err = writeHintFields(ctx, writer); err != nil {
+		return nil, err
 	}
 
 	if err = writer.WriteField("response_format", "json"); err != nil {
@@ -238,6 +246,21 @@ func (t *WhisperTranscriber) doRequest(
 	})
 
 	return &result, nil
+}
+
+// writeHintFields passes the hints attached with WithLanguage and WithPrompt.
+func writeHintFields(ctx context.Context, writer *multipart.Writer) error {
+	if lang := languageFrom(ctx); lang != "" {
+		if err := writer.WriteField("language", lang); err != nil {
+			return fmt.Errorf("failed to write language field: %w", err)
+		}
+	}
+	if prompt := promptFrom(ctx); prompt != "" {
+		if err := writer.WriteField("prompt", prompt); err != nil {
+			return fmt.Errorf("failed to write prompt field: %w", err)
+		}
+	}
+	return nil
 }
 
 func (t *WhisperTranscriber) Name() string {

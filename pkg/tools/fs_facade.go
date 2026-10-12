@@ -16,6 +16,9 @@ type (
 	AppendFileTool    = fstools.AppendFileTool
 	LoadImageTool     = fstools.LoadImageTool
 	SendFileTool      = fstools.SendFileTool
+
+	TranscribeAudioTool = fstools.TranscribeAudioTool
+	TranscribeFunc      = fstools.TranscribeFunc
 )
 
 const MaxReadFileSize = fstools.MaxReadFileSize
@@ -97,4 +100,13 @@ func NewSendFileTool(
 	allowPaths ...[]*regexp.Regexp,
 ) *SendFileTool {
 	return fstools.NewSendFileTool(workspace, restrict, maxFileSize, store, allowPaths...)
+}
+
+func NewTranscribeAudioTool(
+	workspace string,
+	restrict bool,
+	transcribe TranscribeFunc,
+	allowPaths ...[]*regexp.Regexp,
+) *TranscribeAudioTool {
+	return fstools.NewTranscribeAudioTool(workspace, restrict, transcribe, allowPaths...)
 }

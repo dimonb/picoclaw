@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/agent/interfaces"
+	"github.com/sipeed/picoclaw/pkg/audio/asr"
 	"github.com/sipeed/picoclaw/pkg/audio/tts"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
@@ -119,6 +120,25 @@ func registerSharedTools(
 		ttsProvider = tts.DetectTTS(cfg)
 		if ttsProvider == nil {
 			logger.WarnCF("voice-tts", "send_tts enabled but no TTS provider configured", nil)
+		}
+	}
+
+	var transcribeAudio tools.TranscribeFunc
+	if cfg.Tools.IsToolEnabled("transcribe_audio") {
+		if tr := asr.TranscriberForModel(cfg, cfg.Tools.TranscribeAudio.ModelName); tr != nil {
+			transcribeAudio = func(ctx context.Context, path, language, prompt string) (string, error) {
+				res, err := tr.Transcribe(asr.WithPrompt(asr.WithLanguage(ctx, language), prompt), path)
+				if err != nil {
+					return "", err
+				}
+				return res.Text, nil
+			}
+		} else {
+			logger.WarnCF(
+				"voice",
+				"transcribe_audio enabled but tools.transcribe_audio.model_name is not a transcription model",
+				map[string]any{"model_name": cfg.Tools.TranscribeAudio.ModelName},
+			)
 		}
 	}
 
@@ -271,12 +291,14 @@ func registerSharedTools(
 		}
 		if cfg.Tools.IsToolEnabled("edit_message") {
 			editMessageTool := tools.NewEditMessageTool()
-			editMessageTool.SetEditCallback(func(ctx context.Context, channel, chatID, messageID, content string) error {
-				if al.channelManager == nil {
-					return fmt.Errorf("channel manager not configured")
-				}
-				return al.channelManager.EditMessage(ctx, channel, chatID, messageID, content)
-			})
+			editMessageTool.SetEditCallback(
+				func(ctx context.Context, channel, chatID, messageID, content string) error {
+					if al.channelManager == nil {
+						return fmt.Errorf("channel manager not configured")
+					}
+					return al.channelManager.EditMessage(ctx, channel, chatID, messageID, content)
+				},
+			)
 			agent.Tools.Register(editMessageTool)
 		}
 
@@ -294,6 +316,15 @@ func registerSharedTools(
 
 		if ttsProvider != nil {
 			agent.Tools.Register(tools.NewSendTTSTool(ttsProvider, nil))
+		}
+
+		if transcribeAudio != nil {
+			agent.Tools.Register(tools.NewTranscribeAudioTool(
+				agent.Workspace,
+				cfg.Agents.Defaults.RestrictToWorkspace,
+				transcribeAudio,
+				allowReadPaths,
+			))
 		}
 
 		if cfg.Tools.IsToolEnabled("load_image") {
