@@ -38,7 +38,7 @@ func drainAgainst(t *testing.T, serve func(send func(string))) (string, error, t
 	start := time.Now()
 	var text string
 	_, _, err = (&CodexWSProvider{}).drainStream(
-		&wsSessionState{conn: conn},
+		&wsSessionState{conn: newWSConn(conn)},
 		func(s string) { text = s },
 		nil,
 	)

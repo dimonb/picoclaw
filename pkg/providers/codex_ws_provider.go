@@ -301,7 +301,7 @@ type wsOutputTokensDetails struct {
 // Each session has its own mutex so concurrent sessions run in parallel.
 type wsSessionState struct {
 	mu                 sync.Mutex
-	conn               *websocket.Conn
+	conn               *wsConn
 	previousResponseID string
 	// sentMsgCount tracks how many non-system messages we've already sent
 	// in this WS session so we only transmit new ones each turn.
@@ -545,7 +545,7 @@ func (p *CodexWSProvider) connectSession(
 		}
 		return fmt.Errorf("ws dial: %w", err)
 	}
-	sess.conn = conn
+	sess.conn = newWSConn(conn)
 	sess.previousResponseID = ""
 	sess.sentMsgCount = 0
 	sess.sentDigest = ""
@@ -614,15 +614,13 @@ func (p *CodexWSProvider) drainStream(
 	// Idle deadline restarted per event, clamped to an overall cap, so we
 	// never hang indefinitely yet never cut off a response that is progressing.
 	hardDeadline := time.Now().Add(wsResponseMaxDuration)
-	defer sess.conn.SetReadDeadline(time.Time{})
 
 	for {
 		deadline := time.Now().Add(wsReadIdleTimeout)
 		if deadline.After(hardDeadline) {
 			deadline = hardDeadline
 		}
-		_ = sess.conn.SetReadDeadline(deadline)
-		_, msg, readErr := sess.conn.ReadMessage()
+		msg, readErr := sess.conn.next(deadline)
 		if readErr != nil {
 			err = fmt.Errorf("ws read: %w", readErr)
 			return responseID, usage, err
@@ -931,6 +929,18 @@ func (p *CodexWSProvider) chatStream(
 	defer sess.mu.Unlock()
 
 	sess.lastUsedNs.Store(time.Now().UnixNano())
+	// The idle cleanup counts from the end of the last turn, not its start.
+	defer sess.lastUsedNs.Store(time.Now().UnixNano())
+
+	// The server may have closed the connection while it sat idle. Replace it
+	// now instead of discovering that from a failed send plus a backoff.
+	if sess.conn != nil {
+		if lostErr := sess.conn.lost(); lostErr != nil {
+			logger.InfoCF("provider.codex_ws", "Connection was closed while idle, reconnecting",
+				map[string]any{"session_key": sessionKey, "error": lostErr.Error()})
+			p.closeSession(sess)
+		}
+	}
 
 	// Connect if first use or the connection was closed by the cleanup routine.
 	if sess.conn == nil {
@@ -1006,6 +1016,8 @@ func (p *CodexWSProvider) chatStream(
 		backoff   = 2 * time.Second
 		deadline  = time.Now().Add(wsRetryTimeout)
 		firstSend = true
+
+		retriedLostConn bool
 	)
 	for {
 		if firstSend {
@@ -1021,6 +1033,13 @@ func (p *CodexWSProvider) chatStream(
 			if sleep > remaining {
 				sleep = remaining
 			}
+			// A connection the server closed is gone for good: the first
+			// replacement goes out at once. The backoff is for an unreachable
+			// or failing server, not for this.
+			if !retriedLostConn && connLost(lastErr) {
+				retriedLostConn = true
+				sleep = 0
+			}
 			logger.WarnCF("provider.codex_ws", "Reconnecting after error",
 				map[string]any{"error": lastErr.Error(), "backoff": sleep.String(), "session_key": sessionKey})
 			select {
@@ -1029,7 +1048,9 @@ func (p *CodexWSProvider) chatStream(
 				return wsUsage{}, ctx.Err()
 			case <-time.After(sleep):
 			}
-			backoff = min(backoff*2, 15*time.Second)
+			if sleep > 0 {
+				backoff = min(backoff*2, 15*time.Second)
+			}
 			if err := p.connectSession(sess, instructions, wsTools, resolvedModel, options); err != nil {
 				lastErr = err
 				continue
