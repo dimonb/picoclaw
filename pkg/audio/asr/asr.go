@@ -19,6 +19,51 @@ type Transcriber interface {
 	Transcribe(ctx context.Context, audioFilePath string) (*TranscriptionResponse, error)
 }
 
+type languageKey struct{}
+
+// WithLanguage attaches a language hint (ISO-639-1) for the transcription
+// started with ctx. Transcribers that cannot take one ignore it.
+func WithLanguage(ctx context.Context, lang string) context.Context {
+	if lang == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, languageKey{}, lang)
+}
+
+func languageFrom(ctx context.Context) string {
+	lang, _ := ctx.Value(languageKey{}).(string)
+	return lang
+}
+
+type promptKey struct{}
+
+// WithPrompt attaches recognizer context (topic, names, vocabulary) for the
+// transcription started with ctx. Transcribers that cannot take one ignore it.
+func WithPrompt(ctx context.Context, prompt string) context.Context {
+	if prompt == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, promptKey{}, prompt)
+}
+
+func promptFrom(ctx context.Context) string {
+	prompt, _ := ctx.Value(promptKey{}).(string)
+	return prompt
+}
+
+// TranscriberForModel returns the transcriber for a model_list entry, or nil
+// when the entry is missing or is not a transcription model.
+func TranscriberForModel(cfg *config.Config, modelName string) Transcriber {
+	if cfg == nil || strings.TrimSpace(modelName) == "" {
+		return nil
+	}
+	modelCfg, err := cfg.GetModelConfig(strings.TrimSpace(modelName))
+	if err != nil {
+		return nil
+	}
+	return transcriberFromModelConfig(modelCfg)
+}
+
 type TranscriptionResponse struct {
 	Text     string  `json:"text"`
 	Language string  `json:"language,omitempty"`
@@ -78,6 +123,24 @@ func whisperModelID(modelCfg *config.ModelConfig) string {
 	return ""
 }
 
+// transcriptionEndpointModelID is whisperModelID widened to the dedicated
+// transcription models (gpt-transcribe, gpt-4o-transcribe, ...), which take the
+// same /audio/transcriptions request. Only an explicitly chosen
+// voice.model_name gets this; the legacy model_list scan stays whisper-only.
+func transcriptionEndpointModelID(modelCfg *config.ModelConfig) string {
+	if modelID := whisperModelID(modelCfg); modelID != "" {
+		return modelID
+	}
+	if modelCfg == nil || modelCfg.APIKey() == "" || !supportsWhisperTranscription(modelCfg) {
+		return ""
+	}
+	_, modelID := providers.ExtractProtocol(modelCfg)
+	if strings.Contains(strings.ToLower(modelID), "transcribe") {
+		return modelID
+	}
+	return ""
+}
+
 func isElevenLabsTranscriptionModel(modelCfg *config.ModelConfig) bool {
 	if modelCfg == nil || modelCfg.APIKey() == "" {
 		return false
@@ -96,7 +159,7 @@ func transcriberFromModelConfig(modelCfg *config.ModelConfig) Transcriber {
 		_, modelID := providers.ExtractProtocol(modelCfg)
 		return NewElevenLabsTranscriber(modelCfg.APIKey(), modelCfg.APIBase, modelID)
 	}
-	if modelID := whisperModelID(modelCfg); modelID != "" {
+	if modelID := transcriptionEndpointModelID(modelCfg); modelID != "" {
 		return NewWhisperTranscriber(modelCfg)
 	}
 	if supportsAudioTranscription(modelCfg) {

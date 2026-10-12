@@ -212,6 +212,21 @@ If `voice.model_name` is not configured, PicoClaw will continue to fall back to 
 }
 ```
 
+##### Letting the model transcribe (`transcribe_audio` tool)
+
+`voice.model_name` transcribes every voice message before the model sees it, with no language hint. Auto-detection fails on short or accented speech: a Russian speaker's Hebrew comes back as Russian transliteration. The `transcribe_audio` tool lets the model transcribe the `[audio:/path]` file itself, naming the language (`he`, `ru`, ...) and optional context. Point it at a transcription model (`whisper-1`, `gpt-transcribe`, `gpt-4o-transcribe`); leave `voice.model_name` unset so the audio reaches the model untranscribed.
+
+```json
+{
+  "model_list": [
+    { "model_name": "gpt-transcribe", "model": "openai/gpt-transcribe", "api_keys": ["sk-..."] }
+  ],
+  "tools": {
+    "transcribe_audio": { "enabled": true, "model_name": "gpt-transcribe" }
+  }
+}
+```
+
 #### Voice Synthesis
 
 You can configure a dedicated text-to-speech model with `voice.tts_model_name`.
