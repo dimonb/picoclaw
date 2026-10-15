@@ -94,7 +94,11 @@ const (
 	FailoverFormat          FailoverReason = "format"
 	FailoverContextOverflow FailoverReason = "context_overflow"
 	FailoverOverloaded      FailoverReason = "overloaded"
-	FailoverUnknown         FailoverReason = "unknown"
+	// FailoverModelUnavailable: the backend does not serve this model at all
+	// (retired, or not offered on this account). The next candidate may work,
+	// but repeating the same request never will.
+	FailoverModelUnavailable FailoverReason = "model_unavailable"
+	FailoverUnknown          FailoverReason = "unknown"
 )
 
 // FailoverError wraps an LLM provider error with classification metadata.

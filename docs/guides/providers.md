@@ -594,16 +594,16 @@ picoclaw auth login --provider openai --profile b --device-code
   "model_list": [
     {"model_name": "sol61", "provider": "codex-ws", "model": "gpt-6.1-sol",
      "auth_method": "oauth", "auth_profiles": ["default", "b"]},
-    {"model_name": "gpt-5.5", "provider": "codex-ws", "model": "gpt-5.5",
+    {"model_name": "sol", "provider": "codex-ws", "model": "gpt-6-sol",
      "auth_method": "oauth", "auth_profiles": ["default", "b"]}
   ],
-  "agents": {"defaults": {"model_name": "sol61", "model_fallbacks": ["gpt-5.5"]}}
+  "agents": {"defaults": {"model_name": "sol61", "model_fallbacks": ["sol"]}}
 }
 ```
 
 Every profile after the first becomes its own entry named
 `<model_name>@<profile>` (`sol61@b`), tried right after the entry and before
-the next model: `sol61` → `sol61@b` → `gpt-5.5` → `gpt-5.5@b`. Each one has its
+the next model: `sol61` → `sol61@b` → `sol` → `sol@b`. Each one has its
 own connection and its own cooldown. When an account answers
 `usage_limit_reached`, it is skipped until the reset time the backend reports,
 and the turn continues on the next account. The expanded entries are not written

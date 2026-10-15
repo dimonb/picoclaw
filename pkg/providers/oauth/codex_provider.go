@@ -19,9 +19,10 @@ import (
 const (
 	// codexDefaultModel is the model used when the configured one cannot be
 	// sent to this transport. Keep it to a model the Codex backend actually
-	// serves: gpt-5.3-codex was retired and every substitution onto it failed
-	// with "not supported when using Codex with a ChatGPT account".
-	codexDefaultModel        = "gpt-5.5"
+	// serves: gpt-5.3-codex and later gpt-5.5 were retired, and every
+	// substitution onto them failed with "not supported when using Codex with a
+	// ChatGPT account".
+	codexDefaultModel        = "gpt-6.1-sol"
 	codexDefaultInstructions = "You are Codex, a coding assistant."
 )
 
