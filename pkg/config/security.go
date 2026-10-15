@@ -74,7 +74,10 @@ func loadSecurityConfig(cfg *Config, securityPath string) error {
 
 	// Unmarshal non-channel fields from security.yml
 	// This will resolve encrypted values for model_list, tools, etc.
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	// Empty sections are dropped first: decoding YAML null zeroes the field, so
+	// a "model_list:" with every entry deleted would wipe config.json's models.
+	dropNullValues(&rootNode)
+	if err := rootNode.Decode(cfg); err != nil {
 		return fmt.Errorf("failed to parse security config %s: %w", securityPath, err)
 	}
 	if err := applyLegacySkillsSecurityConfig(cfg, data); err != nil {
@@ -95,6 +98,28 @@ func loadSecurityConfig(cfg *Config, securityPath string) error {
 	}
 
 	return nil
+}
+
+// dropNullValues removes mapping entries whose value is null, recursively.
+// In security.yml an empty key never means "clear this setting"; it is what is
+// left after its entries were deleted.
+func dropNullValues(node *yaml.Node) {
+	if node == nil {
+		return
+	}
+	if node.Kind == yaml.MappingNode {
+		kept := node.Content[:0]
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if v := node.Content[i+1]; v.Kind == yaml.ScalarNode && v.Tag == "!!null" {
+				continue
+			}
+			kept = append(kept, node.Content[i], node.Content[i+1])
+		}
+		node.Content = kept
+	}
+	for _, child := range node.Content {
+		dropNullValues(child)
+	}
 }
 
 func applyLegacySkillsSecurityConfig(cfg *Config, data []byte) error {
