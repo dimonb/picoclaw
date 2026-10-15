@@ -128,6 +128,15 @@ var (
 		substr("request too large"),
 	}
 
+	// A model the backend does not serve. Codex says "The 'gpt-5.5' model is
+	// not supported when using Codex with a ChatGPT account." once a model is
+	// retired; the OpenAI API says model_not_found.
+	modelUnavailablePatterns = []errorPattern{
+		rxp(`model is not supported when using codex`),
+		substr("model_not_found"),
+		rxp(`the model .* does not exist`),
+	}
+
 	imageDimensionPatterns = []errorPattern{
 		rxp(`image dimensions exceed max`),
 	}
@@ -189,6 +198,19 @@ func ClassifyError(err error, provider, model string) *FailoverError {
 	// so classify these as retriable to trigger failover instead of surfacing a
 	// hard error to the user. Never let such a rejection fall through as Format
 	// (non-retriable), which would strand the turn.
+	// Checked before the codex-ws branch below, which would otherwise turn this
+	// 400 into a timeout: the timeout gets an in-place retry and an agent-level
+	// retry with backoff, all against a model that will never answer.
+	if matchesAny(strings.ToLower(err.Error()), modelUnavailablePatterns) {
+		return &FailoverError{
+			Reason:   FailoverModelUnavailable,
+			Provider: provider,
+			Model:    model,
+			Status:   extractHTTPStatus(strings.ToLower(err.Error())),
+			Wrapped:  err,
+		}
+	}
+
 	var serverErr *wsServerError
 	if errors.As(err, &serverErr) {
 		// A genuine context-window overflow (e.g. codex-ws "Your input exceeds
