@@ -703,6 +703,7 @@ func (m *noopContextManager) Compact(_ context.Context, _ *CompactRequest) error
 func (m *noopContextManager) Ingest(_ context.Context, _ *IngestRequest) (*IngestResponse, error) {
 	return &IngestResponse{}, nil
 }
+
 func (m *noopContextManager) UpdateChannelMessageID(_ context.Context, _ string, _ int64, _ string) error {
 	return nil
 }

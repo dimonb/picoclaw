@@ -2013,8 +2013,8 @@ func TestBootstrapBackfillsMissingFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("seed AddMessageWithReasoning: %v", err)
 	}
-	if err := eng.store.AppendContextMessage(ctx, conv.ConversationID, stored.ID); err != nil {
-		t.Fatalf("AppendContextMessage: %v", err)
+	if opErr := eng.store.AppendContextMessage(ctx, conv.ConversationID, stored.ID); opErr != nil {
+		t.Fatalf("AppendContextMessage: %v", opErr)
 	}
 
 	wantChannelID := "telegram:9001"
@@ -2037,8 +2037,8 @@ func TestBootstrapBackfillsMissingFields(t *testing.T) {
 		},
 	}
 
-	if err := eng.Bootstrap(ctx, sessionKey, canonical); err != nil {
-		t.Fatalf("Bootstrap: %v", err)
+	if opErr := eng.Bootstrap(ctx, sessionKey, canonical); opErr != nil {
+		t.Fatalf("Bootstrap: %v", opErr)
 	}
 
 	got, err := eng.store.GetMessageByID(ctx, stored.ID)
@@ -2048,7 +2048,8 @@ func TestBootstrapBackfillsMissingFields(t *testing.T) {
 	if got.ChannelMessageID != wantChannelID {
 		t.Errorf("ChannelMessageID = %q, want %q", got.ChannelMessageID, wantChannelID)
 	}
-	if got.Metadata == nil || got.Metadata.SenderID != wantMeta.SenderID || got.Metadata.SenderDisplayName != wantMeta.SenderDisplayName {
+	if got.Metadata == nil || got.Metadata.SenderID != wantMeta.SenderID ||
+		got.Metadata.SenderDisplayName != wantMeta.SenderDisplayName {
 		t.Errorf("Metadata = %+v, want %+v", got.Metadata, wantMeta)
 	}
 	if len(got.Attachments) != 1 || got.Attachments[0] != wantAtts[0] {

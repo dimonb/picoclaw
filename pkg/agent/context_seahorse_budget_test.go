@@ -74,12 +74,12 @@ func TestSeahorseProactiveCompactReducesBelowBudget(t *testing.T) {
 		t.Fatalf("test setup produced %d tokens, need more than the %d budget", beforeTokens, budget)
 	}
 
-	if err := mgr.Compact(ctx, &CompactRequest{
+	if opErr := mgr.Compact(ctx, &CompactRequest{
 		SessionKey:    sessionKey,
 		Reason:        ContextCompressReasonProactive,
 		HistoryBudget: budget,
-	}); err != nil {
-		t.Fatalf("Compact: %v", err)
+	}); opErr != nil {
+		t.Fatalf("Compact: %v", opErr)
 	}
 
 	after, err := engine.Assemble(ctx, sessionKey, seahorse.AssembleInput{Budget: 1 << 30})

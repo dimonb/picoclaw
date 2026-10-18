@@ -286,11 +286,35 @@ func TestStoreGetMessageByChannelMessageID(t *testing.T) {
 	}
 
 	const duplicateRef = "12345:9:67"
-	first, err := s.AddMessageWithReasoning(ctx, conv.ConversationID, "user", "first duplicate ref", "", "", duplicateRef, nil, nil, 1, time.Time{})
+	first, err := s.AddMessageWithReasoning(
+		ctx,
+		conv.ConversationID,
+		"user",
+		"first duplicate ref",
+		"",
+		"",
+		duplicateRef,
+		nil,
+		nil,
+		1,
+		time.Time{},
+	)
 	if err != nil {
 		t.Fatalf("add first duplicate ref: %v", err)
 	}
-	second, err := s.AddMessageWithReasoning(ctx, conv.ConversationID, "assistant", "second duplicate ref", "", "", duplicateRef, nil, nil, 1, time.Time{})
+	second, err := s.AddMessageWithReasoning(
+		ctx,
+		conv.ConversationID,
+		"assistant",
+		"second duplicate ref",
+		"",
+		"",
+		duplicateRef,
+		nil,
+		nil,
+		1,
+		time.Time{},
+	)
 	if err != nil {
 		t.Fatalf("add second duplicate ref: %v", err)
 	}

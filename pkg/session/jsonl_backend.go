@@ -202,9 +202,7 @@ func (b *JSONLBackend) HistoryRevision(key string) string {
 	return revStore.HistoryRevision(b.resolveSessionKey(key))
 }
 
-type historyRevisionStore interface {
-	HistoryRevision(sessionKey string) string
-}
+type historyRevisionStore = HistoryRevisionStore
 
 // The bootstrap sweep only skips unchanged sessions when the live store
 // advertises this capability, and it degrades silently to re-reading

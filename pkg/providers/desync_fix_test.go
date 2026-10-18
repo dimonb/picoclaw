@@ -17,12 +17,17 @@ func TestClassifyError_WSServerError_TriggersFailover(t *testing.T) {
 		err  error
 	}{
 		{"no tool output desync", &wsServerError{StatusCode: 0, Msg: "No tool output found for function call call_x"}},
-		{"wrapped as chatStream returns it", fmt.Errorf("codex ws: %w", &wsServerError{Msg: "No tool output found for function call call_x"})},
+		{
+			"wrapped as chatStream returns it",
+			fmt.Errorf("codex ws: %w", &wsServerError{Msg: "No tool output found for function call call_x"}),
+		},
 		{"400-ish must not be non-retriable Format", &wsServerError{StatusCode: 400, Msg: "bad request"}},
 		{"500 transient", &wsServerError{StatusCode: 500, Msg: "internal"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			fe := ClassifyError(tc.err, "codex-ws", "gpt-5.5")
 			if fe == nil {
 				t.Fatalf("ClassifyError returned nil; want a FailoverError so the chain fails over")
@@ -48,18 +53,32 @@ func TestClassifyError_WSServerError_ContextOverflow(t *testing.T) {
 		name string
 		err  error
 	}{
-		{"status 0 codex phrasing", &wsServerError{StatusCode: 0, Msg: "Your input exceeds the context window of this model. Please adjust your input and try again."}},
-		{"wrapped", fmt.Errorf("codex ws: %w", &wsServerError{Msg: "Your input exceeds the context window of this model."})},
+		{
+			"status 0 codex phrasing",
+			&wsServerError{
+				StatusCode: 0,
+				Msg:        "Your input exceeds the context window of this model. Please adjust your input and try again.",
+			},
+		},
+		{
+			"wrapped",
+			fmt.Errorf("codex ws: %w", &wsServerError{Msg: "Your input exceeds the context window of this model."}),
+		},
 		{"explicit exceeded phrasing", &wsServerError{StatusCode: 0, Msg: "context window exceeded"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			fe := ClassifyError(tc.err, "codex-ws", "gpt-5.5")
 			if fe == nil {
 				t.Fatalf("ClassifyError returned nil; want a FailoverError")
 			}
 			if fe.Reason != FailoverContextOverflow {
-				t.Errorf("Reason=%s, want context_overflow so the agent compresses instead of cooling the provider down", fe.Reason)
+				t.Errorf(
+					"Reason=%s, want context_overflow so the agent compresses instead of cooling the provider down",
+					fe.Reason,
+				)
 			}
 			if fe.IsRetriable() {
 				t.Errorf("context overflow must be non-retriable at the fallback layer (no cooldown), got retriable")

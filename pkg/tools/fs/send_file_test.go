@@ -139,7 +139,11 @@ func TestSendFileTool_SeveralFilesInOneCall(t *testing.T) {
 		t.Fatalf("unexpected error: %s", result.ForLLM)
 	}
 	if len(result.Media) != 2 || !result.ResponseHandled {
-		t.Fatalf("media = %v, handled = %v; want both files in one handled result", result.Media, result.ResponseHandled)
+		t.Fatalf(
+			"media = %v, handled = %v; want both files in one handled result",
+			result.Media,
+			result.ResponseHandled,
+		)
 	}
 	for i, want := range []string{"solution_92.png", "solution_93.png"} {
 		_, meta, err := store.ResolveWithMeta(result.Media[i])

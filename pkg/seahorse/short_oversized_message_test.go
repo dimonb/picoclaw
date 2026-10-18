@@ -30,8 +30,8 @@ func TestCompactLeafWithOversizedMessageInHead(t *testing.T) {
 		if err != nil {
 			t.Fatalf("AddMessage: %v", err)
 		}
-		if err := s.AppendContextMessage(ctx, convID, m.ID); err != nil {
-			t.Fatalf("AppendContextMessage: %v", err)
+		if appendErr := s.AppendContextMessage(ctx, convID, m.ID); appendErr != nil {
+			t.Fatalf("AppendContextMessage: %v", appendErr)
 		}
 	}
 
@@ -40,19 +40,19 @@ func TestCompactLeafWithOversizedMessageInHead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
-	if err := s.AppendContextMessage(ctx, convID, oversized.ID); err != nil {
-		t.Fatalf("AppendContextMessage: %v", err)
+	if opErr := s.AppendContextMessage(ctx, convID, oversized.ID); opErr != nil {
+		t.Fatalf("AppendContextMessage: %v", opErr)
 	}
 
 	// Enough trailing messages that the chunk above sits outside the fresh
 	// tail and is genuinely eligible for compaction.
 	for i := 0; i < FreshTailCount+LeafMinFanout; i++ {
-		m, err := s.AddMessage(ctx, convID, "user", "tail", 20)
-		if err != nil {
-			t.Fatalf("AddMessage: %v", err)
+		m, opErr := s.AddMessage(ctx, convID, "user", "tail", 20)
+		if opErr != nil {
+			t.Fatalf("AddMessage: %v", opErr)
 		}
-		if err := s.AppendContextMessage(ctx, convID, m.ID); err != nil {
-			t.Fatalf("AppendContextMessage: %v", err)
+		if appendErr := s.AppendContextMessage(ctx, convID, m.ID); appendErr != nil {
+			t.Fatalf("AppendContextMessage: %v", appendErr)
 		}
 	}
 
@@ -217,8 +217,8 @@ func TestBootstrapDoesNotRebuildCappedToolResults(t *testing.T) {
 	}
 
 	// Restart: same history, nothing edited.
-	if err := e.Bootstrap(ctx, sessionKey, history); err != nil {
-		t.Fatalf("second Bootstrap: %v", err)
+	if opErr := e.Bootstrap(ctx, sessionKey, history); opErr != nil {
+		t.Fatalf("second Bootstrap: %v", opErr)
 	}
 	after, err := e.store.GetMessages(ctx, conv.ConversationID, 100, 0)
 	if err != nil {
@@ -359,8 +359,8 @@ func TestCompactLeafGuardSerializesConcurrentPasses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("AddMessage: %v", err)
 		}
-		if err := s.AppendContextMessage(ctx, convID, m.ID); err != nil {
-			t.Fatalf("AppendContextMessage: %v", err)
+		if appendErr := s.AppendContextMessage(ctx, convID, m.ID); appendErr != nil {
+			t.Fatalf("AppendContextMessage: %v", appendErr)
 		}
 	}
 
