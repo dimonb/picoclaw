@@ -242,6 +242,10 @@ func (a *SQLiteMediaArchive) LookupBySHA(sha string) []ArchiveEntry {
 		}
 		out = append(out, entry)
 	}
+	if err := rows.Err(); err != nil {
+		logger.WarnCF("media.archive", "lookup by sha iteration failed", map[string]any{"error": err.Error()})
+		return nil
+	}
 	return out
 }
 
@@ -360,7 +364,10 @@ func (a *SQLiteMediaArchive) IterateForEviction(
 	}
 
 	for _, path := range paths {
-		entries := a.entriesByArchivePath(path)
+		entries, err := a.entriesByArchivePath(path)
+		if err != nil {
+			return fmt.Errorf("eviction entries: %w", err)
+		}
 		if len(entries) == 0 {
 			continue
 		}
@@ -395,24 +402,27 @@ func (a *SQLiteMediaArchive) IterateForEviction(
 	return nil
 }
 
-func (a *SQLiteMediaArchive) entriesByArchivePath(path string) []ArchiveEntry {
+func (a *SQLiteMediaArchive) entriesByArchivePath(path string) ([]ArchiveEntry, error) {
 	rows, err := a.db.Query(`
         SELECT ref, archive_path, sha256, filename, content_type, source, scope,
                cleanup_policy, retention_class, size_bytes, stored_at, last_resolved_at
         FROM media_archive WHERE archive_path = ?`, path)
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	defer rows.Close()
 	var out []ArchiveEntry
 	for rows.Next() {
 		entry, err := scanEntry(rows)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		out = append(out, entry)
 	}
-	return out
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // rowScanner is satisfied by both *sql.Row and *sql.Rows (after Next()).

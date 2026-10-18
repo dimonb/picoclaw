@@ -19,18 +19,18 @@ const (
 
 // ArchiveEntry is a row in the archive index.
 type ArchiveEntry struct {
-	Ref             string
-	ArchivePath     string
-	SHA256          string
-	Filename        string
-	ContentType     string
-	Source          string
-	Scope           string
-	CleanupPolicy   CleanupPolicy
-	RetentionClass  RetentionClass
-	SizeBytes       int64
-	StoredAt        time.Time
-	LastResolvedAt  time.Time // zero value if never resolved
+	Ref            string
+	ArchivePath    string
+	SHA256         string
+	Filename       string
+	ContentType    string
+	Source         string
+	Scope          string
+	CleanupPolicy  CleanupPolicy
+	RetentionClass RetentionClass
+	SizeBytes      int64
+	StoredAt       time.Time
+	LastResolvedAt time.Time // zero value if never resolved
 }
 
 // MediaArchive is the persistence layer behind FileMediaStore. Each managed

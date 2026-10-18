@@ -51,8 +51,8 @@ func TestGetContextSummaryTokenCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AddMessage: %v", err)
 	}
-	if err := s.AppendContextMessage(ctx, convID, m.ID); err != nil {
-		t.Fatalf("AppendContextMessage: %v", err)
+	if opErr := s.AppendContextMessage(ctx, convID, m.ID); opErr != nil {
+		t.Fatalf("AppendContextMessage: %v", opErr)
 	}
 
 	got, err := s.GetContextSummaryTokenCount(ctx, convID)
@@ -225,7 +225,7 @@ func TestCondensedLoopSurvivesAHangingProvider(t *testing.T) {
 	convID := conv.ConversationID
 	seedLeafSummaries(t, s, convID, 50, 300)
 
-	// A provider that blocks until its context is cancelled — the shape of a
+	// A provider that blocks until its context is canceled — the shape of a
 	// wedged connection, not a slow one.
 	blocked := make(chan struct{})
 	hanging := func(callCtx context.Context, prompt string, opts CompleteOptions) (string, error) {

@@ -534,6 +534,9 @@ func (p *CodexWSProvider) connectSession(
 
 	wsURL := p.baseURL
 	conn, resp, err := dialer.Dial(wsURL, hdrs)
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	if err != nil {
 		if resp != nil {
 			logger.ErrorCF("provider.codex_ws", "WebSocket handshake failed",
@@ -572,9 +575,9 @@ func (p *CodexWSProvider) connectSession(
 		Generate:          &boolFalse,
 	}
 
-	if err := p.sendToSession(sess, req); err != nil {
+	if opErr := p.sendToSession(sess, req); opErr != nil {
 		p.closeSession(sess)
-		return fmt.Errorf("prewarm send: %w", err)
+		return fmt.Errorf("prewarm send: %w", opErr)
 	}
 	respID, _, err := p.drainStream(sess, nil, nil)
 	if err != nil {

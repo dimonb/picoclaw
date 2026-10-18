@@ -259,11 +259,6 @@ func uniquePaths(paths []string) []string {
 	return result
 }
 
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
-}
-
 func errorString(err error) string {
 	if err == nil {
 		return ""
