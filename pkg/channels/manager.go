@@ -1034,23 +1034,26 @@ func (s *finalizeHookStreamer) ClearFinalizedStreamMarker() {
 	}
 }
 
-// initChannel is a helper that looks up a factory by type name and creates the channel.
+// initChannel creates a channel without adding it to the manager's active channels.
 // typeName is the channel type used for factory lookup (e.g., "telegram").
 // channelName is the config map key used as the channel's runtime name (e.g., "my_telegram").
-func (m *Manager) initChannel(typeName, channelName string) {
+func (m *Manager) initChannel(cfg *config.Config, typeName, channelName string) (Channel, error) {
 	f, ok := getFactory(typeName)
 	if !ok {
 		logger.WarnCF("channels", "Factory not registered", map[string]any{
 			"channel": channelName,
 			"type":    typeName,
 		})
-		return
+		return nil, fmt.Errorf("factory for channel type %q is not registered", typeName)
 	}
 	logger.DebugCF("channels", "Attempting to initialize channel", map[string]any{
 		"channel": channelName,
 		"type":    typeName,
 	})
-	ch, err := f(channelName, typeName, m.config, m.bus)
+	ch, err := f(channelName, typeName, cfg, m.bus)
+	if err == nil && ch == nil {
+		err = errors.New("channel factory returned nil")
+	}
 	if err != nil {
 		logger.ErrorCF("channels", "Failed to initialize channel", map[string]any{
 			"channel": channelName,
@@ -1072,7 +1075,6 @@ func (m *Manager) initChannel(typeName, channelName string) {
 		if setter, ok := ch.(interface{ SetOwner(ch Channel) }); ok {
 			setter.SetOwner(ch)
 		}
-		m.channels[channelName] = ch
 		m.publishChannelEvent(
 			runtimeevents.KindChannelLifecycleInitialized,
 			channelName,
@@ -1085,10 +1087,11 @@ func (m *Manager) initChannel(typeName, channelName string) {
 			"type":    typeName,
 		})
 	}
+	return ch, err
 }
 
-func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channel, bool) {
-	bc, ok := m.config.Channels[channelName]
+func getChannelConfigAndEnabled(cfg *config.Config, channelName string) (*config.Channel, bool) {
+	bc, ok := cfg.Channels[channelName]
 	if !ok || bc == nil {
 		return nil, false
 	}
@@ -1168,7 +1171,7 @@ func (m *Manager) initChannels(channels *config.ChannelsConfig) error {
 		if !bc.Enabled {
 			continue
 		}
-		_, ready := m.getChannelConfigAndEnabled(name)
+		_, ready := getChannelConfigAndEnabled(m.config, name)
 		if !ready {
 			continue
 		}
@@ -1176,7 +1179,9 @@ func (m *Manager) initChannels(channels *config.ChannelsConfig) error {
 		if typeName == "" {
 			typeName = name
 		}
-		m.initChannel(typeName, name)
+		if ch, err := m.initChannel(m.config, typeName, name); err == nil {
+			m.channels[name] = ch
+		}
 	}
 
 	logger.InfoCF("channels", "Channel initialization completed", map[string]any{
@@ -2000,25 +2005,44 @@ func (m *Manager) GetEnabledChannels() []string {
 	return names
 }
 
-// Reload updates the config reference without restarting channels.
-// This is used when channel config hasn't changed but other parts of the config have.
+// Reload replaces changed channels and updates the config reference.
+// Failed channel initialization leaves the active channels and config unchanged.
 func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// Save old config so we can revert on error.
-	oldConfig := m.config
-
-	// Update config early: initChannel uses m.config via factory(m.config, m.bus).
-	m.config = cfg
-
 	list := toChannelHashes(cfg)
 	added, removed := compareChannels(m.channelHashes, list)
 
-	deferFuncs := make([]func(), 0, len(removed)+len(added))
+	// Prepare every replacement before stopping any active channel. Startup
+	// initialization tolerates skipped channels, but reload must not replace a
+	// working channel with a missing instance or commit a failed config hash.
+	replacements := make(map[string]Channel, len(added))
+	for _, name := range added {
+		bc, ready := getChannelConfigAndEnabled(cfg, name)
+		if !ready {
+			return fmt.Errorf("channel %q is not ready", name)
+		}
+		typeName := bc.Type
+		if typeName == "" {
+			typeName = name
+		}
+		channel, err := m.initChannel(cfg, typeName, name)
+		if err != nil {
+			return fmt.Errorf("initialize channel %q: %w", name, err)
+		}
+		replacements[name] = channel
+	}
+	m.config = cfg
+
+	deferFuncs := make([]func(), 0, len(removed))
 	for _, name := range removed {
-		// Stop all channels
+		// Initial hashes can include an enabled channel that was never created.
 		channel := m.channels[name]
+		if channel == nil {
+			continue
+		}
+		// Stop all channels
 		logger.InfoCF("channels", "Stopping channel", map[string]any{
 			"channel": name,
 		})
@@ -2048,22 +2072,9 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 	}
 	dispatchCtx, cancel := context.WithCancel(ctx)
 	m.dispatchTask = &asyncTask{cancel: cancel}
-	cc, err := toChannelConfig(cfg, added)
-	if err != nil {
-		logger.ErrorC("channels", fmt.Sprintf("toChannelConfig error: %v", err))
-		m.config = oldConfig
-		cancel()
-		return err
-	}
-	err = m.initChannels(cc)
-	if err != nil {
-		logger.ErrorC("channels", fmt.Sprintf("initChannels error: %v", err))
-		m.config = oldConfig
-		cancel()
-		return err
-	}
 	for _, name := range added {
-		channel := m.channels[name]
+		channel := replacements[name]
+		m.channels[name] = channel
 		logger.InfoCF("channels", "Starting channel", map[string]any{
 			"channel": name,
 		})
@@ -2099,9 +2110,9 @@ func (m *Manager) Reload(ctx context.Context, cfg *config.Config) error {
 			runtimeevents.SeverityInfo,
 			ChannelLifecyclePayload{Type: channelType},
 		)
-		deferFuncs = append(deferFuncs, func() {
-			m.RegisterChannel(name, channel)
-		})
+		if m.mux != nil {
+			m.registerChannelHTTPHandler(name, channel)
+		}
 	}
 
 	// Commit hashes only on full success.
