@@ -20,10 +20,8 @@ type lazyFallbackTrace struct {
 	span trace.Span
 }
 
-func (f *lazyFallbackTrace) start(tr trace.Tracer) trace.Span {
-	ctx, span := tr.Start(f.ctx, "Fallback")
-	f.ctx = ctx
-	return span
+func (f *lazyFallbackTrace) start(tr trace.Tracer) (context.Context, trace.Span) {
+	return tr.Start(f.ctx, "Fallback")
 }
 
 // FallbackChain orchestrates model fallback across multiple candidates.
@@ -263,7 +261,7 @@ func (fc *FallbackChain) ExecuteCandidate(
 
 		// Start the Fallback span lazily when we actually fall back (i > 0).
 		if i > 0 && fallbackTrace.span == nil {
-			fallbackTrace.span = fallbackTrace.start(tr)
+			fallbackTrace.ctx, fallbackTrace.span = fallbackTrace.start(tr)
 		}
 
 		// Execute the run function under an LLMAttempt span. When the primary
@@ -499,7 +497,7 @@ func (fc *FallbackChain) ExecuteImage(
 		}
 
 		if i > 0 && fallbackTrace.span == nil {
-			fallbackTrace.span = fallbackTrace.start(tr)
+			fallbackTrace.ctx, fallbackTrace.span = fallbackTrace.start(tr)
 		}
 
 		start := time.Now()
