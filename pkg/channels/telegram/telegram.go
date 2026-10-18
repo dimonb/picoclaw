@@ -1555,7 +1555,8 @@ func isTelegramForumTopicRootReply(message *telego.Message) bool {
 	if reply.ForumTopicCreated != nil {
 		return true
 	}
-	return reply.MessageID == message.MessageThreadID && strings.TrimSpace(telegramQuotedContent(reply)) == "" && len(quotedTelegramMediaRefs(reply, nil)) == 0
+	return reply.MessageID == message.MessageThreadID && strings.TrimSpace(telegramQuotedContent(reply)) == "" &&
+		len(quotedTelegramMediaRefs(reply, nil)) == 0
 }
 
 func (c *TelegramChannel) prependTelegramQuotedReply(content string, reply *telego.Message) string {

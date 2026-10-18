@@ -4,11 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
@@ -23,12 +20,14 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 var (
 	tp *sdktrace.TracerProvider
 	lp *log.LoggerProvider
-	once sync.Once
 )
 
 // Init initializes OpenTelemetry SDK based on the provided configuration.
@@ -109,7 +108,9 @@ func Init(ctx context.Context, cfg config.TelemetryConfig) (func(), error) {
 	)
 	global.SetLoggerProvider(lp)
 
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+	otel.SetTextMapPropagator(
+		propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}),
+	)
 
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
 		logger.WarnCF("telemetry", "OpenTelemetry export error", map[string]any{"error": err.Error()})

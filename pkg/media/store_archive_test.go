@@ -29,8 +29,8 @@ func TestStore_WithArchive_MovesIntoArchive(t *testing.T) {
 	}
 
 	// Source file should be gone from temp.
-	if _, err := os.Stat(src); !os.IsNotExist(err) {
-		t.Errorf("source temp file still exists: err=%v", err)
+	if _, opErr := os.Stat(src); !os.IsNotExist(opErr) {
+		t.Errorf("source temp file still exists: err=%v", opErr)
 	}
 
 	resolved, err := store.Resolve(ref)
@@ -73,12 +73,12 @@ func TestStore_WithArchive_ReleaseAllKeepsArchiveFile(t *testing.T) {
 	}
 	resolved, _ := store.Resolve(ref)
 
-	if err := store.ReleaseAll("scope-A"); err != nil {
-		t.Fatalf("ReleaseAll: %v", err)
+	if opErr := store.ReleaseAll("scope-A"); opErr != nil {
+		t.Fatalf("ReleaseAll: %v", opErr)
 	}
 
-	if _, err := os.Stat(resolved); err != nil {
-		t.Errorf("archive file should still exist after ReleaseAll: %v", err)
+	if _, opErr := os.Stat(resolved); opErr != nil {
+		t.Errorf("archive file should still exist after ReleaseAll: %v", opErr)
 	}
 	if _, ok := archive.LookupByRef(ref); !ok {
 		t.Error("archive index entry should still exist after ReleaseAll")

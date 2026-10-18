@@ -512,7 +512,7 @@ func (s *Store) GetMessages(ctx context.Context, convID int64, limit int, before
 		var createdAt string
 		var metadataRaw sql.NullString
 		var attachmentsRaw sql.NullString
-		if err := rows.Scan(
+		if opErr := rows.Scan(
 			&msg.ID,
 			&msg.ConversationID,
 			&msg.Role,
@@ -524,16 +524,16 @@ func (s *Store) GetMessages(ctx context.Context, convID int64, limit int, before
 			&attachmentsRaw,
 			&msg.TokenCount,
 			&createdAt,
-		); err != nil {
-			return nil, err
+		); opErr != nil {
+			return nil, opErr
 		}
 		msg.CreatedAt = parseSQLiteTime(createdAt)
 		msg.Metadata = decodeMetadata(metadataRaw)
 		msg.Attachments = decodeAttachments(attachmentsRaw)
 		msgs = append(msgs, msg)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
+	if opErr := rows.Err(); opErr != nil {
+		return nil, opErr
 	}
 
 	// Load parts for all messages in batches instead of one query per

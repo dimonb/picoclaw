@@ -414,8 +414,8 @@ func setupAndStartServices(
 	}
 	fmt.Println("✓ Heartbeat service started")
 
-	if err := initMediaStack(runningServices, cfg); err != nil {
-		return nil, fmt.Errorf("error initializing media stack: %w", err)
+	if opErr := initMediaStack(runningServices, cfg); opErr != nil {
+		return nil, fmt.Errorf("error initializing media stack: %w", opErr)
 	}
 
 	runningServices.ChannelManager, err = channels.NewManager(
@@ -651,8 +651,8 @@ func restartServices(
 	}
 	fmt.Println("  ✓ Heartbeat service restarted")
 
-	if err := initMediaStack(runningServices, cfg); err != nil {
-		return fmt.Errorf("error initializing media stack: %w", err)
+	if opErr := initMediaStack(runningServices, cfg); opErr != nil {
+		return fmt.Errorf("error initializing media stack: %w", opErr)
 	}
 	if runningServices.ChannelManager != nil {
 		runningServices.ChannelManager.SetMediaStore(runningServices.MediaStore)

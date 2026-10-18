@@ -6,12 +6,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sipeed/picoclaw/pkg/logger"
-	"github.com/sipeed/picoclaw/pkg/telemetry"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/telemetry"
 )
+
+// lazyFallbackTrace retains a single parent for sibling fallback attempts.
+type lazyFallbackTrace struct {
+	ctx  context.Context
+	span trace.Span
+}
+
+func (f *lazyFallbackTrace) start(tr trace.Tracer) {
+	f.ctx, f.span = tr.Start(f.ctx, "Fallback")
+}
 
 // FallbackChain orchestrates model fallback across multiple candidates.
 type FallbackChain struct {
@@ -163,18 +174,18 @@ func (fc *FallbackChain) ExecuteCandidate(
 	// baseCtx is preserved across iterations so LLMAttempt spans are siblings,
 	// not nested inside each other.
 	baseCtx := ctx
-	// fallbackSpan is created lazily on the second attempt (actual fallback).
-	var fallbackSpan trace.Span
+	fallbackTrace := lazyFallbackTrace{ctx: baseCtx}
+	// The fallback span is created lazily on the second attempt (actual fallback).
 	endFallbackSpan := func(err error) {
-		if fallbackSpan == nil {
+		if fallbackTrace.span == nil {
 			return
 		}
 		if err != nil {
-			fallbackSpan.RecordError(err)
-			fallbackSpan.SetStatus(codes.Error, err.Error())
+			fallbackTrace.span.RecordError(err)
+			fallbackTrace.span.SetStatus(codes.Error, err.Error())
 		}
-		fallbackSpan.End()
-		fallbackSpan = nil
+		fallbackTrace.span.End()
+		fallbackTrace.span = nil
 	}
 
 	result := &FallbackResult{
@@ -249,8 +260,8 @@ func (fc *FallbackChain) ExecuteCandidate(
 		}
 
 		// Start the Fallback span lazily when we actually fall back (i > 0).
-		if i > 0 && fallbackSpan == nil {
-			baseCtx, fallbackSpan = tr.Start(baseCtx, "Fallback")
+		if i > 0 && fallbackTrace.span == nil {
+			fallbackTrace.start(tr)
 		}
 
 		// Execute the run function under an LLMAttempt span. When the primary
@@ -274,7 +285,7 @@ func (fc *FallbackChain) ExecuteCandidate(
 			}
 
 			start := time.Now()
-			attemptCtx, subSpan := tr.Start(baseCtx, "LLMAttempt",
+			attemptCtx, subSpan := tr.Start(fallbackTrace.ctx, "LLMAttempt",
 				trace.WithAttributes(
 					attribute.String("provider", candidate.Provider),
 					attribute.String("model", candidate.Model),
@@ -433,17 +444,17 @@ func (fc *FallbackChain) ExecuteImage(
 
 	tr := telemetry.GetTracer()
 	baseCtx := ctx
-	var fallbackSpan trace.Span
+	fallbackTrace := lazyFallbackTrace{ctx: baseCtx}
 	endFallbackSpan := func(err error) {
-		if fallbackSpan == nil {
+		if fallbackTrace.span == nil {
 			return
 		}
 		if err != nil {
-			fallbackSpan.RecordError(err)
-			fallbackSpan.SetStatus(codes.Error, err.Error())
+			fallbackTrace.span.RecordError(err)
+			fallbackTrace.span.SetStatus(codes.Error, err.Error())
 		}
-		fallbackSpan.End()
-		fallbackSpan = nil
+		fallbackTrace.span.End()
+		fallbackTrace.span = nil
 	}
 
 	result := &FallbackResult{
@@ -485,12 +496,12 @@ func (fc *FallbackChain) ExecuteImage(
 			}
 		}
 
-		if i > 0 && fallbackSpan == nil {
-			baseCtx, fallbackSpan = tr.Start(baseCtx, "Fallback")
+		if i > 0 && fallbackTrace.span == nil {
+			fallbackTrace.start(tr)
 		}
 
 		start := time.Now()
-		attemptCtx, subSpan := tr.Start(baseCtx, "LLMAttempt",
+		attemptCtx, subSpan := tr.Start(fallbackTrace.ctx, "LLMAttempt",
 			trace.WithAttributes(
 				attribute.String("provider", candidate.Provider),
 				attribute.String("model", candidate.Model),
