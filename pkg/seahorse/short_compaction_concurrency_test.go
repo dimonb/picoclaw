@@ -61,9 +61,9 @@ func TestCompactionCrossEntryPointSerialization(t *testing.T) {
 			if result, err := ce.compactCondensed(ctx, id); err != nil || result != nil {
 				t.Fatalf("busy condensed result %v %v", result, err)
 			}
-			during, err := s.GetContextItems(ctx, id)
-			if err != nil {
-				t.Fatal(err)
+			during, duringErr := s.GetContextItems(ctx, id)
+			if duringErr != nil {
+				t.Fatal(duringErr)
 			}
 			if !reflect.DeepEqual(before, during) || calls.Load() != 1 {
 				t.Fatal("overlapping pass mutated source or called provider")
@@ -75,9 +75,9 @@ func TestCompactionCrossEntryPointSerialization(t *testing.T) {
 			if !waitForCondensed(ce, id, time.Second) {
 				t.Fatal("async rollup did not finish")
 			}
-			after, err := s.GetContextItems(ctx, id)
-			if err != nil {
-				t.Fatal(err)
+			after, afterErr := s.GetContextItems(ctx, id)
+			if afterErr != nil {
+				t.Fatal(afterErr)
 			}
 			summaries := 0
 			for _, item := range after {
