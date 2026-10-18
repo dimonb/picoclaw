@@ -270,3 +270,34 @@ skills:
 		assert.Equal(t, "abc", envCfg.Tools.Web.Brave.APIKeys[1].raw)
 	})
 }
+
+// A section left empty in .security.yml (every entry under model_list deleted)
+// is YAML null. Decoding null zeroes the field, which wiped the model list from
+// config.json and failed startup with "no providers configured".
+func TestLoadSecurityConfig_EmptySectionKeepsConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".security.yml")
+	require.NoError(t, os.WriteFile(path, []byte("model_list:\nweb:\nskills:\n"), 0o600))
+
+	cfg := &Config{
+		Channels:  make(ChannelsConfig),
+		ModelList: SecureModelList{{ModelName: "sol61", Model: "gpt-6.1-sol"}},
+	}
+	cfg.Tools.Web.Brave.Enabled = true
+	require.NoError(t, loadSecurityConfig(cfg, path))
+
+	require.Len(t, cfg.ModelList, 1)
+	assert.Equal(t, "sol61", cfg.ModelList[0].ModelName)
+	assert.True(t, cfg.Tools.Web.Brave.Enabled)
+}
+
+func TestLoadSecurityConfig_EmptyFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".security.yml")
+	require.NoError(t, os.WriteFile(path, nil, 0o600))
+
+	cfg := &Config{
+		Channels:  make(ChannelsConfig),
+		ModelList: SecureModelList{{ModelName: "sol61", Model: "gpt-6.1-sol"}},
+	}
+	require.NoError(t, loadSecurityConfig(cfg, path))
+	require.Len(t, cfg.ModelList, 1)
+}
