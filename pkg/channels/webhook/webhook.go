@@ -185,7 +185,7 @@ func (c *WebhookChannel) handleInbound(w http.ResponseWriter, r *http.Request, s
 	var payload struct {
 		Content string `json:"content"`
 	}
-	if err := json.Unmarshal(body, &payload); err != nil {
+	if opErr := json.Unmarshal(body, &payload); opErr != nil {
 		http.Error(w, "invalid json body", http.StatusBadRequest)
 		return
 	}

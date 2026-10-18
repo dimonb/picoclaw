@@ -77,8 +77,8 @@ func (p *Pipeline) CallLLM(
 		exec.providerToolDefs = nil
 		ts.markGracefulTerminalUsed()
 	}
-	if err := p.routeMediaTurn(ts, exec); err != nil {
-		return ControlBreak, err
+	if opErr := p.routeMediaTurn(ts, exec); opErr != nil {
+		return ControlBreak, opErr
 	}
 
 	exec.llmOpts = map[string]any{
@@ -195,14 +195,14 @@ func (p *Pipeline) CallLLM(
 			ctx context.Context,
 			candidate providers.FallbackCandidate,
 		) (*providers.LLMResponse, error) {
-			candidateProvider, err := providerForFallbackCandidate(
+			candidateProvider, opErr := providerForFallbackCandidate(
 				ts.agent,
 				exec.activeProvider,
 				exec.activeCandidates,
 				candidate,
 			)
-			if err != nil {
-				return nil, err
+			if opErr != nil {
+				return nil, opErr
 			}
 			callOpts := shallowCloneLLMOptions(exec.llmOpts)
 			delete(callOpts, "thinking_level")
@@ -434,7 +434,9 @@ func (p *Pipeline) CallLLM(
 				exec.providerToolDefs,
 				ts.agent.MaxTokens,
 			)
-			exec.history = append(trimmedStableHistory, protectedTurnTail...)
+			exec.history = make([]providers.Message, 0, len(trimmedStableHistory)+len(protectedTurnTail))
+			exec.history = append(exec.history, trimmedStableHistory...)
+			exec.history = append(exec.history, protectedTurnTail...)
 			exec.messages = buildMessages(trimmedStableHistory)
 			exec.currentTurnStart = len(exec.messages) - len(protectedTurnTail)
 			if exec.gracefulTerminal {

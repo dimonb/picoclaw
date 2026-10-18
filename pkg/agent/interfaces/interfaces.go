@@ -34,12 +34,21 @@ type MessageBus interface {
 
 // ChannelManager manages channel lifecycle and provides channel access.
 type ChannelManager interface {
+	ChannelAccess
+	ChannelMessaging
+}
+
+// ChannelAccess provides channel discovery.
+type ChannelAccess interface {
 	// GetChannel returns the channel with the given name.
 	GetChannel(name string) (channels.Channel, bool)
 
 	// GetEnabledChannels returns the list of enabled channel names.
 	GetEnabledChannels() []string
+}
 
+// ChannelMessaging provides outbound messages and feedback.
+type ChannelMessaging interface {
 	// InvokeTypingStop signals that typing has stopped.
 	InvokeTypingStop(channel, chatID string)
 

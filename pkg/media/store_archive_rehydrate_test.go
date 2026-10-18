@@ -41,8 +41,8 @@ func TestResolve_RehydratesFromArchiveAfterRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve before restart: %v", err)
 	}
-	if err := first.Close(); err != nil {
-		t.Fatalf("Close: %v", err)
+	if opErr := first.Close(); opErr != nil {
+		t.Fatalf("Close: %v", opErr)
 	}
 
 	// Restart: a brand new store and archive handle over the same root. The

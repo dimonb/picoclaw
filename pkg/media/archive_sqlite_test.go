@@ -128,11 +128,11 @@ func TestArchive_DeleteRefcountsByPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Archive 1: %v", err)
 	}
-	if _, err := a.Archive(src2, "media://r2", MediaMeta{
+	if _, opErr := a.Archive(src2, "media://r2", MediaMeta{
 		Source: "telegram", CleanupPolicy: CleanupPolicyDeleteOnCleanup,
 		RetentionClass: RetentionClassPermanent,
-	}, "scope2"); err != nil {
-		t.Fatalf("Archive 2: %v", err)
+	}, "scope2"); opErr != nil {
+		t.Fatalf("Archive 2: %v", opErr)
 	}
 
 	deleted, err := a.Delete("media://r1")
@@ -142,8 +142,8 @@ func TestArchive_DeleteRefcountsByPath(t *testing.T) {
 	if deleted {
 		t.Error("file should NOT be deleted while r2 still references it")
 	}
-	if _, err := os.Stat(p); err != nil {
-		t.Errorf("file missing too early: %v", err)
+	if _, opErr := os.Stat(p); opErr != nil {
+		t.Errorf("file missing too early: %v", opErr)
 	}
 
 	deleted, err = a.Delete("media://r2")
