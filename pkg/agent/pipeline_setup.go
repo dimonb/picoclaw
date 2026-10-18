@@ -83,7 +83,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 				initialBudgetStats.SystemTokens-estimateSummaryTokens(summary),
 				initialBudgetStats.ToolTokens,
 			)
-			// Even a cancelled proactive pass leaves maintenance debt for Finalize.
+			// Even a canceled proactive pass leaves maintenance debt for Finalize.
 			deferredCompactBudget = measuredBudget
 			fields := contextBudgetStatsFields(initialBudgetStats)
 			fields["session_key"] = ts.sessionKey

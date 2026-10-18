@@ -23,9 +23,9 @@ func TestCompactionCrossEntryPointSerialization(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			before, err := s.GetContextItems(ctx, id)
-			if err != nil {
-				t.Fatal(err)
+			before, loadErr := s.GetContextItems(ctx, id)
+			if loadErr != nil {
+				t.Fatal(loadErr)
 			}
 			entered := make(chan struct{})
 			release := make(chan struct{})
