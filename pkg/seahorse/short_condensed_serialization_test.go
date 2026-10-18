@@ -64,7 +64,8 @@ func TestEligibleCompactionSerialization(t *testing.T) {
 				// Always release the provider before assertions, including on regression.
 				close(release)
 				finished := <-done
-				if busy != nil || busyErr != nil || calls.Load() != 1 || readErr != nil || !reflect.DeepEqual(before, during) {
+				if busy != nil || busyErr != nil || calls.Load() != 1 || readErr != nil ||
+					!reflect.DeepEqual(before, during) {
 					t.Fatalf("overlapping pass: id=%v err=%v calls=%d read=%v", busy, busyErr, calls.Load(), readErr)
 				}
 				if finished.err != nil || finished.id == nil {
@@ -100,12 +101,22 @@ func TestEligibleCompactionSerialization(t *testing.T) {
 					}
 				}
 				var count int
-				if err = s.db.QueryRowContext(ctx, "SELECT count(*) FROM messages WHERE conversation_id = ?", id).Scan(&count); err != nil || count != 80 {
+				if err = s.db.QueryRowContext(ctx, "SELECT count(*) FROM messages WHERE conversation_id = ?", id).
+					Scan(&count); err != nil ||
+					count != 80 {
 					t.Fatalf("history count=%d err=%v", count, err)
 				}
 				// Seed a fresh eligible group even if the first pass consumed this kind.
 				for i := 0; i < CondensedMinFanout; i++ {
-					sum, e := s.CreateSummary(ctx, CreateSummaryInput{ConversationID: id, Kind: SummaryKindLeaf, Content: "later leaf", TokenCount: 1000})
+					sum, e := s.CreateSummary(
+						ctx,
+						CreateSummaryInput{
+							ConversationID: id,
+							Kind:           SummaryKindLeaf,
+							Content:        "later leaf",
+							TokenCount:     1000,
+						},
+					)
 					if e != nil {
 						t.Fatal(e)
 					}

@@ -119,8 +119,18 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 			if strings.TrimSpace(ts.userMessage) != "" || len(ts.media) > 0 {
 				reassembledCurrentTurnStart = len(reassembledMessages) - 1
 			}
-			reassembledMessages = resolveMediaRefs(reassembledMessages, p.MediaStore, maxMediaSize, reassembledCurrentTurnStart)
-			reassembledBudgetStats := estimateContextBudgetStats(ts.agent.ContextWindow, reassembledMessages, toolDefs, ts.agent.MaxTokens)
+			reassembledMessages = resolveMediaRefs(
+				reassembledMessages,
+				p.MediaStore,
+				maxMediaSize,
+				reassembledCurrentTurnStart,
+			)
+			reassembledBudgetStats := estimateContextBudgetStats(
+				ts.agent.ContextWindow,
+				reassembledMessages,
+				toolDefs,
+				ts.agent.MaxTokens,
+			)
 			reassembledFields := contextBudgetStatsFields(reassembledBudgetStats)
 			reassembledFields["session_key"] = ts.sessionKey
 			reassembledFields["history_msgs"] = len(history)
@@ -150,7 +160,12 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 				toolDefs,
 				ts.agent.MaxTokens,
 			)
-			finalBudgetStats := estimateContextBudgetStats(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens)
+			finalBudgetStats := estimateContextBudgetStats(
+				ts.agent.ContextWindow,
+				messages,
+				toolDefs,
+				ts.agent.MaxTokens,
+			)
 			if dropped := originalHistoryCount - len(history); dropped > 0 {
 				fields := contextBudgetStatsFields(finalBudgetStats)
 				fields["session_key"] = ts.sessionKey

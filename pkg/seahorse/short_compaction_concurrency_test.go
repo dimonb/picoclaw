@@ -90,7 +90,8 @@ func TestCompactionCrossEntryPointSerialization(t *testing.T) {
 			}
 			// Summarized messages must still be available for history recall.
 			var count int
-			if err = s.db.QueryRowContext(ctx, "SELECT count(*) FROM messages WHERE conversation_id = ?", id).Scan(&count); err != nil {
+			if err = s.db.QueryRowContext(ctx, "SELECT count(*) FROM messages WHERE conversation_id = ?", id).
+				Scan(&count); err != nil {
 				t.Fatal(err)
 			}
 			if count != 80 {

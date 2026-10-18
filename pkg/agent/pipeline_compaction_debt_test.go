@@ -21,6 +21,7 @@ type debtContextManager struct {
 func (m *debtContextManager) Assemble(context.Context, *AssembleRequest) (*AssembleResponse, error) {
 	return &AssembleResponse{Evicted: true, History: m.history}, nil
 }
+
 func (m *debtContextManager) Compact(ctx context.Context, req *CompactRequest) error {
 	m.calls <- *req
 	if req.Reason == ContextCompressReasonProactive {
@@ -40,17 +41,27 @@ func TestPipelineDeferredCompactionDebt(t *testing.T) {
 					defer cleanup()
 					agent.ContextWindow = 160000
 					agent.MaxTokens = 4000
-					m := &debtContextManager{calls: make(chan CompactRequest, 4), release: make(chan struct{}), done: make(chan error, 1)}
+					m := &debtContextManager{
+						calls:   make(chan CompactRequest, 4),
+						release: make(chan struct{}),
+						done:    make(chan error, 1),
+					}
 					defer close(m.release)
 					if hard {
-						m.history = []providers.Message{{Role: "user", Content: strings.Repeat("old conversation ", 40000)}}
+						m.history = []providers.Message{
+							{Role: "user", Content: strings.Repeat("old conversation ", 40000)},
+						}
 					}
 					al.contextManager = m
 					p := NewPipeline(al)
 					opts := makeTestProcessOpts("debt-test")
 					opts.NoHistory = noHistory
 					opts.EnableSummary = false
-					ts := newTurnState(agent, opts, turnEventScope{turnID: "debt", context: newTurnContext(nil, nil, nil)})
+					ts := newTurnState(
+						agent,
+						opts,
+						turnEventScope{turnID: "debt", context: newTurnContext(nil, nil, nil)},
+					)
 					ctx, cancel := context.WithCancel(context.Background())
 					defer cancel()
 					exec, err := p.SetupTurn(ctx, ts)
@@ -74,7 +85,12 @@ func TestPipelineDeferredCompactionDebt(t *testing.T) {
 							default:
 								t.Fatal("hard overflow did not attempt proactive fallback")
 							}
-							if estimateContextBudgetStats(agent.ContextWindow, exec.messages, exec.providerToolDefs, agent.MaxTokens).OverBudget {
+							if estimateContextBudgetStats(
+								agent.ContextWindow,
+								exec.messages,
+								exec.providerToolDefs,
+								agent.MaxTokens,
+							).OverBudget {
 								t.Fatal("timeout fallback did not fit history")
 							}
 						}
@@ -99,7 +115,8 @@ func TestPipelineDeferredCompactionDebt(t *testing.T) {
 					}
 					select {
 					case req := <-m.calls:
-						if req.Reason != ContextCompressReasonSummarize || req.HistoryBudget != exec.deferredCompactBudget {
+						if req.Reason != ContextCompressReasonSummarize ||
+							req.HistoryBudget != exec.deferredCompactBudget {
 							t.Fatalf("wrong debt snapshot: %+v", req)
 						}
 					case <-time.After(time.Second):
