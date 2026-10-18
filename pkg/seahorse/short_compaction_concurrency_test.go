@@ -90,7 +90,7 @@ func TestCompactionCrossEntryPointSerialization(t *testing.T) {
 			}
 			// Summarized messages must still be available for history recall.
 			var count int
-			if err = s.db.QueryRowContext(ctx, "SELECT count(*) FROM messages WHERE conversation_id = ?", id).
+			if err := s.db.QueryRowContext(ctx, "SELECT count(*) FROM messages WHERE conversation_id = ?", id).
 				Scan(&count); err != nil {
 				t.Fatal(err)
 			}
@@ -109,7 +109,7 @@ func TestCompactionCrossEntryPointSerialization(t *testing.T) {
 			}
 			after, _ = s.GetContextItems(ctx, id)
 			ce.complete = mockCompleteFn
-			if _, err = ce.CompactUntilUnder(ctx, id, 1, 1); err != nil {
+			if _, err := ce.CompactUntilUnder(ctx, id, 1, 1); err != nil {
 				t.Fatal(err)
 			}
 			next, _ := s.GetContextItems(ctx, id)
