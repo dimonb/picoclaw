@@ -36,6 +36,13 @@ func (p *Pipeline) Finalize(
 		if ts.hardAbortRequested() {
 			return al.abortTurn(ts)
 		}
+		if !ts.opts.NoHistory && exec.deferredCompactBudget > 0 {
+			p.scheduleContextCompaction(turnCtx, &CompactRequest{
+				SessionKey:    ts.sessionKey,
+				Reason:        ContextCompressReasonSummarize,
+				HistoryBudget: exec.deferredCompactBudget,
+			})
+		}
 		ts.setPhase(TurnPhaseCompleted)
 		return turnResult{
 			finalContent: finalContent,
@@ -57,7 +64,7 @@ func (p *Pipeline) Finalize(
 		}
 	}
 
-	if !ts.opts.NoHistory && ts.opts.EnableSummary {
+	if !ts.opts.NoHistory && (ts.opts.EnableSummary || exec.deferredCompactBudget > 0) {
 		// Off the turn: the summary this produces is for later turns, not this
 		// one — the answer is already written. Run inline and the user waits out
 		// a summarization LLM call (measured at 20-35s on a large chat) before
@@ -70,28 +77,10 @@ func (p *Pipeline) Finalize(
 			Reason:        ContextCompressReasonSummarize,
 			HistoryBudget: agentHistoryBudget(ts.agent, exec.providerToolDefs, ts.activeSkills),
 		}
-		// WithoutCancel keeps the logging and tracing values while dropping the
-		// turn's cancellation, which fires as soon as the turn ends and would
-		// kill this mid-summary. The timeout stops a hung provider call from
-		// parking a goroutine forever.
-		compactCtx, cancelCompact := context.WithTimeout(
-			context.WithoutCancel(turnCtx),
-			backgroundCompactTimeout,
-		)
-		go func() {
-			defer cancelCompact()
-			// A failure here is not fatal for the turn, but it is why a
-			// conversation silently stops being compacted and grows until every
-			// turn goes over budget — so it must not be swallowed. If it does
-			// fail, or is still running when the next turn starts, the
-			// proactive path picks up the slack synchronously.
-			if err := al.contextManager.Compact(compactCtx, req); err != nil {
-				logger.WarnCF("agent", "End-of-turn compaction failed", map[string]any{
-					"session_key": req.SessionKey,
-					"error":       err.Error(),
-				})
-			}
-		}()
+		if exec.deferredCompactBudget > 0 {
+			req.HistoryBudget = exec.deferredCompactBudget
+		}
+		p.scheduleContextCompaction(turnCtx, req)
 	}
 
 	contextUsage := computeContextUsage(ts.agent, ts.sessionKey)
@@ -123,4 +112,31 @@ func (p *Pipeline) Finalize(
 		followUps:        append([]bus.InboundMessage(nil), ts.followUps...),
 		assistantMessage: assistantMsg,
 	}, nil
+}
+
+// scheduleContextCompaction runs existing memory maintenance independently of
+// answer publication. req is a turn-local snapshot, never mutable turn state.
+func (p *Pipeline) scheduleContextCompaction(turnCtx context.Context, req *CompactRequest) {
+	// WithoutCancel keeps the logging and tracing values while dropping the
+	// turn's cancellation, which fires as soon as the turn ends and would
+	// kill this mid-summary. The timeout stops a hung provider call from
+	// parking a goroutine forever.
+	compactCtx, cancelCompact := context.WithTimeout(
+		context.WithoutCancel(turnCtx),
+		backgroundCompactTimeout,
+	)
+	go func() {
+		defer cancelCompact()
+		// A failure here is not fatal for the turn, but it is why a
+		// conversation silently stops being compacted and grows until every
+		// turn goes over budget — so it must not be swallowed. Later turns retry
+		// maintenance; only an actually over-budget
+		// request needs the bounded synchronous fallback.
+		if err := p.ContextManager.Compact(compactCtx, req); err != nil {
+			logger.WarnCF("agent", "End-of-turn compaction failed", map[string]any{
+				"session_key": req.SessionKey,
+				"error":       err.Error(),
+			})
+		}
+	}()
 }

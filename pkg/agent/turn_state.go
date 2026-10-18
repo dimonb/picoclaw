@@ -126,6 +126,10 @@ type turnExecution struct {
 	summary          string
 	currentTurnStart int
 
+	// Stored-context maintenance debt discovered during assembly. A fitting
+	// eviction view must not block the answer on summarization.
+	deferredCompactBudget int
+
 	// Turn output
 	finalContent string
 

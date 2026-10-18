@@ -29,6 +29,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 	var history []providers.Message
 	var summary string
 	var assembleEvicted bool
+	var deferredCompactBudget int
 	if !ts.opts.NoHistory {
 		if resp, err := p.ContextManager.Assemble(ctx, &AssembleRequest{
 			SessionKey:    ts.sessionKey,
@@ -54,12 +55,24 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 
 	if !ts.opts.NoHistory {
 		initialBudgetStats := estimateContextBudgetStats(ts.agent.ContextWindow, messages, toolDefs, ts.agent.MaxTokens)
-		// assembleEvicted is a trigger in its own right. When the stored context
-		// no longer fits, the manager drops its oldest items and hands back a
-		// prompt that does fit — so OverBudget stays false and, without this,
-		// compaction is never asked for. The conversation then loses its oldest
-		// messages on every turn instead of summarizing them, forever.
-		if initialBudgetStats.OverBudget || assembleEvicted {
+		// Eviction means stored memory needs maintenance, not that this request
+		// is invalid. The assembler already supplied a fitting view; do not make
+		// the user wait for a backlog of summary calls before answering it.
+		// Finalize drains one leaf chunk (and eligible rollups) off the turn,
+		// using the existing deadline-bound maintenance path.
+		if assembleEvicted && !initialBudgetStats.OverBudget {
+			deferredCompactBudget = historyTokenBudget(
+				ts.agent.ContextWindow,
+				ts.agent.MaxTokens,
+				initialBudgetStats.SystemTokens-estimateSummaryTokens(summary),
+				initialBudgetStats.ToolTokens,
+			)
+			logger.InfoCF("agent", "Context eviction: deferring compaction until after answer", map[string]any{
+				"session_key":    ts.sessionKey,
+				"history_budget": deferredCompactBudget,
+			})
+		}
+		if initialBudgetStats.OverBudget {
 			// The estimate that produced the assemble budget was too optimistic
 			// (usually a summary-heavy or skill-heavy system prompt). Recompute
 			// the budget from what the prompt actually costs, so compaction and
@@ -70,6 +83,8 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 				initialBudgetStats.SystemTokens-estimateSummaryTokens(summary),
 				initialBudgetStats.ToolTokens,
 			)
+			// Even a canceled proactive pass leaves maintenance debt for Finalize.
+			deferredCompactBudget = measuredBudget
 			fields := contextBudgetStatsFields(initialBudgetStats)
 			fields["session_key"] = ts.sessionKey
 			fields["history_msgs"] = len(history)
@@ -77,9 +92,6 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 			fields["history_budget"] = measuredBudget
 			fields["assemble_evicted"] = assembleEvicted
 			fields["trigger"] = "over_budget"
-			if !initialBudgetStats.OverBudget {
-				fields["trigger"] = "assemble_evicted"
-			}
 			logger.WarnCF("agent", "Proactive compression: context budget exceeded before LLM call", fields)
 			if err := p.ContextManager.Compact(ctx, &CompactRequest{
 				SessionKey:    ts.sessionKey,
@@ -207,6 +219,7 @@ func (p *Pipeline) SetupTurn(ctx context.Context, ts *turnState) (*turnExecution
 		summary,
 		messages,
 	)
+	exec.deferredCompactBudget = deferredCompactBudget
 	exec.currentTurnStart = currentTurnStart
 	exec.activeCandidates = activeCandidates
 	exec.activeModel = activeModel
