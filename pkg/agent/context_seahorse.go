@@ -277,7 +277,13 @@ func (m *seahorseContextManager) Assemble(ctx context.Context, req *AssembleRequ
 // waiting on, so a badly overgrown conversation converges across a few turns
 // (the caller's trim fallback keeps the current request valid) instead of
 // stalling one turn for minutes.
-const proactiveCompactIterations = 6
+const proactiveCompactIterations = 1
+
+// A fitting eviction view is maintained after the answer. For a truly
+// oversized prompt, try at most one pass with a cooperative five-second deadline, then let the
+// caller trim the view locally. Slow providers still get the generous existing
+// end-of-turn timeout to make progress; memory is not disabled or deleted.
+const proactiveCompactTimeout = 5 * time.Second
 
 // Compact compresses conversation history via seahorse summarization.
 func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactRequest) error {
@@ -300,6 +306,11 @@ func (m *seahorseContextManager) Compact(ctx context.Context, req *CompactReques
 		if req.HistoryBudget > 0 {
 			target := int(float64(req.HistoryBudget) * seahorse.ContextThreshold)
 			iterations := proactiveCompactIterations
+			if req.Reason == ContextCompressReasonProactive {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, proactiveCompactTimeout)
+				defer cancel()
+			}
 			if req.Reason == ContextCompressReasonRetry {
 				// The provider already rejected the request; there is no valid
 				// request to fall back to, so run to completion.

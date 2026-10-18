@@ -91,13 +91,16 @@ type Engine struct {
 
 // CompactionEngine handles LLM-based summarization (defined in short_compaction.go).
 type CompactionEngine struct {
-	store          *Store
-	config         Config
-	complete       CompleteFn
-	condensing     sync.Map // map[int64]struct{} — dedup for async condensed goroutines
-	leafCompacting sync.Map // map[int64]struct{} — one leaf pass per conversation at a time
-	shutdownCtx    context.Context
-	shutdownCancel context.CancelFunc
+	store      *Store
+	config     Config
+	complete   CompleteFn
+	condensing sync.Map // map[int64]struct{} — dedup for async condensed goroutines
+	// mutationCompacting serializes source selection through publication across
+	// leaf/condensed and foreground/background paths without holding a DB lock.
+	mutationCompacting sync.Map // map[int64]struct{}; busy passes defer to later turns
+	leafCompacting     sync.Map // map[int64]struct{} — one leaf pass per conversation at a time
+	shutdownCtx        context.Context
+	shutdownCancel     context.CancelFunc
 	// condensedTimeout bounds one rollup pass; zero means CondensedCompactTimeout.
 	// Tests shorten it so the wedge path can be exercised in milliseconds.
 	condensedTimeout time.Duration

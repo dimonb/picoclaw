@@ -329,6 +329,14 @@ func contextTokenCountOrZero(ctx context.Context, e *CompactionEngine, convID in
 // compactLeaf compresses the oldest contiguous message chunk into a leaf summary.
 // When force is true, FreshTailCount protection is bypassed (used by CompactUntilUnder).
 func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force ...bool) (*string, error) {
+	// Selection uses context ordinals: protect it through summary publication,
+	// including provider work, against every other compaction entry point.
+	// Do not wait behind a slow provider on the foreground path.
+	if _, busy := e.mutationCompacting.LoadOrStore(convID, struct{}{}); busy {
+		return nil, nil
+	}
+	defer e.mutationCompacting.Delete(convID)
+
 	items, err := e.store.GetContextItems(ctx, convID)
 	if err != nil {
 		return nil, err
@@ -471,6 +479,14 @@ func (e *CompactionEngine) compactLeaf(ctx context.Context, convID int64, force 
 
 // compactCondensed compresses multiple summaries into one higher-level summary.
 func (e *CompactionEngine) compactCondensed(ctx context.Context, convID int64) (*string, error) {
+	// Selection uses context ordinals: protect it through summary publication,
+	// including provider work, against every other compaction entry point.
+	// Do not wait behind a slow provider on the foreground path.
+	if _, busy := e.mutationCompacting.LoadOrStore(convID, struct{}{}); busy {
+		return nil, nil
+	}
+	defer e.mutationCompacting.Delete(convID)
+
 	// Try ordinal-aware selection first (respects consecutive ordering)
 	var candidates []Summary
 
