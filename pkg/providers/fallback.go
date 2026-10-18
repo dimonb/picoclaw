@@ -258,8 +258,7 @@ func (fc *FallbackChain) ExecuteCandidate(
 		if i > 0 && fallbackTrace.span == nil {
 			fallbackCtx, span := tr.Start(baseCtx, "Fallback")
 			defer span.End()
-			fallbackTrace.ctx = fallbackCtx
-			fallbackTrace.span = span
+			fallbackTrace = lazyFallbackTrace{ctx: fallbackCtx, span: span}
 		}
 
 		// Execute the run function under an LLMAttempt span. When the primary
@@ -496,8 +495,7 @@ func (fc *FallbackChain) ExecuteImage(
 		if i > 0 && fallbackTrace.span == nil {
 			fallbackCtx, span := tr.Start(baseCtx, "Fallback")
 			defer span.End()
-			fallbackTrace.ctx = fallbackCtx
-			fallbackTrace.span = span
+			fallbackTrace = lazyFallbackTrace{ctx: fallbackCtx, span: span}
 		}
 
 		start := time.Now()
