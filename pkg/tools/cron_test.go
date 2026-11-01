@@ -1051,6 +1051,7 @@ func TestCronTool_CommandUpdateSafetyGates(t *testing.T) {
 			"action":          "update",
 			"job_id":          job.ID,
 			"command":         "",
+			"clear_command":   true,
 			"command_confirm": true,
 		})
 

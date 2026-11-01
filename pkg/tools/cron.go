@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
+	"github.com/adhocore/gronx"
 	"github.com/google/uuid"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
@@ -158,15 +160,19 @@ func (t *CronTool) Parameters() map[string]any {
 			},
 			"name": map[string]any{
 				"type":        "string",
-				"description": "Optional job display name for update or add.",
+				"description": "Optional job display name for update or add. On update, empty strings leave fields unchanged.",
 			},
 			"message": map[string]any{
 				"type":        "string",
-				"description": "The reminder/task message to display when triggered. If 'command' is used, this describes what the command does.",
+				"description": "On update, empty string leaves the message unchanged. The reminder/task message to display when triggered. If 'command' is used, this describes what the command does.",
 			},
 			"command": map[string]any{
 				"type":        "string",
-				"description": "Optional: Shell command to execute directly (e.g., 'df -h'). If set, the agent will run this command and report output instead of just showing the message. For update, omit to preserve the command or pass an empty string to clear it.",
+				"description": "Optional: Shell command to execute directly (e.g., 'df -h'). If set, the agent will run this command and report output instead of just showing the message. For update, omitted or empty command preserves the existing command. Use clear_command=true to remove it.",
+			},
+			"clear_command": map[string]any{
+				"type":        "boolean",
+				"description": "Update only: explicitly remove the existing command. Requires the same authorization and command confirmation as setting a command. False leaves it unchanged; cannot combine true with a non-empty command.",
 			},
 			"command_confirm": map[string]any{
 				"type":        "boolean",
@@ -174,15 +180,15 @@ func (t *CronTool) Parameters() map[string]any {
 			},
 			"at_seconds": map[string]any{
 				"type":        "integer",
-				"description": "One-time reminder: seconds from now when to trigger (e.g., 600 for 10 minutes later). Use this for one-time reminders like 'remind me in 10 minutes'.",
+				"description": "On update, 0 leaves the schedule unchanged. One-time reminder: seconds from now when to trigger (e.g., 600 for 10 minutes later). Use this for one-time reminders like 'remind me in 10 minutes'.",
 			},
 			"every_seconds": map[string]any{
 				"type":        "integer",
-				"description": "Recurring interval in seconds (e.g., 3600 for every hour). Use this ONLY for recurring tasks like 'every 2 hours' or 'daily reminder'.",
+				"description": "On update, 0 leaves the schedule unchanged. Recurring interval in seconds (e.g., 3600 for every hour). Use this ONLY for recurring tasks like 'every 2 hours' or 'daily reminder'.",
 			},
 			"cron_expr": map[string]any{
 				"type":        "string",
-				"description": "Cron expression for complex recurring schedules (e.g., '0 9 * * *' for daily at 9am). Use this for complex recurring schedules.",
+				"description": "On update, empty string leaves the schedule unchanged. Cron expression for complex recurring schedules (e.g., '0 9 * * *' for daily at 9am). Use this for complex recurring schedules.",
 			},
 			"job_id": map[string]any{
 				"type":        "string",
@@ -190,13 +196,13 @@ func (t *CronTool) Parameters() map[string]any {
 			},
 			"notify": map[string]any{
 				"type":        "string",
-				"enum":        []string{"output", "always"},
-				"description": "Command jobs only. 'output' (default) wakes you only when the command printed something or exited non-zero — a watchdog that finds nothing costs nothing. 'always' reports every run. Ignored for message jobs.",
+				"enum":        []string{"", "output", "always"},
+				"description": "On update, empty string leaves notify unchanged. Command jobs only. 'output' (default) wakes you only when the command printed something or exited non-zero — a watchdog that finds nothing costs nothing. 'always' reports every run. Ignored for message jobs.",
 			},
 			"session": map[string]any{
 				"type":        "string",
-				"enum":        []string{"origin", "isolated"},
-				"description": "Where the firing runs. 'origin' (default) injects it into this conversation so you keep the context that scheduled it. 'isolated' runs each firing in a fresh empty session — only for noisy standalone monitors.",
+				"enum":        []string{"", "origin", "isolated"},
+				"description": "On update, empty string leaves session mode unchanged. Where the firing runs. 'origin' (default) injects it into this conversation so you keep the context that scheduled it. 'isolated' runs each firing in a fresh empty session — only for noisy standalone monitors.",
 			},
 		},
 		"required": []string{"action"},
@@ -513,7 +519,18 @@ func (t *CronTool) updateJob(ctx context.Context, args map[string]any) *ToolResu
 	if errResult != nil {
 		return errResult
 	}
-	if commandPresent {
+	clearCommand := false
+	if value, present := args["clear_command"]; present {
+		var ok bool
+		clearCommand, ok = value.(bool)
+		if !ok {
+			return ErrorResult("clear_command must be a boolean")
+		}
+	}
+	if clearCommand && command != "" {
+		return ErrorResult("clear_command cannot be combined with a non-empty command")
+	}
+	if (commandPresent && command != "") || clearCommand {
 		if errResult := t.validateCommandMutation(ctx, args); errResult != nil {
 			return errResult
 		}
@@ -526,8 +543,10 @@ func (t *CronTool) updateJob(ctx context.Context, args map[string]any) *ToolResu
 		if errResult != nil {
 			return errResult
 		}
-		job.Payload.SessionMode = sessionMode
-		patches++
+		if sessionMode != "" {
+			job.Payload.SessionMode = sessionMode
+			patches++
+		}
 	}
 
 	if _, present := args["notify"]; present {
@@ -535,8 +554,10 @@ func (t *CronTool) updateJob(ctx context.Context, args map[string]any) *ToolResu
 		if errResult != nil {
 			return errResult
 		}
-		job.Payload.Notify = notifyMode
-		patches++
+		if notifyMode != "" {
+			job.Payload.Notify = notifyMode
+			patches++
+		}
 	}
 
 	if patches == 0 {
@@ -591,6 +612,8 @@ func requiredCronJobID(args map[string]any, action string) (string, *ToolResult)
 	return jobID, nil
 }
 
+// optionalNonEmptyString reads an update string: exact empty is a strict-schema
+// placeholder, while whitespace-only text remains invalid.
 func optionalNonEmptyString(args map[string]any, key string) (string, bool, *ToolResult) {
 	_, present := args[key]
 	if !present {
@@ -599,6 +622,9 @@ func optionalNonEmptyString(args map[string]any, key string) (string, bool, *Too
 	text, _, errResult := optionalString(args, key)
 	if errResult != nil {
 		return "", false, errResult
+	}
+	if text == "" {
+		return "", false, nil
 	}
 	if strings.TrimSpace(text) == "" {
 		return "", false, ErrorResult(fmt.Sprintf("%s cannot be empty", key))
@@ -618,55 +644,56 @@ func optionalString(args map[string]any, key string) (string, bool, *ToolResult)
 	return text, true, nil
 }
 
+// schedulePatch accepts strict-schema neutral values only on update. Validate
+// types/ranges before ignoring zero, so malformed or negative values still fail.
 func schedulePatch(args map[string]any) (cron.CronSchedule, bool, *ToolResult) {
 	var schedule cron.CronSchedule
 	patches := 0
-
-	if _, present := args["at_seconds"]; present {
-		seconds, errResult := positiveSeconds(args, "at_seconds")
+	for _, key := range []string{"at_seconds", "every_seconds"} {
+		if _, present := args[key]; !present {
+			continue
+		}
+		seconds, errResult := updateSeconds(args[key], key)
 		if errResult != nil {
 			return cron.CronSchedule{}, false, errResult
 		}
-		atMS := time.Now().UnixMilli() + seconds*1000
-		schedule = cron.CronSchedule{Kind: "at", AtMS: &atMS}
-		patches++
-	}
-
-	if _, present := args["every_seconds"]; present {
-		seconds, errResult := positiveSeconds(args, "every_seconds")
-		if errResult != nil {
-			return cron.CronSchedule{}, false, errResult
+		if seconds == 0 {
+			continue
 		}
-		everyMS := seconds * 1000
-		schedule = cron.CronSchedule{Kind: "every", EveryMS: &everyMS}
+		if key == "at_seconds" {
+			atMS := time.Now().UnixMilli() + seconds*1000
+			schedule = cron.CronSchedule{Kind: "at", AtMS: &atMS}
+		} else {
+			everyMS := seconds * 1000
+			schedule = cron.CronSchedule{Kind: "every", EveryMS: &everyMS}
+		}
 		patches++
 	}
-
-	if _, present := args["cron_expr"]; present {
-		cronExpr, ok := args["cron_expr"].(string)
+	if value, present := args["cron_expr"]; present {
+		expr, ok := value.(string)
 		if !ok {
 			return cron.CronSchedule{}, false, ErrorResult("cron_expr must be a string")
 		}
-		if strings.TrimSpace(cronExpr) == "" {
-			return cron.CronSchedule{}, false, ErrorResult("cron_expr cannot be empty")
+		if expr != "" {
+			if !gronx.New().IsValid(expr) {
+				return cron.CronSchedule{}, false, ErrorResult("cron_expr must be a valid cron expression")
+			}
+			schedule = cron.CronSchedule{Kind: "cron", Expr: expr}
+			patches++
 		}
-		schedule = cron.CronSchedule{Kind: "cron", Expr: cronExpr}
-		patches++
 	}
-
 	if patches > 1 {
 		return cron.CronSchedule{}, false, ErrorResult("only one of at_seconds, every_seconds, or cron_expr can be set")
 	}
 	return schedule, patches == 1, nil
 }
 
-func positiveSeconds(args map[string]any, key string) (int64, *ToolResult) {
-	value := args[key]
+func updateSeconds(value any, key string) (int64, *ToolResult) {
 	var seconds int64
 	switch v := value.(type) {
 	case float64:
-		if v != float64(int64(v)) {
-			return 0, ErrorResult(fmt.Sprintf("%s must be a positive integer", key))
+		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 || v >= float64(math.MaxInt64) || v != math.Trunc(v) {
+			return 0, ErrorResult(fmt.Sprintf("%s must be a non-negative integer (0 leaves unchanged)", key))
 		}
 		seconds = int64(v)
 	case int:
@@ -674,10 +701,11 @@ func positiveSeconds(args map[string]any, key string) (int64, *ToolResult) {
 	case int64:
 		seconds = v
 	default:
-		return 0, ErrorResult(fmt.Sprintf("%s must be a positive integer", key))
+		return 0, ErrorResult(fmt.Sprintf("%s must be a non-negative integer (0 leaves unchanged)", key))
 	}
-	if seconds <= 0 {
-		return 0, ErrorResult(fmt.Sprintf("%s must be a positive integer", key))
+	// Bound milliseconds and relative timestamps before arithmetic can overflow.
+	if seconds < 0 || seconds > (math.MaxInt64-time.Now().UnixMilli())/1000 {
+		return 0, ErrorResult(fmt.Sprintf("%s is outside the supported seconds range", key))
 	}
 	return seconds, nil
 }
