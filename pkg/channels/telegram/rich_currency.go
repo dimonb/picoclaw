@@ -88,6 +88,14 @@ func richInlineMathEnd(text string, start int) int {
 				return start
 			}
 		}
+		// A whitespace-ended price/prose candidate before a new formula is not
+		// closed by that formula's opening dollar ("$10 и $x^2$").
+		if i+1 < len(text) && richAmount.MatchString(raw) && strings.TrimRight(raw, " \t") != raw {
+			next, _ := utf8.DecodeRuneInString(text[i+1:])
+			if unicode.IsLetter(next) || next == '\\' {
+				return start
+			}
+		}
 		if richMathCommand.MatchString(raw) {
 			return i + 1
 		}
