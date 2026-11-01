@@ -50,7 +50,7 @@ func escapeRichCurrency(text string) string {
 				end := i + 1 + len(amount)
 				// An unfinished formula or identifier ($2x, $2+...) is not clearly money.
 				next, _ := utf8.DecodeRuneInString(text[end:])
-				closingEmphasis := strings.HasPrefix(text[end:], "**") || strings.HasPrefix(text[end:], "__")
+				closingEmphasis := richClosingEmphasis(text, end)
 				if closingEmphasis || end == len(text) || (end+1 < len(text) && strings.ContainsRune("-/", rune(text[end])) && text[end+1] == '$') || (!unicode.IsLetter(next) && !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_+-*/^=<>\\", next)) {
 					out.WriteByte('\\')
 				}
@@ -219,4 +219,13 @@ func richBalancedEnd(text string, start int, open, close byte) int {
 		}
 	}
 	return start
+}
+
+// Recognize emphasis only at a prose boundary, not in unfinished $2**3 math.
+func richClosingEmphasis(text string, start int) bool {
+	end := start
+	for end < len(text) && (text[end] == '*' || text[end] == '_') {
+		end++
+	}
+	return end > start && (end == len(text) || strings.ContainsRune(" \t\r\n.,;:!?)]}>", rune(text[end])))
 }

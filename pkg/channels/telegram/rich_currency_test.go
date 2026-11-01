@@ -23,6 +23,8 @@ func TestParseContentRichCurrency(t *testing.T) {
 		{"unicode variables", "$2α$ and $α+β$ cost $10", `$2α$ and $α+β$ cost \$10`},
 		{"unfinished unicode math", "$2α", "$2α"},
 		{"multiplication math", "$2*3$ $2**3$ cost $10", `$2*3$ $2**3$ cost \$10`},
+		{"unfinished multiplication", "$2**3 and $2*3", "$2**3 and $2*3"},
+		{"italic currency", "*$10*, _$20_ and __$30__.", `*\$10*, _\$20_ and __\$30__.`},
 		{"price lists", "$10, $20; $10-$20; $10/$20", `\$10, \$20; \$10-\$20; \$10/\$20`},
 		{"latex prose", `$2 + \text{hello}$ costs $10`, `$2 + \text{hello}$ costs \$10`},
 		{"unicode math", "$2 × 2$ and $2 ≤ 3$ cost $10", `$2 × 2$ and $2 ≤ 3$ cost \$10`},
