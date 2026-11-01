@@ -34,8 +34,8 @@ func escapeRichCurrency(text string) string {
 		if text[i] == '$' {
 			if strings.HasPrefix(text[i:], "$$") {
 				end := len(text)
-				if close := strings.Index(text[i+2:], "$$"); close >= 0 {
-					end = i + 2 + close + 2
+				if closing := strings.Index(text[i+2:], "$$"); closing >= 0 {
+					end = i + 2 + closing + 2
 				}
 				out.WriteString(text[i:end])
 				i = end
@@ -51,7 +51,9 @@ func escapeRichCurrency(text string) string {
 				// An unfinished formula or identifier ($2x, $2+...) is not clearly money.
 				next, _ := utf8.DecodeRuneInString(text[end:])
 				closingEmphasis := richClosingEmphasis(text, end)
-				if closingEmphasis || end == len(text) || (end+1 < len(text) && strings.ContainsRune("-/", rune(text[end])) && text[end+1] == '$') || (!unicode.IsLetter(next) && !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_+-*/^=<>\\", next)) {
+				if closingEmphasis || end == len(text) ||
+					(end+1 < len(text) && strings.ContainsRune("-/", rune(text[end])) && text[end+1] == '$') ||
+					(!unicode.IsLetter(next) && !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_+-*/^=<>\\", next)) {
 					out.WriteByte('\\')
 				}
 			}
@@ -96,7 +98,11 @@ func richInlineMathEnd(text string, start int) int {
 			return start
 		}
 		for _, r := range body {
-			if !unicode.IsLetter(r) && !unicode.IsMark(r) && !unicode.Is(unicode.Sm, r) && !strings.ContainsRune("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ \t.,+-*/^_=<>!()[]{}|:;'%&×÷−±≤≥≠∞π", r) {
+			if !unicode.IsLetter(r) && !unicode.IsMark(r) && !unicode.Is(unicode.Sm, r) &&
+				!strings.ContainsRune(
+					"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ \t.,+-*/^_=<>!()[]{}|:;'%&×÷−±≤≥≠∞π",
+					r,
+				) {
 				return start
 			}
 		}
@@ -119,10 +125,12 @@ func richLiteralEnd(text string, start int) int {
 			return len(text)
 		}
 	}
-	if strings.HasPrefix(rest, "https://") || strings.HasPrefix(rest, "http://") || strings.HasPrefix(rest, "<https://") || strings.HasPrefix(rest, "<http://") {
+	if strings.HasPrefix(rest, "https://") || strings.HasPrefix(rest, "http://") ||
+		strings.HasPrefix(rest, "<https://") ||
+		strings.HasPrefix(rest, "<http://") {
 		if text[start] == '<' {
-			if close := strings.IndexByte(rest, '>'); close >= 0 {
-				return start + close + 1
+			if closing := strings.IndexByte(rest, '>'); closing >= 0 {
+				return start + closing + 1
 			}
 		}
 		end := start
@@ -132,30 +140,30 @@ func richLiteralEnd(text string, start int) int {
 		return end
 	}
 	if text[start] == '[' {
-		close := richBalancedEnd(text, start, '[', ']')
-		if close > start && close < len(text) {
-			switch text[close] {
+		closing := richBalancedEnd(text, start, '[', ']')
+		if closing > start && closing < len(text) {
+			switch text[closing] {
 			case '(':
-				if end := richBalancedEnd(text, close, '(', ')'); end > close {
+				if end := richBalancedEnd(text, closing, '(', ')'); end > closing {
 					return end
 				}
 			case '[':
-				if end := richBalancedEnd(text, close, '[', ']'); end > close {
+				if end := richBalancedEnd(text, closing, '[', ']'); end > closing {
 					return end
 				}
 			case ':':
-				if end := strings.IndexByte(text[close:], '\n'); end >= 0 {
-					return close + end
+				if end := strings.IndexByte(text[closing:], '\n'); end >= 0 {
+					return closing + end
 				}
 				return len(text)
 			}
 		}
 		// Protect shortcut references only when a matching definition exists.
-		if close > start {
-			label := strings.Join(strings.Fields(text[start+1:close-1]), " ")
+		if closing > start {
+			label := strings.Join(strings.Fields(text[start+1:closing-1]), " ")
 			definition := regexp.MustCompile(`(?im)^ {0,3}\[` + regexp.QuoteMeta(label) + `\]:[ \t]*\S`)
 			if definition.MatchString(text) {
-				return close
+				return closing
 			}
 		}
 	}
@@ -209,7 +217,7 @@ func richLiteralEnd(text string, start int) int {
 	return start
 }
 
-func richBalancedEnd(text string, start int, open, close byte) int {
+func richBalancedEnd(text string, start int, open, closing byte) int {
 	depth := 0
 	for i := start; i < len(text); i++ {
 		if text[i] == '\\' {
@@ -219,7 +227,7 @@ func richBalancedEnd(text string, start int, open, close byte) int {
 		if text[i] == open {
 			depth++
 		}
-		if text[i] == close {
+		if text[i] == closing {
 			depth--
 			if depth == 0 {
 				return i + 1
