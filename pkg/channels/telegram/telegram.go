@@ -1725,7 +1725,7 @@ const (
 	// telegramFormatMarkdownV2 converts Markdown to Telegram MarkdownV2 and
 	// sends it with parse_mode=MarkdownV2.
 	telegramFormatMarkdownV2
-	// telegramFormatRich sends the Markdown as-is via the Bot API 10.1+ Rich
+	// telegramFormatRich sends the Markdown with literal currency protected via the Bot API 10.1+ Rich
 	// Messages endpoint (sendRichMessage). Its Markdown dialect is
 	// GitHub-Flavored-Markdown-compatible, so tables, headings, task lists and
 	// block quotes are rendered natively by Telegram instead of being flattened
@@ -1765,9 +1765,8 @@ func (c *TelegramChannel) captionFormat() telegramFormat {
 func parseContent(text string, format telegramFormat) string {
 	switch format {
 	case telegramFormatRich:
-		// Rich Messages accept GitHub-Flavored Markdown, so the model's Markdown
-		// (tables included) is passed through unchanged and rendered server-side.
-		return text
+		// Keep GFM structure, but prevent currency dollars from opening math.
+		return escapeRichCurrency(text)
 	case telegramFormatMarkdownV2:
 		return markdownToTelegramMarkdownV2(text)
 	default:
@@ -2073,7 +2072,7 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 			ChatID:          s.chatID,
 			MessageThreadID: s.threadID,
 			DraftID:         s.draftID,
-			RichMessage:     telego.InputRichMessage{Markdown: content},
+			RichMessage:     telego.InputRichMessage{Markdown: parseContent(content, telegramFormatRich)},
 		})
 	} else {
 		err = s.bot.SendMessageDraft(ctx, &telego.SendMessageDraftParams{
@@ -2103,7 +2102,7 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 		_, err = s.bot.SendRichMessage(ctx, &telego.SendRichMessageParams{
 			ChatID:          tu.ID(s.chatID),
 			MessageThreadID: s.threadID,
-			RichMessage:     telego.InputRichMessage{Markdown: content},
+			RichMessage:     telego.InputRichMessage{Markdown: parseContent(content, telegramFormatRich)},
 		})
 		if err != nil {
 			// Fallback to plain text so a Rich API failure never drops the reply.
