@@ -10,7 +10,7 @@ import (
 var (
 	richAmount      = regexp.MustCompile(`^[0-9]+(?:[.,][0-9]+)*(?:[ \x{00a0}\x{202f}][0-9]{3})*(?:[.,][0-9]+)?`)
 	richMathCommand = regexp.MustCompile(`\\[a-zA-Z]+`)
-	richMathWord    = regexp.MustCompile(`[\p{L}\p{M}]{2,}`)
+	richMathWord    = regexp.MustCompile(`\p{L}\p{M}*\p{L}`)
 )
 
 // escapeRichCurrency prevents prose such as "$10 and $20" from becoming one
@@ -80,6 +80,14 @@ func richInlineMathEnd(text string, start int) int {
 			return start
 		}
 		raw := text[start+1 : i]
+		// A whitespace-ended price/prose candidate before a new formula is not
+		// closed by that formula's opening dollar ("$10 и $x^2$").
+		if i+1 < len(text) && richAmount.MatchString(raw) && strings.TrimRight(raw, " \t") != raw {
+			next, _ := utf8.DecodeRuneInString(text[i+1:])
+			if unicode.IsLetter(next) || next == '\\' {
+				return start
+			}
+		}
 		if richMathCommand.MatchString(raw) {
 			return i + 1
 		}
@@ -88,7 +96,7 @@ func richInlineMathEnd(text string, start int) int {
 			return start
 		}
 		for _, r := range body {
-			if !unicode.IsLetter(r) && !unicode.Is(unicode.Sm, r) && !strings.ContainsRune("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ \t.,+-*/^_=<>!()[]{}|:;'%&×÷−±≤≥≠∞π", r) {
+			if !unicode.IsLetter(r) && !unicode.IsMark(r) && !unicode.Is(unicode.Sm, r) && !strings.ContainsRune("0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ \t.,+-*/^_=<>!()[]{}|:;'%&×÷−±≤≥≠∞π", r) {
 				return start
 			}
 		}
