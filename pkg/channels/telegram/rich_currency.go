@@ -10,7 +10,7 @@ import (
 var (
 	richAmount      = regexp.MustCompile(`^[0-9]+(?:[.,][0-9]+)*(?:[ \x{00a0}\x{202f}][0-9]{3})*(?:[.,][0-9]+)?`)
 	richMathCommand = regexp.MustCompile(`\\[a-zA-Z]+`)
-	richMathWord    = regexp.MustCompile(`[a-zA-Z]{2,}`)
+	richMathWord    = regexp.MustCompile(`[\p{L}\p{M}]{2,}`)
 )
 
 // escapeRichCurrency prevents prose such as "$10 and $20" from becoming one
