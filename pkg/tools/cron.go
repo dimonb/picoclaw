@@ -16,6 +16,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/cron"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers/effort"
 	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
@@ -170,6 +171,15 @@ func (t *CronTool) Parameters() map[string]any {
 				"type":        "string",
 				"description": "Optional: Shell command to execute directly (e.g., 'df -h'). If set, the agent will run this command and report output instead of just showing the message. For update, omitted or empty command preserves the existing command. Use clear_command=true to remove it.",
 			},
+			"effort": map[string]any{
+				"type":        "string",
+				"enum":        []string{"", "off", "low", "medium", "high", "xhigh", "max", "adaptive"},
+				"description": "Optional per-firing thinking effort, mapped by the active provider/model. Unsupported controls are omitted; model stays unchanged. Empty inherits defaults on add and preserves saved effort on update. Use clear_effort=true to restore inheritance.",
+			},
+			"clear_effort": map[string]any{
+				"type":        "boolean",
+				"description": "Update only: remove the saved effort override. False preserves it; true cannot be combined with a non-empty effort.",
+			},
 			"clear_command": map[string]any{
 				"type":        "boolean",
 				"description": "Update only: explicitly remove the existing command. Requires the same authorization and command confirmation as setting a command. False leaves it unchanged; cannot combine true with a non-empty command.",
@@ -313,6 +323,14 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 		return errResult
 	}
 
+	level, clearEffort, effortErr := cronEffortArgs(args)
+	if effortErr != nil {
+		return effortErr
+	}
+	if clearEffort {
+		return ErrorResult("clear_effort is only valid for update")
+	}
+
 	// Truncate message for job name (max 30 chars)
 	messagePreview := utils.Truncate(message, 30)
 
@@ -321,6 +339,7 @@ func (t *CronTool) addJob(ctx context.Context, args map[string]any) *ToolResult 
 		Schedule: schedule,
 		Payload: cron.CronPayload{
 			Kind:    "agent_turn",
+			Effort:  level,
 			Message: message,
 			Command: command,
 			Channel: channel,
@@ -558,6 +577,15 @@ func (t *CronTool) updateJob(ctx context.Context, args map[string]any) *ToolResu
 			job.Payload.Notify = notifyMode
 			patches++
 		}
+	}
+
+	level, clearEffort, effortErr := cronEffortArgs(args)
+	if effortErr != nil {
+		return effortErr
+	}
+	if level != "" || clearEffort {
+		job.Payload.Effort = level
+		patches++
 	}
 
 	if patches == 0 {
@@ -898,6 +926,9 @@ func (t *CronTool) dispatchTrigger(
 		return "", fmt.Errorf("cannot dispatch cron job %s: message bus is unavailable", job.ID)
 	}
 
+	if _, err := effort.Normalize(job.Payload.Effort); err != nil {
+		return "", fmt.Errorf("cron job %s: %w", job.ID, err)
+	}
 	sessionKey := t.triggerSessionKey(job)
 
 	pubCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -908,6 +939,7 @@ func (t *CronTool) dispatchTrigger(
 		Sender:     bus.SenderInfo{DisplayName: cronSenderName},
 		Content:    content,
 		SessionKey: sessionKey,
+		Effort:     job.Payload.Effort,
 		// A firing landing on a live turn must not be steered into it: that
 		// would drop the answer the user is waiting for and hand the model a
 		// second task mid-turn. Wait for the session instead.
@@ -1060,4 +1092,27 @@ func (t *CronTool) publishToChat(ctx context.Context, channel, chatID, content s
 	case <-pubCtx.Done():
 		logger.WarnCF("cron", "Scheduled job delivery timeout", map[string]any{})
 	}
+}
+
+func cronEffortArgs(args map[string]any) (string, bool, *ToolResult) {
+	raw, _, errResult := optionalString(args, "effort")
+	if errResult != nil {
+		return "", false, errResult
+	}
+	level, err := effort.Normalize(raw)
+	if err != nil {
+		return "", false, ErrorResult(err.Error())
+	}
+	clear := false
+	if value, present := args["clear_effort"]; present {
+		var ok bool
+		clear, ok = value.(bool)
+		if !ok {
+			return "", false, ErrorResult("clear_effort must be a boolean")
+		}
+	}
+	if clear && level != "" {
+		return "", false, ErrorResult("clear_effort cannot be combined with a non-empty effort")
+	}
+	return level, clear, nil
 }

@@ -117,6 +117,8 @@ func NewProviderWithTokenSource(
 	return p
 }
 
+func (p *Provider) SupportsThinking() bool { return true }
+
 // Chat sends a request to the Azure OpenAI Responses API endpoint.
 // The model parameter is passed in the request body.
 func (p *Provider) Chat(
@@ -138,7 +140,8 @@ func (p *Provider) Chat(
 	input, instructions := orc.TranslateMessages(messages)
 
 	requestBody := responses.ResponseNewParams{
-		Model: model,
+		Model:     model,
+		Reasoning: orc.ReasoningForOptions(model, options),
 		Input: responses.ResponseNewParamsInputUnion{
 			OfInputItemList: input,
 		},

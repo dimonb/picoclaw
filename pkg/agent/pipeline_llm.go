@@ -117,6 +117,14 @@ func (p *Pipeline) CallLLM(
 				exec.callMessages = llmReq.Messages
 				exec.providerToolDefs = filterToolsByTurnProfile(llmReq.Tools, ts.profile)
 				exec.llmOpts = llmReq.Options
+				if exec.requestEffort != "" {
+					opts := make(map[string]any, len(exec.llmOpts)+2)
+					for k, v := range exec.llmOpts {
+						opts[k] = v
+					}
+					exec.llmOpts = opts
+					applyTurnThinkingOptions(exec, ts.agent, exec.activeProvider, true)
+				}
 				nativeSearchAllowed := exec.useNativeSearch &&
 					turnProfileToolAllowed(ts.profile, "web_search")
 				if !nativeSearchAllowed {
@@ -213,7 +221,7 @@ func (p *Pipeline) CallLLM(
 				candidate.Model,
 				p.Cfg.Agents.Defaults.Provider,
 			)
-			candidateThinking := thinkingSettingsFromModelConfig(candidateCfg)
+			candidateThinking := exec.thinkingSettings(thinkingSettingsFromModelConfig(candidateCfg))
 			applyThinkingOption(callOpts, candidateProvider, candidateThinking, true, ts.agent.ID)
 			exec.suppressReasoning = shouldSuppressReasoningFor(candidateThinking)
 			return candidateProvider.Chat(ctx, messagesForCall, toolDefsForCall, candidate.Model, callOpts)

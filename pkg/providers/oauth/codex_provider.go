@@ -246,13 +246,16 @@ func resolveCodexModel(model string) (string, string) {
 	return codexDefaultModel, "unsupported model family"
 }
 
+func (p *CodexProvider) SupportsThinking() bool { return true }
+
 func buildCodexParams(
 	messages []Message, tools []ToolDefinition, model string, options map[string]any, enableWebSearch bool,
 ) responses.ResponseNewParams {
 	inputItems, instructions := orc.TranslateMessages(messages)
 
 	params := responses.ResponseNewParams{
-		Model: model,
+		Model:     model,
+		Reasoning: orc.ReasoningForOptions(model, options),
 		Input: responses.ResponseNewParamsInputUnion{
 			OfInputItemList: inputItems,
 		},

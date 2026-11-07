@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/sipeed/picoclaw/pkg/fileutil"
+	"github.com/sipeed/picoclaw/pkg/providers/effort"
 	"github.com/sipeed/picoclaw/pkg/telemetry"
 )
 
@@ -43,6 +44,8 @@ type CronOrigin struct {
 }
 
 type CronPayload struct {
+	// Effort overrides thinking for this firing only; empty inherits model defaults.
+	Effort  string `json:"effort,omitempty"`
 	Kind    string `json:"kind"`
 	Message string `json:"message"`
 	Command string `json:"command,omitempty"`
@@ -473,6 +476,11 @@ func (cs *CronService) AddJob(input AddJobInput) (*CronJob, error) {
 	deleteAfterRun := (schedule.Kind == "at")
 
 	payload := input.Payload
+	level, err := effort.Normalize(payload.Effort)
+	if err != nil {
+		return nil, err
+	}
+	payload.Effort = level
 	if payload.Kind == "" {
 		payload.Kind = "agent_turn"
 	}
@@ -515,6 +523,10 @@ func (cs *CronService) GetJob(jobID string) (*CronJob, bool) {
 }
 
 func (cs *CronService) UpdateJob(job *CronJob) error {
+	level, err := effort.Normalize(job.Payload.Effort)
+	if err != nil {
+		return err
+	}
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
@@ -522,6 +534,7 @@ func (cs *CronService) UpdateJob(job *CronJob) error {
 		if cs.store.Jobs[i].ID == job.ID {
 			previous := cs.store.Jobs[i]
 			updated := cloneCronJob(*job)
+			updated.Payload.Effort = level
 			now := time.Now().UnixMilli()
 			updated.UpdatedAtMS = now
 			if updated.Enabled {

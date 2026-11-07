@@ -241,7 +241,9 @@ func buildParams(
 	//   "adaptive" → {thinking: {type: "adaptive"}} + output_config.effort
 	//   "low/medium/high/xhigh" → {thinking: {type: "enabled", budget_tokens: N}}
 	if level, ok := options["thinking_level"].(string); ok && level != "" && level != "off" {
-		applyThinkingConfig(&params, level)
+		if override, _ := options["effort_override"].(bool); !override || anthropicThinkingModel(model, level) {
+			applyThinkingConfig(&params, level)
+		}
 	}
 
 	return params, nil
@@ -249,11 +251,15 @@ func buildParams(
 
 // applyThinkingConfig sets thinking parameters based on the level value.
 // "adaptive" uses the adaptive thinking API (Claude 4.6+).
-// All other levels use budget_tokens which is universally supported.
+// Other supported models use manual budget_tokens; buildParams gates models.
 //
 // Anthropic API constraint: temperature must not be set when thinking is enabled.
 // budget_tokens must be strictly less than max_tokens.
 func applyThinkingConfig(params *anthropic.MessageNewParams, level string) {
+	// Manual thinking requires at least 1024 tokens AND room for output.
+	if level != "adaptive" && (levelToBudget(level) == 0 || params.MaxTokens <= 1024) {
+		return
+	}
 	// Anthropic API rejects requests with temperature set alongside thinking.
 	// Reset to zero value (omitted from JSON serialization).
 	if params.Temperature.Valid() {
@@ -388,5 +394,17 @@ func parseResponse(resp *anthropic.Message) *LLMResponse {
 			CompletionTokens: int(resp.Usage.OutputTokens),
 			TotalTokens:      int(resp.Usage.InputTokens + resp.Usage.OutputTokens),
 		},
+	}
+}
+
+// Conservative allowlist: unknown aliases are not evidence of API capabilities.
+func anthropicThinkingModel(model, level string) bool {
+	switch model {
+	case "claude-sonnet-4-6", "claude-opus-4-6":
+		return true
+	case "claude-3-7-sonnet-20250219", "claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-opus-4-1-20250805", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929", "claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-opus-4-5", "claude-opus-4-5-20251101":
+		return level != "adaptive"
+	default:
+		return false
 	}
 }

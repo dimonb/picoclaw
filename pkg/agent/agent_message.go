@@ -13,6 +13,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/constants"
 	"github.com/sipeed/picoclaw/pkg/logger"
+	"github.com/sipeed/picoclaw/pkg/providers/effort"
 	"github.com/sipeed/picoclaw/pkg/routing"
 	"github.com/sipeed/picoclaw/pkg/session"
 	"github.com/sipeed/picoclaw/pkg/telemetry"
@@ -168,6 +169,12 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 		},
 	)
 
+	level, effortErr := effort.Normalize(msg.Effort)
+	if effortErr != nil {
+		return "", effortErr
+	}
+	msg.Effort = level
+
 	// Route system messages to processSystemMessage
 	if msg.Channel == "system" {
 		return al.processSystemMessage(ctx, msg)
@@ -206,6 +213,7 @@ func (al *AgentLoop) processMessage(ctx context.Context, msg bus.InboundMessage)
 	opts := processOptions{
 		Dispatch: DispatchRequest{
 			SessionKey:     sessionKey,
+			Effort:         msg.Effort,
 			SessionAliases: buildSessionAliases(sessionKey, append(allocation.SessionAliases, msg.SessionKey)...),
 			InboundContext: cloneInboundContext(&msg.Context),
 			RouteResult:    cloneResolvedRoute(&route),
@@ -322,6 +330,7 @@ func (al *AgentLoop) processSystemMessage(
 	sessionKey := session.BuildMainSessionKey(agent.ID)
 	dispatch := DispatchRequest{
 		SessionKey:  sessionKey,
+		Effort:      msg.Effort,
 		UserMessage: fmt.Sprintf("[System: %s] %s", msg.SenderID, msg.Content),
 	}
 	if originChannel != "" || originChatID != "" {

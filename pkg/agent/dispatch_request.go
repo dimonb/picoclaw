@@ -11,6 +11,7 @@ import (
 // DispatchRequest is the normalized runtime input passed into the agent loop
 // after routing and session allocation have completed.
 type DispatchRequest struct {
+	Effort         string // Request-scoped; empty inherits the active model settings.
 	SessionKey     string
 	SessionAliases []string
 	InboundContext *bus.InboundContext

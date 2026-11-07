@@ -19,6 +19,7 @@ import (
 
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers/common"
+	"github.com/sipeed/picoclaw/pkg/providers/effort"
 	"github.com/sipeed/picoclaw/pkg/providers/messageutil"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
 	"github.com/sipeed/picoclaw/pkg/telemetry"
@@ -204,6 +205,9 @@ func (p *Provider) buildRequestBody(
 	// Merge extra body fields configured per-provider/model.
 	// These are injected last so they take precedence over defaults.
 	maps.Copy(requestBody, p.extraBody)
+	if override, _ := options["effort_override"].(bool); override {
+		p.applyThinkingControl(requestBody, model, options)
+	}
 
 	return requestBody
 }
@@ -214,7 +218,15 @@ func (p *Provider) applyThinkingControl(requestBody map[string]any, model string
 		return
 	}
 
-	if p.SupportsThinking() {
+	if isNativeOpenAIOrAzureEndpoint(p.apiBase) {
+		raw, _ := options["thinking_level"].(string)
+		if native, ok := effort.OpenAI(model, raw); ok {
+			requestBody["reasoning_effort"] = native
+		}
+		return
+	}
+
+	if p.isDeepSeekThinking() {
 		p.applyDeepSeekThinkingControl(requestBody, level)
 		return
 	}
@@ -332,6 +344,10 @@ func (p *Provider) SetProviderName(providerName string) {
 }
 
 func (p *Provider) SupportsThinking() bool {
+	return isNativeOpenAIOrAzureEndpoint(p.apiBase) || p.isDeepSeekThinking()
+}
+
+func (p *Provider) isDeepSeekThinking() bool {
 	return strings.EqualFold(strings.TrimSpace(p.providerName), "deepseek") || isDeepSeekHost(p.apiBase)
 }
 
