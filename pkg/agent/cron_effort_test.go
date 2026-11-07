@@ -3,10 +3,11 @@ package agent
 import (
 	"context"
 	"fmt"
-	"github.com/sipeed/picoclaw/pkg/bus"
-	"github.com/sipeed/picoclaw/pkg/providers"
 	"sync"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
+	"github.com/sipeed/picoclaw/pkg/providers"
 )
 
 type effortCall struct {
@@ -21,7 +22,14 @@ type effortCapture struct {
 
 func (p *effortCapture) SupportsThinking() bool  { return true }
 func (p *effortCapture) GetDefaultModel() string { return "test-model" }
-func (p *effortCapture) Chat(ctx context.Context, msgs []providers.Message, tools []providers.ToolDefinition, model string, opts map[string]any) (*providers.LLMResponse, error) {
+
+func (p *effortCapture) Chat(
+	ctx context.Context,
+	msgs []providers.Message,
+	tools []providers.ToolDefinition,
+	model string,
+	opts map[string]any,
+) (*providers.LLMResponse, error) {
 	text := ""
 	for _, m := range msgs {
 		if m.Role == "user" {
@@ -50,7 +58,12 @@ func TestCronEffortAgentIsolationAndHookReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := func(chat, level, text string) {
-		_, err := al.processMessage(context.Background(), testInboundMessage(bus.InboundMessage{Channel: "pico", ChatID: chat, SessionKey: chat, Content: text, Effort: level}))
+		_, err := al.processMessage(
+			context.Background(),
+			testInboundMessage(
+				bus.InboundMessage{Channel: "pico", ChatID: chat, SessionKey: chat, Content: text, Effort: level},
+			),
+		)
 		if err != nil {
 			t.Error(err)
 		}

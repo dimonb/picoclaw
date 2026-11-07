@@ -1,14 +1,20 @@
 package anthropicprovider
 
 import (
-	"github.com/anthropics/anthropic-sdk-go"
 	"testing"
+
+	"github.com/anthropics/anthropic-sdk-go"
 )
 
 func TestEffortModelSafety(t *testing.T) {
 	for _, model := range []string{"claude-3-haiku-20240307", "unknown", "claude-sonnet-4-5", "claude-sonnet-4-6"} {
 		for _, level := range []string{"adaptive", "low", "max"} {
-			p, err := buildParams([]Message{{Role: "user", Content: "hi"}}, nil, model, map[string]any{"thinking_level": level, "max_tokens": 200000, "effort_override": true})
+			p, err := buildParams(
+				[]Message{{Role: "user", Content: "hi"}},
+				nil,
+				model,
+				map[string]any{"thinking_level": level, "max_tokens": 200000, "effort_override": true},
+			)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -32,7 +38,12 @@ func TestEffortModelSafety(t *testing.T) {
 }
 
 func TestEffortAnthropicInheritedAliasUnchanged(t *testing.T) {
-	p, err := buildParams([]Message{{Role: "user", Content: "hi"}}, nil, "custom-claude-alias", map[string]any{"thinking_level": "high", "max_tokens": 64000})
+	p, err := buildParams(
+		[]Message{{Role: "user", Content: "hi"}},
+		nil,
+		"custom-claude-alias",
+		map[string]any{"thinking_level": "high", "max_tokens": 64000},
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

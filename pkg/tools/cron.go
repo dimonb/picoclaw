@@ -1103,16 +1103,16 @@ func cronEffortArgs(args map[string]any) (string, bool, *ToolResult) {
 	if err != nil {
 		return "", false, ErrorResult(err.Error())
 	}
-	clear := false
+	clearEffort := false
 	if value, present := args["clear_effort"]; present {
 		var ok bool
-		clear, ok = value.(bool)
+		clearEffort, ok = value.(bool)
 		if !ok {
 			return "", false, ErrorResult("clear_effort must be a boolean")
 		}
 	}
-	if clear && level != "" {
+	if clearEffort && level != "" {
 		return "", false, ErrorResult("clear_effort cannot be combined with a non-empty effort")
 	}
-	return level, clear, nil
+	return level, clearEffort, nil
 }

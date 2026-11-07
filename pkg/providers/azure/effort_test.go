@@ -23,10 +23,21 @@ func TestAzureResponsesEffortRequestIsolation(t *testing.T) {
 		t.Fatal("capability")
 	}
 	for _, tt := range []struct{ model, level, want string }{
-		{"gpt-5.2", "max", "xhigh"}, {"gpt-5.2", "", ""}, {"o3", "off", "low"},
-		{"gpt-4o", "high", ""}, {"my-gpt5-deployment", "high", ""}, {"gpt-5.1", "off", "none"}, {"gpt-5.1", "", ""},
+		{"gpt-5.2", "max", "xhigh"},
+		{"gpt-5.2", "", ""},
+		{"o3", "off", "low"},
+		{"gpt-4o", "high", ""},
+		{"my-gpt5-deployment", "high", ""},
+		{"gpt-5.1", "off", "none"},
+		{"gpt-5.1", "", ""},
 	} {
-		_, err := p.Chat(t.Context(), []Message{{Role: "user", Content: "hi"}}, nil, tt.model, map[string]any{"thinking_level": tt.level})
+		_, err := p.Chat(
+			t.Context(),
+			[]Message{{Role: "user", Content: "hi"}},
+			nil,
+			tt.model,
+			map[string]any{"thinking_level": tt.level},
+		)
 		if err != nil {
 			t.Fatal(err)
 		}

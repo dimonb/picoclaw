@@ -18,13 +18,21 @@ func TestEffortGeminiModelSafetyAndPrecedence(t *testing.T) {
 			t.Fatalf("%+v got %v", tc, got)
 		}
 	}
-	if got := buildGeminiThinkingConfig("gemini-300-unknown", map[string]any{"thinking_level": "high", "effort_override": true}); got != nil {
+	if got := buildGeminiThinkingConfig(
+		"gemini-300-unknown",
+		map[string]any{"thinking_level": "high", "effort_override": true},
+	); got != nil {
 		t.Fatal(got)
 	}
 	static := map[string]any{"temperature": .3, "thinkingConfig": map[string]any{"thinkingLevel": "low"}}
 	p := NewGeminiProvider("unused", "https://example.test", "", "", 0, map[string]any{"generationConfig": static}, nil)
 	for _, override := range []bool{false, true, false} {
-		body := p.buildRequestBody(nil, nil, "gemini-3-flash-preview", map[string]any{"thinking_level": "high", "effort_override": override})
+		body := p.buildRequestBody(
+			nil,
+			nil,
+			"gemini-3-flash-preview",
+			map[string]any{"thinking_level": "high", "effort_override": override},
+		)
 		gen := body["generationConfig"].(map[string]any)
 		got := gen["thinkingConfig"].(map[string]any)["thinkingLevel"]
 		want := "low"

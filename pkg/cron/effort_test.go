@@ -10,7 +10,11 @@ import (
 func TestCronEffortPersistenceUpdateClearAndInvalidAtomicity(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.json")
 	cs := NewCronService(path, nil)
-	input := AddJobInput{Name: "effort", Schedule: CronSchedule{Kind: "every", EveryMS: int64Ptr(60000)}, Payload: CronPayload{Message: "hello", Effort: " HIGH "}}
+	input := AddJobInput{
+		Name:     "effort",
+		Schedule: CronSchedule{Kind: "every", EveryMS: int64Ptr(60000)},
+		Payload:  CronPayload{Message: "hello", Effort: " HIGH "},
+	}
 	job, err := cs.AddJob(input)
 	if err != nil {
 		t.Fatal(err)
@@ -72,8 +76,10 @@ func TestCronEffortPersistenceUpdateClearAndInvalidAtomicity(t *testing.T) {
 
 func TestCronEffortLegacyPayloadInherits(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.json")
-	legacy := []byte(`{"version":1,"jobs":[{"id":"legacy","name":"old","enabled":true,"schedule":{"kind":"every","everyMs":60000},"payload":{"kind":"agent_turn","message":"old"},"state":{},"createdAtMs":1,"updatedAtMs":1}]}`)
-	if err := os.WriteFile(path, legacy, 0600); err != nil {
+	legacy := []byte(
+		`{"version":1,"jobs":[{"id":"legacy","name":"old","enabled":true,"schedule":{"kind":"every","everyMs":60000},"payload":{"kind":"agent_turn","message":"old"},"state":{},"createdAtMs":1,"updatedAtMs":1}]}`,
+	)
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cs := NewCronService(path, nil)

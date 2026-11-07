@@ -422,7 +422,8 @@ func buildGeminiThinkingConfig(model string, options map[string]any) map[string]
 	config["includeThoughts"] = includeThoughts
 
 	if isGemini25Model(model) {
-		if strings.EqualFold(normalizeGeminiModel(model), "gemini-2.5-flash-lite") && !inherited && (rawLevel == "off" || rawLevel == "minimal") {
+		if strings.EqualFold(normalizeGeminiModel(model), "gemini-2.5-flash-lite") && !inherited &&
+			(rawLevel == "off" || rawLevel == "minimal") {
 			// Conservatively use the documented minimum explicit budget; do not
 			// assume zero is accepted by every Flash-Lite endpoint.
 			config["thinkingBudget"] = 512
@@ -460,7 +461,13 @@ func buildGeminiThinkingConfig(model string, options map[string]any) map[string]
 
 func geminiModelSupportsThinkingConfig(model string) bool {
 	switch strings.ToLower(normalizeGeminiModel(model)) {
-	case "gemini-2.5-pro", "gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-3-pro-preview", "gemini-3-flash-preview", "gemini-3.1-pro-preview", "gemini-3.1-pro":
+	case "gemini-2.5-pro",
+		"gemini-2.5-flash",
+		"gemini-2.5-flash-lite",
+		"gemini-3-pro-preview",
+		"gemini-3-flash-preview",
+		"gemini-3.1-pro-preview",
+		"gemini-3.1-pro":
 		return true
 	default:
 		return false

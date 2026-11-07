@@ -58,9 +58,19 @@ func TestNativeOpenAIEffortSerializationAndIsolation(t *testing.T) {
 }
 
 func TestEffortStaticPrecedence(t *testing.T) {
-	p := NewProvider("unused", "https://api.openai.com/v1", "", WithExtraBody(map[string]any{"reasoning_effort": "low"}))
+	p := NewProvider(
+		"unused",
+		"https://api.openai.com/v1",
+		"",
+		WithExtraBody(map[string]any{"reasoning_effort": "low"}),
+	)
 	for _, override := range []bool{false, true, false} {
-		b := p.buildRequestBody(nil, nil, "gpt-5.2", map[string]any{"thinking_level": "high", "effort_override": override})
+		b := p.buildRequestBody(
+			nil,
+			nil,
+			"gpt-5.2",
+			map[string]any{"thinking_level": "high", "effort_override": override},
+		)
 		want := "low"
 		if override {
 			want = "high"

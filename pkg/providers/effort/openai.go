@@ -25,7 +25,10 @@ func OpenAI(model, raw string) (string, bool) {
 		levels = []string{"high"}
 	case knownSnapshot(model, "gpt-5"), knownSnapshot(model, "gpt-5-mini"), knownSnapshot(model, "gpt-5-nano"):
 		levels = []string{"minimal", "low", "medium", "high"}
-	case knownSnapshot(model, "o1"), knownSnapshot(model, "o3"), knownSnapshot(model, "o3-mini"), knownSnapshot(model, "o4-mini"):
+	case knownSnapshot(model, "o1"),
+		knownSnapshot(model, "o3"),
+		knownSnapshot(model, "o3-mini"),
+		knownSnapshot(model, "o4-mini"):
 		levels = []string{"low", "medium", "high"}
 	default:
 		return "", false

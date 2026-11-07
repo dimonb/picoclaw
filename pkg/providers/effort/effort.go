@@ -14,6 +14,8 @@ func Normalize(raw string) (string, error) {
 	case "", "off", "low", "medium", "high", "xhigh", "max", "adaptive":
 		return level, nil
 	default:
-		return "", fmt.Errorf("effort must be off, low, medium, high, xhigh, max, or adaptive (empty inherits the model default)")
+		return "", fmt.Errorf(
+			"effort must be off, low, medium, high, xhigh, max, or adaptive (empty inherits the model default)",
+		)
 	}
 }

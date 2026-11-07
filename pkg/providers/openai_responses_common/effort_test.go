@@ -2,14 +2,20 @@ package openai_responses_common
 
 import (
 	"encoding/json"
-	"github.com/openai/openai-go/v3/responses"
 	"testing"
+
+	"github.com/openai/openai-go/v3/responses"
 )
 
 func TestResponsesEffortSerializationAndIsolation(t *testing.T) {
 	for _, tt := range []struct{ model, level, want string }{
-		{"gpt-5.2", "max", "xhigh"}, {"gpt-5.1", "off", "none"}, {"o3", "off", "low"},
-		{"gpt-5.2", "", ""}, {"gpt-5.2", "adaptive", ""}, {"gpt-4o", "high", ""}, {"gpt-6.1-sol", "max", ""},
+		{"gpt-5.2", "max", "xhigh"},
+		{"gpt-5.1", "off", "none"},
+		{"o3", "off", "low"},
+		{"gpt-5.2", "", ""},
+		{"gpt-5.2", "adaptive", ""},
+		{"gpt-4o", "high", ""},
+		{"gpt-6.1-sol", "max", ""},
 	} {
 		opts := map[string]any{"thinking_level": tt.level}
 		params := responses.ResponseNewParams{Model: tt.model, Reasoning: ReasoningForOptions(tt.model, opts)}

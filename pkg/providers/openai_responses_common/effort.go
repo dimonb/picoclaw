@@ -2,6 +2,7 @@ package openai_responses_common
 
 import (
 	"github.com/openai/openai-go/v3/shared"
+
 	"github.com/sipeed/picoclaw/pkg/providers/effort"
 )
 
