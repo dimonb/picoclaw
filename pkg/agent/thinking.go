@@ -6,6 +6,7 @@ import (
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
+	"github.com/sipeed/picoclaw/pkg/providers/effort"
 )
 
 // ThinkingLevel controls how the provider sends thinking parameters.
@@ -51,12 +52,8 @@ func parseThinkingLevel(level string) ThinkingLevel {
 }
 
 func isConfiguredThinkingLevel(level string) bool {
-	switch strings.ToLower(strings.TrimSpace(level)) {
-	case "off", "low", "medium", "high", "xhigh", "max", "adaptive":
-		return true
-	default:
-		return false
-	}
+	normalized, err := effort.Normalize(level)
+	return err == nil && normalized != ""
 }
 
 type thinkingSettings struct {
@@ -121,7 +118,11 @@ func applyTurnThinkingOptions(
 		return
 	}
 	delete(exec.llmOpts, "thinking_level")
-	settings := activeThinkingSettings(agent, exec.activeModelConfig)
+	delete(exec.llmOpts, "effort_override")
+	if exec.requestEffort != "" {
+		exec.llmOpts["effort_override"] = true
+	}
+	settings := exec.thinkingSettings(activeThinkingSettings(agent, exec.activeModelConfig))
 	agentID := ""
 	if agent != nil {
 		agentID = agent.ID
@@ -132,4 +133,13 @@ func applyTurnThinkingOptions(
 
 func shouldSuppressReasoningFor(settings thinkingSettings) bool {
 	return settings.configured && settings.level == ThinkingOff
+}
+
+// thinkingSettings applies the run override after resolving each candidate's defaults.
+// Never modify AgentInstance, ModelConfig, session state, or shared option maps.
+func (exec *turnExecution) thinkingSettings(defaults thinkingSettings) thinkingSettings {
+	if exec != nil && exec.requestEffort != "" {
+		return thinkingSettings{level: parseThinkingLevel(exec.requestEffort), configured: true}
+	}
+	return defaults
 }

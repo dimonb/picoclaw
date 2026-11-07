@@ -41,6 +41,8 @@ type InboundContext struct {
 }
 
 type InboundMessage struct {
+	// Effort is a request-scoped canonical thinking override, never session state.
+	Effort     string         `json:"effort,omitempty"`
 	Context    InboundContext `json:"context"`
 	Sender     SenderInfo     `json:"sender"`
 	Content    string         `json:"content"`

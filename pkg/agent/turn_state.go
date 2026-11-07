@@ -119,6 +119,7 @@ type ActiveTurnInfo struct {
 // =============================================================================
 
 type turnExecution struct {
+	requestEffort string // Immutable for this run, including tool iterations/retries.
 	// Core message state (accumulates throughout the turn)
 	messages         []providers.Message // built from ContextBuilder, grows per-iteration
 	pendingMessages  []providers.Message // steering/SubTurn messages awaiting injection
@@ -175,6 +176,7 @@ func newTurnExecution(
 	messages []providers.Message,
 ) *turnExecution {
 	return &turnExecution{
+		requestEffort:    opts.Dispatch.Effort,
 		history:          history,
 		summary:          summary,
 		messages:         messages,

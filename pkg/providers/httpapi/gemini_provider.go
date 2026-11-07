@@ -355,6 +355,18 @@ func (p *GeminiProvider) buildRequestBody(
 	for k, v := range p.extraBody {
 		body[k] = v
 	}
+	if override, _ := options["effort_override"].(bool); override {
+		if thinking := buildGeminiThinkingConfig(model, options); len(thinking) > 0 {
+			merged := make(map[string]any)
+			if existing, ok := body["generationConfig"].(map[string]any); ok {
+				for k, v := range existing {
+					merged[k] = v
+				}
+			}
+			merged["thinkingConfig"] = thinking
+			body["generationConfig"] = merged
+		}
+	}
 
 	return body
 }
@@ -390,6 +402,9 @@ func mapGeminiThinkingLevel(level string) string {
 }
 
 func buildGeminiThinkingConfig(model string, options map[string]any) map[string]any {
+	if override, _ := options["effort_override"].(bool); !override {
+		return buildLegacyGeminiThinkingConfig(model, options)
+	}
 	if !geminiModelSupportsThinkingConfig(model) {
 		return nil
 	}
@@ -397,6 +412,7 @@ func buildGeminiThinkingConfig(model string, options map[string]any) map[string]
 	config := map[string]any{}
 	rawLevel, _ := options["thinking_level"].(string)
 	rawLevel = strings.ToLower(strings.TrimSpace(rawLevel))
+	inherited := rawLevel == ""
 	if rawLevel == "" {
 		// Align with agent-level default: unset means ThinkingOff.
 		rawLevel = "off"
@@ -406,8 +422,18 @@ func buildGeminiThinkingConfig(model string, options map[string]any) map[string]
 	config["includeThoughts"] = includeThoughts
 
 	if isGemini25Model(model) {
+		if strings.EqualFold(normalizeGeminiModel(model), "gemini-2.5-flash-lite") && !inherited &&
+			(rawLevel == "off" || rawLevel == "minimal") {
+			// Conservatively use the documented minimum explicit budget; do not
+			// assume zero is accepted by every Flash-Lite endpoint.
+			config["thinkingBudget"] = 512
+			return config
+		}
 		if isGemini25ProModel(model) && (rawLevel == "off" || rawLevel == "minimal") {
-			// Gemini 2.5 Pro cannot disable thinking; keep model-default thinking.
+			// Pro cannot disable: choose its documented minimum.
+			if !inherited {
+				config["thinkingBudget"] = 128
+			}
 			return config
 		}
 		if budget, ok := mapGeminiThinkingBudget(rawLevel); ok {
@@ -417,10 +443,16 @@ func buildGeminiThinkingConfig(model string, options map[string]any) map[string]
 	}
 
 	if isGemini3ProModel(model) && (rawLevel == "off" || rawLevel == "minimal") {
-		// Gemini 3.x Pro does not support minimal thinking level.
+		// Pro cannot disable: choose the minimum supported level.
+		if !inherited {
+			config["thinkingLevel"] = "low"
+		}
 		return config
 	}
 
+	if isGemini3ProModel(model) && rawLevel == "medium" {
+		rawLevel = "high"
+	}
 	if thinkingLevel := mapGeminiThinkingLevel(rawLevel); thinkingLevel != "" {
 		config["thinkingLevel"] = thinkingLevel
 	}
@@ -428,8 +460,18 @@ func buildGeminiThinkingConfig(model string, options map[string]any) map[string]
 }
 
 func geminiModelSupportsThinkingConfig(model string) bool {
-	lowerModel := strings.ToLower(strings.TrimSpace(model))
-	return strings.Contains(lowerModel, "gemini-3") || isGemini25Model(lowerModel)
+	switch strings.ToLower(normalizeGeminiModel(model)) {
+	case "gemini-2.5-pro",
+		"gemini-2.5-flash",
+		"gemini-2.5-flash-lite",
+		"gemini-3-pro-preview",
+		"gemini-3-flash-preview",
+		"gemini-3.1-pro-preview",
+		"gemini-3.1-pro":
+		return true
+	default:
+		return false
+	}
 }
 
 func isGemini25Model(model string) bool {
@@ -856,4 +898,42 @@ type geminiFunctionDeclaration struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Parameters  any    `json:"parameters,omitempty"`
+}
+
+func buildLegacyGeminiThinkingConfig(model string, options map[string]any) map[string]any {
+	if !(strings.Contains(strings.ToLower(strings.TrimSpace(model)), "gemini-3") || isGemini25Model(model)) {
+		return nil
+	}
+
+	config := map[string]any{}
+	rawLevel, _ := options["thinking_level"].(string)
+	rawLevel = strings.ToLower(strings.TrimSpace(rawLevel))
+	if rawLevel == "" {
+		// Align with agent-level default: unset means ThinkingOff.
+		rawLevel = "off"
+	}
+
+	includeThoughts := rawLevel != "off" && rawLevel != "minimal"
+	config["includeThoughts"] = includeThoughts
+
+	if isGemini25Model(model) {
+		if isGemini25ProModel(model) && (rawLevel == "off" || rawLevel == "minimal") {
+			// Gemini 2.5 Pro cannot disable thinking; keep model-default thinking.
+			return config
+		}
+		if budget, ok := mapGeminiThinkingBudget(rawLevel); ok {
+			config["thinkingBudget"] = budget
+		}
+		return config
+	}
+
+	if isGemini3ProModel(model) && (rawLevel == "off" || rawLevel == "minimal") {
+		// Gemini 3.x Pro does not support minimal thinking level.
+		return config
+	}
+
+	if thinkingLevel := mapGeminiThinkingLevel(rawLevel); thinkingLevel != "" {
+		config["thinkingLevel"] = thinkingLevel
+	}
+	return config
 }
