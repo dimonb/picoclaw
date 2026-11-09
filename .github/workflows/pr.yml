@@ -23,6 +23,7 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.10.1
+          install-mode: goinstall
           args: --build-tags=goolm,stdjson
 
   vuln_check:
