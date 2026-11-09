@@ -228,8 +228,7 @@ toolLoop:
 
 					toolDuration := time.Duration(0)
 
-					shouldSendForUser := !hookResult.Silent && hookResult.ForUser != "" &&
-						(ts.opts.SendResponse || hookResult.ResponseHandled)
+					shouldSendForUser := shouldPublishToolResult(toolName, hookResult, ts.opts.SendResponse)
 					if shouldSendForUser {
 						if err := al.bus.PublishOutbound(ctx, bus.OutboundMessage{
 							Context: bus.InboundContext{
@@ -701,9 +700,7 @@ toolLoop:
 			exec.allResponsesHandled = false
 		}
 
-		shouldSendForUser := !toolResult.Silent &&
-			toolResult.ForUser != "" &&
-			(ts.opts.SendResponse || toolResult.ResponseHandled)
+		shouldSendForUser := shouldPublishToolResult(toolName, toolResult, ts.opts.SendResponse)
 		if shouldSendForUser {
 			al.bus.PublishOutbound(ctx, outboundMessageForTurn(ts, toolResult.ForUser))
 			logger.DebugCF("agent", "Sent tool result to user",
@@ -894,4 +891,12 @@ toolLoop:
 		"agent_id": ts.agent.ID, "iteration": iteration,
 	})
 	return ToolControlContinue, nil
+}
+
+// shouldPublishToolResult keeps internal shell diagnostics in the model context.
+// Explicit message/media tools retain their delivery semantics. Scheduled command
+// jobs have a separate reporting path in CronTool.executeCommandJob.
+func shouldPublishToolResult(toolName string, result *tools.ToolResult, sendResponse bool) bool {
+	return toolName != "exec" && result != nil && !result.Silent &&
+		result.ForUser != "" && (sendResponse || result.ResponseHandled)
 }
