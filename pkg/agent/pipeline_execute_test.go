@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/tools"
 )
 
 func TestInferSkillNamesFromToolCall_ReadFileSkillMarkdown(t *testing.T) {
@@ -46,5 +48,35 @@ func TestInferSkillNamesFromToolCall_NonSkillFileIgnored(t *testing.T) {
 	})
 	if len(got) != 0 {
 		t.Fatalf("inferSkillNamesFromToolCall = %v, want empty", got)
+	}
+}
+
+func TestShouldPublishToolResult(t *testing.T) {
+	for _, tc := range []struct {
+		name, tool                  string
+		send, handled, silent, want bool
+	}{
+		{"normal turn exec", "exec", true, false, false, false},
+		{"cron agent exec", "exec", true, false, false, false},
+		{"subagent exec", "exec", false, false, false, false},
+		{"async completion parent exec", "exec", true, false, false, false},
+		{"handled exec hook", "exec", true, true, false, false},
+		{"explicit message", "message", true, true, false, true},
+		{"explicit subagent message", "message", false, true, false, true},
+		{"explicit file", "send_file", true, true, false, true},
+		{"ordinary result", "other", true, false, false, true},
+		{"silent result", "other", true, false, true, false},
+		{"disabled response", "other", false, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := &tools.ToolResult{ForLLM: "diagnostic", ForUser: "diagnostic", ResponseHandled: tc.handled, Silent: tc.silent}
+			before := result.ContentForLLM()
+			if got := shouldPublishToolResult(tc.tool, result, tc.send); got != tc.want {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+			if result.ContentForLLM() != before {
+				t.Fatal("model context changed")
+			}
+		})
 	}
 }
