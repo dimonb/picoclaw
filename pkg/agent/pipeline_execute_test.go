@@ -69,7 +69,12 @@ func TestShouldPublishToolResult(t *testing.T) {
 		{"disabled response", "other", false, false, false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			result := &tools.ToolResult{ForLLM: "diagnostic", ForUser: "diagnostic", ResponseHandled: tc.handled, Silent: tc.silent}
+			result := &tools.ToolResult{
+				ForLLM:          "diagnostic",
+				ForUser:         "diagnostic",
+				ResponseHandled: tc.handled,
+				Silent:          tc.silent,
+			}
 			before := result.ContentForLLM()
 			if got := shouldPublishToolResult(tc.tool, result, tc.send); got != tc.want {
 				t.Fatalf("got %v want %v", got, tc.want)
