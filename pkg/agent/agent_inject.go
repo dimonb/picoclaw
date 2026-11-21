@@ -4,6 +4,7 @@ package agent
 
 import (
 	"context"
+
 	"github.com/sipeed/picoclaw/pkg/audio/asr"
 	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
@@ -26,7 +27,7 @@ func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	al.channelManager = cm
 	if cm != nil {
 		if recorder, ok := al.contextManager.(interface {
-			RecordOutboundDelivery(context.Context, bus.OutboundDelivery) error
+			RecordOutboundDelivery(ctx context.Context, delivery bus.OutboundDelivery) error
 		}); ok {
 			cm.SetOutboundRecorder(recorder.RecordOutboundDelivery)
 		}

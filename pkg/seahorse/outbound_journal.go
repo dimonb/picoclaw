@@ -39,7 +39,7 @@ func syncReceiptDir(dir string) error {
 }
 
 func openOutboundJournal(dir string) (*outboundJournal, error) {
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
 	info, err := os.Lstat(dir)
@@ -49,10 +49,10 @@ func openOutboundJournal(dir string) (*outboundJournal, error) {
 	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("not a private receipt directory: %s", dir)
 	}
-	if err := os.Chmod(dir, 0700); err != nil {
+	if err = os.Chmod(dir, 0o700); err != nil {
 		return nil, err
 	}
-	if err := syncReceiptDir(filepath.Dir(dir)); err != nil {
+	if err = syncReceiptDir(filepath.Dir(dir)); err != nil {
 		return nil, err
 	}
 	j := &outboundJournal{dir: dir, sequence: time.Now().UnixNano()}
@@ -125,7 +125,7 @@ func (j *outboundJournal) replay(s *Store) error {
 		if err != nil {
 			return err
 		}
-		if !info.Mode().IsRegular() || info.Mode().Perm() != 0600 {
+		if !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 {
 			return fmt.Errorf("unsafe receipt file %s", path)
 		}
 		b, err := os.ReadFile(path)

@@ -20,11 +20,38 @@ func (m *Manager) SetOutboundRecorder(fn func(context.Context, bus.OutboundDeliv
 }
 
 func (m *Manager) recordTextDelivery(ctx context.Context, channel string, msg bus.OutboundMessage, ids []string) error {
-	return m.recordDelivery(ctx, bus.OutboundDelivery{Channel: channel, Account: msg.Context.Account, ChatID: outboundMessageChatID(msg), TopicID: msg.Context.TopicID, SessionKey: msg.SessionKey, Content: msg.Content}, ids)
+	return m.recordDelivery(
+		ctx,
+		bus.OutboundDelivery{
+			Channel:    channel,
+			Account:    msg.Context.Account,
+			ChatID:     outboundMessageChatID(msg),
+			TopicID:    msg.Context.TopicID,
+			SessionKey: msg.SessionKey,
+			Content:    msg.Content,
+		},
+		ids,
+	)
 }
 
-func (m *Manager) recordMediaDelivery(ctx context.Context, channel string, msg bus.OutboundMediaMessage, ids []string) error {
-	return m.recordDelivery(ctx, bus.OutboundDelivery{Channel: channel, Account: msg.Context.Account, ChatID: outboundMediaChatID(msg), TopicID: msg.Context.TopicID, SessionKey: msg.SessionKey, Parts: msg.Parts}, ids)
+func (m *Manager) recordMediaDelivery(
+	ctx context.Context,
+	channel string,
+	msg bus.OutboundMediaMessage,
+	ids []string,
+) error {
+	return m.recordDelivery(
+		ctx,
+		bus.OutboundDelivery{
+			Channel:    channel,
+			Account:    msg.Context.Account,
+			ChatID:     outboundMediaChatID(msg),
+			TopicID:    msg.Context.TopicID,
+			SessionKey: msg.SessionKey,
+			Parts:      msg.Parts,
+		},
+		ids,
+	)
 }
 
 func (m *Manager) recordDelivery(ctx context.Context, d bus.OutboundDelivery, ids []string) error {
@@ -56,7 +83,11 @@ func (m *Manager) recordDelivery(ctx context.Context, d bus.OutboundDelivery, id
 			}
 		}
 		if err := recorder(persistCtx, d); err != nil {
-			logger.ErrorCF("channels", "Delivered message persistence failed", map[string]any{"channel": d.Channel, "message_id": d.MessageID, "error": err.Error()})
+			logger.ErrorCF(
+				"channels",
+				"Delivered message persistence failed",
+				map[string]any{"channel": d.Channel, "message_id": d.MessageID, "error": err.Error()},
+			)
 		}
 	}
 	return nil
@@ -64,7 +95,10 @@ func (m *Manager) recordDelivery(ctx context.Context, d bus.OutboundDelivery, id
 
 // observeDelivery persists native receipts immediately. The per-request set also
 // protects exact payloads from later logical-payload fallback overwrites.
-func (m *Manager) observeDelivery(ctx context.Context, base bus.OutboundDelivery) (context.Context, func([]string) ([]string, []string)) {
+func (m *Manager) observeDelivery(
+	ctx context.Context,
+	base bus.OutboundDelivery,
+) (context.Context, func([]string) ([]string, []string)) {
 	var mu sync.Mutex
 	seen := make(map[string]bool)
 	var observed []string

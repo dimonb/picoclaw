@@ -29,8 +29,14 @@ func (t *FetchMessageTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"channel": map[string]any{"type": "string", "description": "Optional channel to disambiguate the reference"},
-			"account": map[string]any{"type": "string", "description": "Optional account to disambiguate the reference"},
+			"channel": map[string]any{
+				"type":        "string",
+				"description": "Optional channel to disambiguate the reference",
+			},
+			"account": map[string]any{
+				"type":        "string",
+				"description": "Optional account to disambiguate the reference",
+			},
 			"message_id": map[string]any{
 				"type":        "string",
 				"description": "The opaque channel-native message ID (e.g., 'chat_id:msg_id')",

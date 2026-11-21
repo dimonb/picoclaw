@@ -2,14 +2,21 @@ package seahorse
 
 import (
 	"context"
-	"github.com/sipeed/picoclaw/pkg/bus"
 	"testing"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
 )
 
 func TestOutboundDeliveryUpsertWithoutDuplicateModelTurns(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	d := OutboundDelivery{Channel: "telegram", MessageID: "-100:42:7", ChatID: "-100", TopicID: "42", Content: "original"}
+	d := OutboundDelivery{
+		Channel:   "telegram",
+		MessageID: "-100:42:7",
+		ChatID:    "-100",
+		TopicID:   "42",
+		Content:   "original",
+	}
 	if err := s.RecordOutboundDelivery(ctx, d); err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +42,13 @@ func TestOutboundDeliveryUpsertWithoutDuplicateModelTurns(t *testing.T) {
 	if _, err := s.GetMessageByChannelMessageID(ctx, d.MessageID); err == nil {
 		t.Fatal("ambiguous unscoped lookup accepted")
 	}
-	if got, err := s.GetMessageByChannelMessageIDScoped(ctx, d.MessageID, "telegram", "second"); err != nil || got == nil {
+	if got, err := s.GetMessageByChannelMessageIDScoped(
+		ctx,
+		d.MessageID,
+		"telegram",
+		"second",
+	); err != nil ||
+		got == nil {
 		t.Fatalf("scoped got=%+v err=%v", got, err)
 	}
 }
@@ -47,14 +60,20 @@ func TestOutboundEditPreservesSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := OutboundDelivery{Channel: "telegram", MessageID: "chat:7", SessionKey: "telegram:chat", ChatID: "chat", Content: "original"}
-	if err := s.RecordOutboundDelivery(ctx, d); err != nil {
+	d := OutboundDelivery{
+		Channel:    "telegram",
+		MessageID:  "chat:7",
+		SessionKey: "telegram:chat",
+		ChatID:     "chat",
+		Content:    "original",
+	}
+	if err = s.RecordOutboundDelivery(ctx, d); err != nil {
 		t.Fatal(err)
 	}
 	d.SessionKey = ""
 	d.ChatID = ""
 	d.Content = "edited needle"
-	if err := s.RecordOutboundDelivery(ctx, d); err != nil {
+	if err = s.RecordOutboundDelivery(ctx, d); err != nil {
 		t.Fatal(err)
 	}
 	found, err := s.SearchMessages(ctx, SearchInput{Pattern: "needle", ConversationID: conv.ConversationID})
@@ -74,7 +93,7 @@ func TestOutboundScopedLegacyFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.UpdateMessageChannelMessageID(ctx, m.ID, "chat:9"); err != nil {
+	if err = s.UpdateMessageChannelMessageID(ctx, m.ID, "chat:9"); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetMessageByChannelMessageIDScoped(ctx, "chat:9", "telegram", "")
@@ -92,7 +111,11 @@ func TestOutboundScopedLegacyFallback(t *testing.T) {
 func TestOutboundMediaCaptionGrepExpand(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
-	d := OutboundDelivery{Channel: "telegram", MessageID: "chat:99", Parts: []bus.MediaPart{{Type: "file", Ref: "media://receipt.pdf", Caption: "UniqueReceiptMarker"}}}
+	d := OutboundDelivery{
+		Channel:   "telegram",
+		MessageID: "chat:99",
+		Parts:     []bus.MediaPart{{Type: "file", Ref: "media://receipt.pdf", Caption: "UniqueReceiptMarker"}},
+	}
 	if err := s.RecordOutboundDelivery(ctx, d); err != nil {
 		t.Fatal(err)
 	}
@@ -102,10 +125,14 @@ func TestOutboundMediaCaptionGrepExpand(t *testing.T) {
 		t.Fatalf("grep=%+v err=%v", got, err)
 	}
 	expanded, err := r.ExpandMessages(ctx, []int64{got.Messages[0].ID})
-	if err != nil || len(expanded.Messages) != 1 || expanded.Messages[0].Content != "UniqueReceiptMarker" || len(expanded.Messages[0].Attachments) != 1 {
+	if err != nil || len(expanded.Messages) != 1 || expanded.Messages[0].Content != "UniqueReceiptMarker" ||
+		len(expanded.Messages[0].Attachments) != 1 {
 		t.Fatalf("expand=%+v err=%v", expanded, err)
 	}
-	rows, err := s.SearchMessages(ctx, SearchInput{Mode: "like", Pattern: "UniqueReceiptMarker", AllConversations: true})
+	rows, err := s.SearchMessages(
+		ctx,
+		SearchInput{Mode: "like", Pattern: "UniqueReceiptMarker", AllConversations: true},
+	)
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("like=%+v err=%v", rows, err)
 	}

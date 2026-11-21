@@ -456,7 +456,10 @@ func (c *TelegramChannel) sendChunk(
 	}
 
 	// Preserve the source chunk when rendered text is not returned by Telegram.
-	bus.ObserveOutboundReceipt(ctx, bus.OutboundDelivery{MessageID: strconv.Itoa(pMsg.MessageID), Content: params.mdFallback})
+	bus.ObserveOutboundReceipt(
+		ctx,
+		bus.OutboundDelivery{MessageID: strconv.Itoa(pMsg.MessageID), Content: params.mdFallback},
+	)
 	msgID := strconv.Itoa(pMsg.MessageID)
 	if params.threadID != 0 {
 		return fmt.Sprintf("%d:%d:%s", params.chatID, params.threadID, msgID), nil
@@ -493,7 +496,10 @@ func (c *TelegramChannel) sendRichChunk(
 	}
 
 	// Preserve the source chunk when rendered text is not returned by Telegram.
-	bus.ObserveOutboundReceipt(ctx, bus.OutboundDelivery{MessageID: strconv.Itoa(pMsg.MessageID), Content: params.mdFallback})
+	bus.ObserveOutboundReceipt(
+		ctx,
+		bus.OutboundDelivery{MessageID: strconv.Itoa(pMsg.MessageID), Content: params.mdFallback},
+	)
 	msgID := strconv.Itoa(pMsg.MessageID)
 	if params.threadID != 0 {
 		return fmt.Sprintf("%d:%d:%s", params.chatID, params.threadID, msgID), nil
@@ -949,7 +955,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			if err != nil && strings.Contains(err.Error(), "PHOTO_INVALID_DIMENSIONS") {
 				if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
 					file.Close()
-					return messageIDs, fmt.Errorf("telegram rewind media after photo failure: %w", channels.ErrTemporary)
+					return messageIDs, fmt.Errorf(
+						"telegram rewind media after photo failure: %w",
+						channels.ErrTemporary,
+					)
 				}
 
 				docParams := &telego.SendDocumentParams{
@@ -1000,7 +1009,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 		}
 
 		if tgResult != nil && err == nil {
-			bus.ObserveOutboundReceipt(ctx, bus.OutboundDelivery{MessageID: strconv.Itoa(tgResult.MessageID), Parts: []bus.MediaPart{part}})
+			bus.ObserveOutboundReceipt(
+				ctx,
+				bus.OutboundDelivery{MessageID: strconv.Itoa(tgResult.MessageID), Parts: []bus.MediaPart{part}},
+			)
 			messageIDs = append(messageIDs, strconv.Itoa(tgResult.MessageID))
 		}
 		file.Close()
@@ -1118,7 +1130,10 @@ func (c *TelegramChannel) sendSingleImageMediaGroup(
 			if i != 0 {
 				part.Caption = ""
 			}
-			bus.ObserveOutboundReceipt(ctx, bus.OutboundDelivery{MessageID: strconv.Itoa(result.MessageID), Parts: []bus.MediaPart{part}})
+			bus.ObserveOutboundReceipt(
+				ctx,
+				bus.OutboundDelivery{MessageID: strconv.Itoa(result.MessageID), Parts: []bus.MediaPart{part}},
+			)
 		}
 		messageIDs = append(messageIDs, strconv.Itoa(result.MessageID))
 	}

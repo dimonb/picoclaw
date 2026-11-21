@@ -16,14 +16,16 @@ func TestOutboundJournalFailureRestartReplay(t *testing.T) {
 	}
 	s := e.store
 	// Abort only archive writes, leaving the schema and receipt files usable.
-	_, err = s.db.Exec(`CREATE TRIGGER fail_receipt BEFORE INSERT ON outbound_deliveries BEGIN SELECT RAISE(FAIL,'forced outage'); END`)
+	_, err = s.db.Exec(
+		`CREATE TRIGGER fail_receipt BEFORE INSERT ON outbound_deliveries BEGIN SELECT RAISE(FAIL,'forced outage'); END`,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	d := OutboundDelivery{Channel: "telegram", MessageID: "-100:1:2", Content: "originaldurable"}
-	cancelled, cancel := context.WithCancel(context.Background())
+	canceled, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err = s.RecordOutboundDelivery(cancelled, d); err == nil {
+	if err = s.RecordOutboundDelivery(canceled, d); err == nil {
 		t.Fatal("expected queued error")
 	}
 	d.Content = "latestdurable"
@@ -35,17 +37,21 @@ func TestOutboundJournalFailureRestartReplay(t *testing.T) {
 		t.Fatalf("entries=%v err=%v", entries, err)
 	}
 	info, _ := os.Stat(path + ".outbound-receipts")
-	if info.Mode().Perm() != 0700 {
+	if info.Mode().Perm() != 0o700 {
 		t.Fatal(info.Mode())
 	}
 	for _, entry := range entries {
 		info, _ := os.Stat(filepath.Join(path+".outbound-receipts", entry.Name()))
-		if info.Mode().Perm() != 0600 {
+		if info.Mode().Perm() != 0o600 {
 			t.Fatal(info.Mode())
 		}
 	}
 	// A fully written but unpublished temp receipt must not be replayed.
-	if err = os.WriteFile(filepath.Join(path+".outbound-receipts", ".receipt-incomplete"), []byte("{"), 0600); err != nil {
+	if err = os.WriteFile(
+		filepath.Join(path+".outbound-receipts", ".receipt-incomplete"),
+		[]byte("{"),
+		0o600,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if _, err = s.db.Exec(`DROP TRIGGER fail_receipt`); err != nil {
@@ -64,7 +70,10 @@ func TestOutboundJournalFailureRestartReplay(t *testing.T) {
 	}
 	created := got.CreatedAt
 	r := &RetrievalEngine{store: s}
-	found, err := r.Grep(context.Background(), GrepInput{Pattern: "latestdurable", Scope: "message", AllConversations: true})
+	found, err := r.Grep(
+		context.Background(),
+		GrepInput{Pattern: "latestdurable", Scope: "message", AllConversations: true},
+	)
 	if err != nil || len(found.Messages) != 1 {
 		t.Fatalf("search=%+v err=%v", found, err)
 	}
@@ -103,8 +112,8 @@ func TestOutboundJournalSubsequentRecordAndConcurrentEdits(t *testing.T) {
 			defer wg.Done()
 			v := d
 			v.Content = "concurrent"
-			if err := s.RecordOutboundDelivery(context.Background(), v); err != nil {
-				t.Error(err)
+			if recordErr := s.RecordOutboundDelivery(context.Background(), v); recordErr != nil {
+				t.Error(recordErr)
 			}
 		}()
 	}
@@ -131,10 +140,13 @@ func TestOutboundJournalDiskAndDatabaseFailure(t *testing.T) {
 	s := e.store
 	e.Close()
 	os.Remove(s.outboundJournal.dir)
-	if err = os.WriteFile(s.outboundJournal.dir, []byte("blocked"), 0600); err != nil {
+	if err = os.WriteFile(s.outboundJournal.dir, []byte("blocked"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err = s.RecordOutboundDelivery(context.Background(), OutboundDelivery{Channel: "telegram", MessageID: "ref"}); err == nil {
+	if err = s.RecordOutboundDelivery(
+		context.Background(),
+		OutboundDelivery{Channel: "telegram", MessageID: "ref"},
+	); err == nil {
 		t.Fatal("both storage paths failed silently")
 	}
 }

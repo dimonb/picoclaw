@@ -60,40 +60,57 @@ func (s *Store) insertOutboundDelivery(ctx context.Context, d OutboundDelivery, 
 
 // GetMessageByChannelMessageIDScoped prefers confirmed delivery content. Empty
 // channel/account are wildcards; collisions must be resolved explicitly.
-func (s *Store) GetMessageByChannelMessageIDScoped(ctx context.Context, ref, channel, account string) (*Message, error) {
+func (s *Store) GetMessageByChannelMessageIDScoped(
+	ctx context.Context,
+	ref, channel, account string,
+) (*Message, error) {
 	if ref == "" {
 		return nil, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT content,parts,created_at FROM outbound_deliveries
- WHERE channel_message_id=? AND (?='' OR channel=?) AND (?='' OR account=?) LIMIT 2`, ref, channel, channel, account, account)
-	if err != nil {
-		return nil, err
-	}
-	var found *Message
-	for rows.Next() {
-		if found != nil {
-			rows.Close()
-			return nil, fmt.Errorf("ambiguous message reference %q; specify channel and account", ref)
-		}
-		var content, raw, created string
-		if err := rows.Scan(&content, &raw, &created); err != nil {
-			rows.Close()
+	found, err := func() (*Message, error) {
+		rows, err := s.db.QueryContext(ctx, `SELECT content,parts,created_at FROM outbound_deliveries
+	 WHERE channel_message_id=? AND (?='' OR channel=?) AND (?='' OR account=?) LIMIT 2`, ref, channel, channel, account, account)
+		if err != nil {
 			return nil, err
 		}
-		var parts []bus.MediaPart
-		if err := json.Unmarshal([]byte(raw), &parts); err != nil {
-			rows.Close()
-			return nil, fmt.Errorf("decode delivery parts: %w", err)
+		defer rows.Close()
+		var found *Message
+		for rows.Next() {
+			if found != nil {
+				return nil, fmt.Errorf("ambiguous message reference %q; specify channel and account", ref)
+			}
+			var content, raw, created string
+			if err = rows.Scan(&content, &raw, &created); err != nil {
+				return nil, err
+			}
+			var parts []bus.MediaPart
+			if err = json.Unmarshal([]byte(raw), &parts); err != nil {
+				return nil, fmt.Errorf("decode delivery parts: %w", err)
+			}
+			found = &Message{Role: "assistant", Content: content, ChannelMessageID: ref}
+			found.CreatedAt, _ = time.Parse(sqliteTimeLayout, created)
+			for _, p := range parts {
+				found.Attachments = append(
+					found.Attachments,
+					protocoltypes.Attachment{
+						Type:        p.Type,
+						Ref:         p.Ref,
+						Filename:    p.Filename,
+						ContentType: p.ContentType,
+					},
+				)
+				found.Parts = append(
+					found.Parts,
+					MessagePart{Type: "media", MediaURI: p.Ref, MimeType: p.ContentType, Text: p.Caption},
+				)
+			}
 		}
-		found = &Message{Role: "assistant", Content: content, ChannelMessageID: ref}
-		found.CreatedAt, _ = time.Parse(sqliteTimeLayout, created)
-		for _, p := range parts {
-			found.Attachments = append(found.Attachments, protocoltypes.Attachment{Type: p.Type, Ref: p.Ref, Filename: p.Filename, ContentType: p.ContentType})
-			found.Parts = append(found.Parts, MessagePart{Type: "media", MediaURI: p.Ref, MimeType: p.ContentType, Text: p.Caption})
+		err = rows.Err()
+		if err != nil {
+			return nil, err
 		}
-	}
-	err = rows.Err()
-	rows.Close()
+		return found, nil
+	}()
 	if err != nil {
 		return nil, err
 	}
@@ -104,36 +121,44 @@ func (s *Store) GetMessageByChannelMessageIDScoped(ctx context.Context, ref, cha
 	// fallback if the readable session key itself proves that identity. Opaque
 	// hashed session keys cannot be safely inferred from the reference alone.
 	if channel != "" || account != "" {
-		rows, err := s.db.QueryContext(ctx, `SELECT m.message_id,c.session_key FROM messages m JOIN conversations c ON c.conversation_id=m.conversation_id WHERE m.channel_message_id=? ORDER BY m.message_id`, ref)
-		if err != nil {
-			return nil, err
-		}
-		var matched int64
-		for rows.Next() {
-			var id int64
-			var session string
-			if err := rows.Scan(&id, &session); err != nil {
-				rows.Close()
-				return nil, err
+		matched, lookupErr := func() (int64, error) {
+			rows, err := s.db.QueryContext(
+				ctx,
+				`SELECT m.message_id,c.session_key FROM messages m JOIN conversations c ON c.conversation_id=m.conversation_id WHERE m.channel_message_id=? ORDER BY m.message_id`,
+				ref,
+			)
+			if err != nil {
+				return 0, err
 			}
-			fields := strings.SplitN(session, ":", 3)
-			if channel != "" && (len(fields) < 2 || fields[0] != channel) {
-				continue
+			defer rows.Close()
+			var matched int64
+			for rows.Next() {
+				var id int64
+				var session string
+				if err = rows.Scan(&id, &session); err != nil {
+					return 0, err
+				}
+				fields := strings.SplitN(session, ":", 3)
+				if channel != "" && (len(fields) < 2 || fields[0] != channel) {
+					continue
+				}
+				// Legacy keys encode channel:chat, not account: never invent an account.
+				if account != "" {
+					continue
+				}
+				if matched != 0 {
+					return 0, fmt.Errorf("ambiguous legacy message reference %q", ref)
+				}
+				matched = id
 			}
-			// Legacy keys encode channel:chat, not account: never invent an account.
-			if account != "" {
-				continue
+			err = rows.Err()
+			if err != nil {
+				return 0, err
 			}
-			if matched != 0 {
-				rows.Close()
-				return nil, fmt.Errorf("ambiguous legacy message reference %q", ref)
-			}
-			matched = id
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
+			return matched, nil
+		}()
+		if lookupErr != nil {
+			return nil, lookupErr
 		}
 		if matched == 0 {
 			return nil, nil

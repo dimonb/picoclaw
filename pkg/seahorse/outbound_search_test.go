@@ -26,7 +26,12 @@ func TestOutboundSearchReopenGrepExpand(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	d := OutboundDelivery{Channel: "telegram", MessageID: "-100:42:7", SessionKey: "telegram:test", Content: "archive alpha beta"}
+	d := OutboundDelivery{
+		Channel:    "telegram",
+		MessageID:  "-100:42:7",
+		SessionKey: "telegram:test",
+		Content:    "archive alpha beta",
+	}
 	if err = s.RecordOutboundDelivery(ctx, d); err != nil {
 		t.Fatal(err)
 	}
@@ -38,7 +43,10 @@ func TestOutboundSearchReopenGrepExpand(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Exercise actual MATCH, including operators (not the LIKE fallback).
-	rows, err := s.searchMessagesFTS(ctx, SearchInput{Mode: "match", Pattern: "alpha AND beta", ConversationID: conv.ConversationID})
+	rows, err := s.searchMessagesFTS(
+		ctx,
+		SearchInput{Mode: "match", Pattern: "alpha AND beta", ConversationID: conv.ConversationID},
+	)
 	if err != nil || len(rows) != 1 || rows[0].MessageID >= 0 || rows[0].TotalCount != 1 {
 		t.Fatalf("fts=%+v err=%v", rows, err)
 	}
@@ -54,7 +62,8 @@ func TestOutboundSearchReopenGrepExpand(t *testing.T) {
 		t.Fatalf("grep=%+v err=%v", got, err)
 	}
 	expanded, err := r.ExpandMessages(ctx, []int64{id})
-	if err != nil || len(expanded.Messages) != 1 || expanded.Messages[0].ChannelMessageID != d.MessageID || expanded.Messages[0].Content != d.Content {
+	if err != nil || len(expanded.Messages) != 1 || expanded.Messages[0].ChannelMessageID != d.MessageID ||
+		expanded.Messages[0].Content != d.Content {
 		t.Fatalf("expand=%+v err=%v", expanded, err)
 	}
 	d.Content = "updated gamma delta"
@@ -106,9 +115,9 @@ func TestOutboundSearchFiltersAndBackground(t *testing.T) {
 			{SearchInput{Pattern: "needle", Before: &past, AllConversations: true}, 0},
 		} {
 			tc.in.Mode = mode
-			rows, err := s.SearchMessages(ctx, tc.in)
-			if err != nil || len(rows) != tc.want {
-				t.Fatalf("mode=%s in=%+v rows=%+v err=%v", mode, tc.in, rows, err)
+			rows, searchErr := s.SearchMessages(ctx, tc.in)
+			if searchErr != nil || len(rows) != tc.want {
+				t.Fatalf("mode=%s in=%+v rows=%+v err=%v", mode, tc.in, rows, searchErr)
 			}
 		}
 	}

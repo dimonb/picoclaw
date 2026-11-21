@@ -349,7 +349,12 @@ func (m *Manager) EditMessage(ctx context.Context, channelName, chatID, messageI
 	}
 	// The remote edit succeeded. A database failure must not turn this into a
 	// failed remote operation (which would invite duplicate sends on retry).
-	_ = m.recordTextDelivery(ctx, channelName, bus.OutboundMessage{ChatID: chatID, Context: bus.NewOutboundContext(channelName, chatID, ""), Content: content}, []string{messageID})
+	_ = m.recordTextDelivery(
+		ctx,
+		channelName,
+		bus.OutboundMessage{ChatID: chatID, Context: bus.NewOutboundContext(channelName, chatID, ""), Content: content},
+		[]string{messageID},
+	)
 	return nil
 }
 
@@ -724,12 +729,25 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 	}
 
 	wrapDelivery := func(inner bus.Streamer) bus.Streamer {
-		return &finalizeHookStreamer{Streamer: inner, afterFinalize: func(deliveryCtx context.Context, content string) error {
-			if receipt, ok := inner.(interface{ DeliveredMessageIDs() []string }); ok {
-				return m.recordTextDelivery(deliveryCtx, channelName, bus.OutboundMessage{ChatID: chatID, Context: bus.NewOutboundContext(channelName, chatID, ""), SessionKey: sessionKey, Content: content}, receipt.DeliveredMessageIDs())
-			}
-			return nil
-		}}
+		return &finalizeHookStreamer{
+			Streamer: inner,
+			afterFinalize: func(deliveryCtx context.Context, content string) error {
+				if receipt, ok := inner.(interface{ DeliveredMessageIDs() []string }); ok {
+					return m.recordTextDelivery(
+						deliveryCtx,
+						channelName,
+						bus.OutboundMessage{
+							ChatID:     chatID,
+							Context:    bus.NewOutboundContext(channelName, chatID, ""),
+							SessionKey: sessionKey,
+							Content:    content,
+						},
+						receipt.DeliveredMessageIDs(),
+					)
+				}
+				return nil
+			},
+		}
 	}
 	streamer = wrapDelivery(streamer)
 
@@ -1692,11 +1710,21 @@ func (m *Manager) sendWithRetry(
 		return nil, err
 	}
 
-	ctx, receipts := m.observeDelivery(ctx, bus.OutboundDelivery{Channel: name, Account: msg.Context.Account, ChatID: outboundMessageChatID(msg), TopicID: msg.Context.TopicID, SessionKey: msg.SessionKey})
+	ctx, receipts := m.observeDelivery(
+		ctx,
+		bus.OutboundDelivery{
+			Channel:    name,
+			Account:    msg.Context.Account,
+			ChatID:     outboundMessageChatID(msg),
+			TopicID:    msg.Context.TopicID,
+			SessionKey: msg.SessionKey,
+		},
+	)
 
 	// Pre-send: stop typing and try to edit placeholder
 	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
-		msgIDs, fallback := receipts(msgIDs)
+		var fallback []string
+		msgIDs, fallback = receipts(msgIDs)
 		m.publishOutboundSent(name, msg, msgIDs)
 		return msgIDs, m.recordTextDelivery(ctx, name, msg, fallback)
 	}
@@ -1901,7 +1929,16 @@ func (m *Manager) sendMediaWithRetry(
 		return nil, err
 	}
 
-	ctx, receipts := m.observeDelivery(ctx, bus.OutboundDelivery{Channel: name, Account: msg.Context.Account, ChatID: outboundMediaChatID(msg), TopicID: msg.Context.TopicID, SessionKey: msg.SessionKey})
+	ctx, receipts := m.observeDelivery(
+		ctx,
+		bus.OutboundDelivery{
+			Channel:    name,
+			Account:    msg.Context.Account,
+			ChatID:     outboundMediaChatID(msg),
+			TopicID:    msg.Context.TopicID,
+			SessionKey: msg.SessionKey,
+		},
+	)
 
 	// Pre-send: stop typing and clean up any placeholder before sending media.
 	m.preSendMedia(ctx, name, msg, w.ch)
@@ -2282,7 +2319,16 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 
 	// Fallback: direct send (should not happen)
 	channel, _ := m.channels[channelName]
-	ctx, receipts := m.observeDelivery(ctx, bus.OutboundDelivery{Channel: channelName, Account: msg.Context.Account, ChatID: outboundMessageChatID(msg), TopicID: msg.Context.TopicID, SessionKey: msg.SessionKey})
+	ctx, receipts := m.observeDelivery(
+		ctx,
+		bus.OutboundDelivery{
+			Channel:    channelName,
+			Account:    msg.Context.Account,
+			ChatID:     outboundMessageChatID(msg),
+			TopicID:    msg.Context.TopicID,
+			SessionKey: msg.SessionKey,
+		},
+	)
 	ids, err := channel.Send(ctx, msg)
 	_, fallback := receipts(ids)
 	return errors.Join(err, m.recordTextDelivery(ctx, channelName, msg, fallback))

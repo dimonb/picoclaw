@@ -22,6 +22,7 @@ const archiveMessagesCTE = `WITH search_messages AS (
  SELECT -d.delivery_id,COALESCE(c.conversation_id,0),'assistant',d.content,d.created_at
  FROM outbound_deliveries d LEFT JOIN conversations c ON c.session_key=d.session_key
 )`
+
 const archiveSearchCTE = archiveMessagesCTE + `, search_matches AS (
  SELECT rowid,bm25(messages_fts) AS rank FROM messages_fts WHERE messages_fts MATCH ?
  UNION ALL
@@ -36,7 +37,8 @@ func ensureOutboundSearch(db *sql.DB) error {
 	defer tx.Rollback()
 	// Upgrade the initial archive schema while preserving existing row IDs.
 	var hasID int
-	if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('outbound_deliveries') WHERE name='delivery_id'`).Scan(&hasID); err != nil {
+	if err = tx.QueryRow(`SELECT count(*) FROM pragma_table_info('outbound_deliveries') WHERE name='delivery_id'`).
+		Scan(&hasID); err != nil {
 		return err
 	}
 	if hasID == 0 {
@@ -53,7 +55,8 @@ func ensureOutboundSearch(db *sql.DB) error {
 		}
 	}
 	var exists int
-	if err = tx.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name='outbound_deliveries_fts'`).Scan(&exists); err != nil {
+	if err = tx.QueryRow(`SELECT count(*) FROM sqlite_master WHERE name='outbound_deliveries_fts'`).
+		Scan(&exists); err != nil {
 		return err
 	}
 	for _, q := range []string{
@@ -67,7 +70,9 @@ func ensureOutboundSearch(db *sql.DB) error {
 		}
 	}
 	if exists == 0 {
-		if _, err = tx.Exec(`INSERT INTO outbound_deliveries_fts(outbound_deliveries_fts) VALUES('rebuild')`); err != nil {
+		if _, err = tx.Exec(
+			`INSERT INTO outbound_deliveries_fts(outbound_deliveries_fts) VALUES('rebuild')`,
+		); err != nil {
 			return err
 		}
 	}
@@ -77,7 +82,8 @@ func ensureOutboundSearch(db *sql.DB) error {
 func (s *Store) getArchivedDelivery(ctx context.Context, id int64) (*Message, error) {
 	var m Message
 	var raw, created string
-	err := s.db.QueryRowContext(ctx, `SELECT -d.delivery_id,COALESCE(c.conversation_id,0),d.content,d.parts,d.created_at,d.channel_message_id FROM outbound_deliveries d LEFT JOIN conversations c ON c.session_key=d.session_key WHERE d.delivery_id=?`, id).Scan(&m.ID, &m.ConversationID, &m.Content, &raw, &created, &m.ChannelMessageID)
+	err := s.db.QueryRowContext(ctx, `SELECT -d.delivery_id,COALESCE(c.conversation_id,0),d.content,d.parts,d.created_at,d.channel_message_id FROM outbound_deliveries d LEFT JOIN conversations c ON c.session_key=d.session_key WHERE d.delivery_id=?`, id).
+		Scan(&m.ID, &m.ConversationID, &m.Content, &raw, &created, &m.ChannelMessageID)
 	if err != nil {
 		return nil, err
 	}
@@ -88,7 +94,10 @@ func (s *Store) getArchivedDelivery(ctx context.Context, id int64) (*Message, er
 		return nil, err
 	}
 	for _, p := range parts {
-		m.Attachments = append(m.Attachments, protocoltypes.Attachment{Type: p.Type, Ref: p.Ref, Filename: p.Filename, ContentType: p.ContentType})
+		m.Attachments = append(
+			m.Attachments,
+			protocoltypes.Attachment{Type: p.Type, Ref: p.Ref, Filename: p.Filename, ContentType: p.ContentType},
+		)
 		m.Parts = append(m.Parts, MessagePart{Type: "media", MediaURI: p.Ref, MimeType: p.ContentType, Text: p.Caption})
 	}
 	m.TokenCount = EstimateMessageTokens(m)
