@@ -69,6 +69,22 @@ func runSchema(db *sql.DB) error {
 			created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 		)`,
 
+		// Delivered messages live independently of conversation compaction/pruning.
+		`CREATE TABLE IF NOT EXISTS outbound_deliveries (
+			delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel TEXT NOT NULL,
+			account TEXT NOT NULL DEFAULT '',
+			channel_message_id TEXT NOT NULL,
+			chat_id TEXT NOT NULL DEFAULT '',
+			topic_id TEXT NOT NULL DEFAULT '',
+			session_key TEXT NOT NULL DEFAULT '',
+			content TEXT NOT NULL DEFAULT '',
+			parts TEXT NOT NULL DEFAULT '[]',
+			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			UNIQUE (channel, account, channel_message_id)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_outbound_delivery_ref ON outbound_deliveries(channel_message_id)`,
+
 		`CREATE TABLE IF NOT EXISTS message_parts (
 			part_id     INTEGER PRIMARY KEY AUTOINCREMENT,
 			message_id  INTEGER NOT NULL REFERENCES messages(message_id),
@@ -169,6 +185,9 @@ func runSchema(db *sql.DB) error {
 		}
 	}
 
+	if err := ensureOutboundSearch(db); err != nil {
+		return err
+	}
 	if err := ensureMessagesFTS(db); err != nil {
 		return err
 	}

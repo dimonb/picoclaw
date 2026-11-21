@@ -29,6 +29,8 @@ func (t *FetchMessageTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
+			"channel": map[string]any{"type": "string", "description": "Optional channel to disambiguate the reference"},
+			"account": map[string]any{"type": "string", "description": "Optional account to disambiguate the reference"},
 			"message_id": map[string]any{
 				"type":        "string",
 				"description": "The opaque channel-native message ID (e.g., 'chat_id:msg_id')",
@@ -44,7 +46,9 @@ func (t *FetchMessageTool) Execute(ctx context.Context, args map[string]any) *to
 		return toolshared.ErrorResult("message_id is required")
 	}
 
-	msg, err := t.retrieval.store.GetMessageByChannelMessageID(ctx, messageID)
+	channel, _ := args["channel"].(string)
+	account, _ := args["account"].(string)
+	msg, err := t.retrieval.store.GetMessageByChannelMessageIDScoped(ctx, messageID, channel, account)
 	if err != nil {
 		return toolshared.ErrorResult(fmt.Sprintf("database error: %v", err))
 	}
@@ -67,6 +71,22 @@ func (t *FetchMessageTool) Execute(ctx context.Context, args map[string]any) *to
 		}
 	}
 	fmt.Fprintf(&b, "Time: %s\n\n%s", msg.CreatedAt.Format("2006-01-02 15:04:05"), msg.Content)
+
+	for _, p := range msg.Parts {
+		if p.Type == "media" {
+			fmt.Fprintf(&b, "\nMedia: %s (%s)", p.MediaURI, p.MimeType)
+			if p.Text != "" {
+				fmt.Fprintf(&b, "\nCaption: %s", p.Text)
+			}
+		}
+	}
+
+	for _, a := range msg.Attachments {
+		fmt.Fprintf(&b, "\nAttachment: %s (%s)", a.Ref, a.ContentType)
+		if a.Filename != "" {
+			fmt.Fprintf(&b, "\nFilename: %s", a.Filename)
+		}
+	}
 
 	return toolshared.NewToolResult(b.String())
 }

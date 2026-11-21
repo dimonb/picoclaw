@@ -160,3 +160,11 @@ type VoiceControl struct {
 	Type      string `json:"type"`   // "state", "command"
 	Action    string `json:"action"` // "idle", "listening", "start", "stop", "leave"
 }
+
+// OutboundDelivery is a channel-confirmed user-visible delivery. A logical
+// payload can have multiple receipts (chunks or a media group); each is archived.
+// It is separate from model history, which may contain tool-call placeholders.
+type OutboundDelivery struct {
+	Channel, Account, ChatID, TopicID, SessionKey, MessageID, Content string
+	Parts                                                             []MediaPart
+}

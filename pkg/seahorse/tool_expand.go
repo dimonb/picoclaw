@@ -111,11 +111,12 @@ func (t *ExpandTool) Execute(ctx context.Context, args map[string]any) *tools.To
 		}
 
 		messages = append(messages, map[string]any{
-			"id":             fmt.Sprintf("%d", msg.ID),
-			"role":           msg.Role,
-			"content":        msg.Content,
-			"parts":          parts,
-			"conversationId": msg.ConversationID,
+			"id":               fmt.Sprintf("%d", msg.ID),
+			"role":             msg.Role,
+			"content":          msg.Content,
+			"parts":            parts,
+			"conversationId":   msg.ConversationID,
+			"channelMessageId": msg.ChannelMessageID,
 		})
 	}
 

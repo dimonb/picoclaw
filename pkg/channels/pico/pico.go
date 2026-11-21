@@ -1450,3 +1450,12 @@ func (c *PicoChannel) editMessagePayload(
 	outMsg := newMessage(TypeMessageUpdate, normalized)
 	return c.broadcastToSession(chatID, outMsg)
 }
+
+func (s *picoStreamer) DeliveredMessageIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.messageID == "" {
+		return nil
+	}
+	return []string{s.messageID}
+}

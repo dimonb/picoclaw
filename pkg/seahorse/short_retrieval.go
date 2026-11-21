@@ -173,7 +173,7 @@ func (r *RetrievalEngine) Grep(ctx context.Context, input GrepInput) (*GrepResul
 			return nil, fmt.Errorf("search messages: %w", err)
 		}
 		for _, sr := range msgResults {
-			if sr.MessageID > 0 {
+			if sr.MessageID != 0 {
 				result.Messages = append(result.Messages, GrepMessageResult{
 					ID:             sr.MessageID,
 					Snippet:        sr.Snippet,

@@ -154,7 +154,7 @@ func NewEngine(config Config, completeFn CompleteFn) (*Engine, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("set busy_timeout: %w", err)
 	}
-	if _, err := db.Exec("PRAGMA synchronous = NORMAL;"); err != nil {
+	if _, err := db.Exec("PRAGMA synchronous = FULL;"); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("set synchronous: %w", err)
 	}
@@ -165,6 +165,19 @@ func NewEngine(config Config, completeFn CompleteFn) (*Engine, error) {
 	}
 
 	store := &Store{db: db}
+	if config.DBPath != "" && config.DBPath != ":memory:" {
+		journal, err := openOutboundJournal(config.DBPath + ".outbound-receipts")
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("open outbound receipt journal: %w", err)
+		}
+		store.outboundJournal = journal
+		// Startup must not silently discard pending confirmations.
+		if err := journal.replay(store); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("replay outbound receipts: %w", err)
+		}
+	}
 
 	// Prepend hardcoded ignore patterns (spec lines 1326-1328)
 	ignorePatterns := make([]string, 0, 1+len(config.IgnoreSessionPatterns))
