@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/logger"
 	"github.com/sipeed/picoclaw/pkg/providers"
 	"github.com/sipeed/picoclaw/pkg/providers/protocoltypes"
@@ -647,4 +648,10 @@ func init() {
 	if err := RegisterContextManager("seahorse", newSeahorseContextManager); err != nil {
 		panic(fmt.Sprintf("register seahorse context manager: %v", err))
 	}
+}
+
+// RecordOutboundDelivery archives actual channel receipts independently of
+// model-history ingestion (including ignored/stateless automation sessions).
+func (m *seahorseContextManager) RecordOutboundDelivery(ctx context.Context, d bus.OutboundDelivery) error {
+	return m.engine.GetRetrieval().Store().RecordOutboundDelivery(ctx, d)
 }

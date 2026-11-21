@@ -3,7 +3,10 @@
 package agent
 
 import (
+	"context"
+
 	"github.com/sipeed/picoclaw/pkg/audio/asr"
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/media"
@@ -22,6 +25,13 @@ func (al *AgentLoop) RegisterTool(tool tools.Tool) {
 
 func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 	al.channelManager = cm
+	if cm != nil {
+		if recorder, ok := al.contextManager.(interface {
+			RecordOutboundDelivery(ctx context.Context, delivery bus.OutboundDelivery) error
+		}); ok {
+			cm.SetOutboundRecorder(recorder.RecordOutboundDelivery)
+		}
+	}
 }
 
 func (al *AgentLoop) GetRegistry() *AgentRegistry {

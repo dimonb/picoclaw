@@ -85,6 +85,7 @@ type channelWorker struct {
 }
 
 type Manager struct {
+	outboundRecorder          func(context.Context, bus.OutboundDelivery) error
 	channels                  map[string]Channel
 	workers                   map[string]*channelWorker
 	bus                       *bus.MessageBus
@@ -343,7 +344,18 @@ func (m *Manager) EditMessage(ctx context.Context, channelName, chatID, messageI
 	if !ok {
 		return fmt.Errorf("channel %s does not support message editing", channelName)
 	}
-	return editor.EditMessage(ctx, chatID, messageID, content)
+	if err := editor.EditMessage(ctx, chatID, messageID, content); err != nil {
+		return err
+	}
+	// The remote edit succeeded. A database failure must not turn this into a
+	// failed remote operation (which would invite duplicate sends on retry).
+	_ = m.recordTextDelivery(
+		ctx,
+		channelName,
+		bus.OutboundMessage{ChatID: chatID, Context: bus.NewOutboundContext(channelName, chatID, ""), Content: content},
+		[]string{messageID},
+	)
+	return nil
 }
 
 // GetReactionSupport returns the emoji policy of the channel, or a zero
@@ -716,6 +728,29 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 		return nil, false
 	}
 
+	wrapDelivery := func(inner bus.Streamer) bus.Streamer {
+		return &finalizeHookStreamer{
+			Streamer: inner,
+			afterFinalize: func(deliveryCtx context.Context, content string) error {
+				if receipt, ok := inner.(interface{ DeliveredMessageIDs() []string }); ok {
+					return m.recordTextDelivery(
+						deliveryCtx,
+						channelName,
+						bus.OutboundMessage{
+							ChatID:     chatID,
+							Context:    bus.NewOutboundContext(channelName, chatID, ""),
+							SessionKey: sessionKey,
+							Content:    content,
+						},
+						receipt.DeliveredMessageIDs(),
+					)
+				}
+				return nil
+			},
+		}
+	}
+	streamer = wrapDelivery(streamer)
+
 	// Mark streamActive on Finalize so preSend knows to clean up the placeholder
 	// and late auxiliary messages cannot leak after streaming produced a final.
 	streamKey := streamSuppressionKey(channelName, chatID, sessionKey)
@@ -759,9 +794,15 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 
 	if m.config != nil && m.config.Agents.Defaults.SplitOnMarker {
 		return &splitMarkerStreamer{
-			current:     streamer,
-			reasoning:   reasoningStreamerFrom(streamer),
-			begin:       func(beginCtx context.Context) (bus.Streamer, error) { return sc.BeginStream(beginCtx, chatID) },
+			current:   streamer,
+			reasoning: reasoningStreamerFrom(streamer),
+			begin: func(beginCtx context.Context) (bus.Streamer, error) {
+				inner, err := sc.BeginStream(beginCtx, chatID)
+				if err != nil {
+					return nil, err
+				}
+				return wrapDelivery(inner), nil
+			},
 			onFinalize:  onFinalize,
 			clearMarker: clearMarker,
 		}, true
@@ -980,8 +1021,9 @@ func (m *Manager) streamActiveForChat(channel, chatID string) bool {
 // finalizeHookStreamer wraps a Streamer to run a hook on Finalize.
 type finalizeHookStreamer struct {
 	Streamer
-	onFinalize  func(context.Context, string)
-	clearMarker func()
+	onFinalize    func(context.Context, string)
+	clearMarker   func()
+	afterFinalize func(context.Context, string) error
 }
 
 func (s *finalizeHookStreamer) Finalize(ctx context.Context, content string) error {
@@ -989,6 +1031,9 @@ func (s *finalizeHookStreamer) Finalize(ctx context.Context, content string) err
 		return err
 	}
 	s.runFinalizeHook(ctx, content)
+	if s.afterFinalize != nil {
+		return s.afterFinalize(ctx, content)
+	}
 	return nil
 }
 
@@ -1001,6 +1046,9 @@ func (s *finalizeHookStreamer) FinalizeWithContext(ctx context.Context, content 
 		return err
 	}
 	s.runFinalizeHook(ctx, content)
+	if s.afterFinalize != nil {
+		return s.afterFinalize(ctx, content)
+	}
 	return nil
 }
 
@@ -1662,19 +1710,34 @@ func (m *Manager) sendWithRetry(
 		return nil, err
 	}
 
+	ctx, receipts := m.observeDelivery(
+		ctx,
+		bus.OutboundDelivery{
+			Channel:    name,
+			Account:    msg.Context.Account,
+			ChatID:     outboundMessageChatID(msg),
+			TopicID:    msg.Context.TopicID,
+			SessionKey: msg.SessionKey,
+		},
+	)
+
 	// Pre-send: stop typing and try to edit placeholder
 	if msgIDs, handled := m.preSend(ctx, name, msg, w.ch); handled {
+		var fallback []string
+		msgIDs, fallback = receipts(msgIDs)
 		m.publishOutboundSent(name, msg, msgIDs)
-		return msgIDs, nil
+		return msgIDs, m.recordTextDelivery(ctx, name, msg, fallback)
 	}
 
 	var lastErr error
 	var msgIDs []string
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		msgIDs, lastErr = w.ch.Send(ctx, msg)
-		if lastErr == nil {
+		var fallback []string
+		msgIDs, fallback = receipts(msgIDs)
+		if lastErr == nil || len(msgIDs) > 0 {
 			m.publishOutboundSent(name, msg, msgIDs)
-			return msgIDs, nil
+			return msgIDs, errors.Join(lastErr, m.recordTextDelivery(ctx, name, msg, fallback))
 		}
 
 		// Permanent failures — don't retry
@@ -1866,6 +1929,17 @@ func (m *Manager) sendMediaWithRetry(
 		return nil, err
 	}
 
+	ctx, receipts := m.observeDelivery(
+		ctx,
+		bus.OutboundDelivery{
+			Channel:    name,
+			Account:    msg.Context.Account,
+			ChatID:     outboundMediaChatID(msg),
+			TopicID:    msg.Context.TopicID,
+			SessionKey: msg.SessionKey,
+		},
+	)
+
 	// Pre-send: stop typing and clean up any placeholder before sending media.
 	m.preSendMedia(ctx, name, msg, w.ch)
 
@@ -1873,9 +1947,11 @@ func (m *Manager) sendMediaWithRetry(
 	var msgIDs []string
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		msgIDs, lastErr = ms.SendMedia(ctx, msg)
-		if lastErr == nil {
+		var fallback []string
+		msgIDs, fallback = receipts(msgIDs)
+		if lastErr == nil || len(msgIDs) > 0 {
 			m.publishOutboundMediaSent(name, msg, msgIDs)
-			return msgIDs, nil
+			return msgIDs, errors.Join(lastErr, m.recordMediaDelivery(ctx, name, msg, fallback))
 		}
 
 		// Permanent failures — don't retry
@@ -2176,13 +2252,17 @@ func (m *Manager) SendMessage(ctx context.Context, msg bus.OutboundMessage) erro
 		for _, chunk := range chunks {
 			chunkMsg := msg
 			chunkMsg.Content = chunk
-			m.sendWithRetry(ctx, channelName, w, chunkMsg)
+			if _, err := m.sendWithRetry(ctx, channelName, w, chunkMsg); err != nil {
+				return err
+			}
 		}
 	} else {
 		if len(chunks) == 1 {
 			msg.Content = chunks[0]
 		}
-		m.sendWithRetry(ctx, channelName, w, msg)
+		if _, err := m.sendWithRetry(ctx, channelName, w, msg); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -2239,6 +2319,17 @@ func (m *Manager) SendToChannel(ctx context.Context, channelName, chatID, conten
 
 	// Fallback: direct send (should not happen)
 	channel, _ := m.channels[channelName]
-	_, err := channel.Send(ctx, msg)
-	return err
+	ctx, receipts := m.observeDelivery(
+		ctx,
+		bus.OutboundDelivery{
+			Channel:    channelName,
+			Account:    msg.Context.Account,
+			ChatID:     outboundMessageChatID(msg),
+			TopicID:    msg.Context.TopicID,
+			SessionKey: msg.SessionKey,
+		},
+	)
+	ids, err := channel.Send(ctx, msg)
+	_, fallback := receipts(ids)
+	return errors.Join(err, m.recordTextDelivery(ctx, channelName, msg, fallback))
 }

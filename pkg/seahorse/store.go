@@ -73,7 +73,8 @@ func decodeAttachments(raw sql.NullString) []protocoltypes.Attachment {
 
 // Store provides SQLite storage for seahorse.
 type Store struct {
-	db *sql.DB
+	db              *sql.DB
+	outboundJournal *outboundJournal
 }
 
 // CreateSummaryInput holds parameters for creating a summary.
@@ -348,13 +349,17 @@ func partsToReadableContent(parts []MessagePart) string {
 
 // GetMessageByChannelMessageID retrieves a message by its opaque channel-native reference.
 func (s *Store) GetMessageByChannelMessageID(ctx context.Context, channelMessageID string) (*Message, error) {
+	return s.GetMessageByChannelMessageIDScoped(ctx, channelMessageID, "", "")
+}
+
+func (s *Store) getLegacyMessageByChannelMessageID(ctx context.Context, channelMessageID string) (*Message, error) {
 	var m Message
 	var createdAt string
 	var metadataRaw sql.NullString
 	var attachmentsRaw sql.NullString
 	err := s.db.QueryRowContext(
 		ctx,
-		"SELECT message_id, conversation_id, role, content, reasoning_content, channel_message_id, metadata, attachments, token_count, created_at FROM messages WHERE channel_message_id = ?",
+		"SELECT message_id, conversation_id, role, content, reasoning_content, channel_message_id, metadata, attachments, token_count, created_at FROM messages WHERE channel_message_id = ? ORDER BY message_id ASC LIMIT 1",
 		channelMessageID,
 	).Scan(&m.ID, &m.ConversationID, &m.Role, &m.Content, &m.ReasoningContent, &m.ChannelMessageID, &metadataRaw, &attachmentsRaw, &m.TokenCount, &createdAt)
 	if err == sql.ErrNoRows {
@@ -565,6 +570,9 @@ func (s *Store) GetMessageCount(ctx context.Context, convID int64) (int, error) 
 
 // GetMessageByID retrieves a single message by ID.
 func (s *Store) GetMessageByID(ctx context.Context, messageID int64) (*Message, error) {
+	if messageID < 0 {
+		return s.getArchivedDelivery(ctx, -messageID)
+	}
 	var msg Message
 	var createdAt string
 	var metadataRaw sql.NullString
@@ -1823,7 +1831,7 @@ func (s *Store) scanSearchResults(rows *sql.Rows, withRank bool) ([]SearchResult
 // SearchMessages performs full-text or regex search on messages.
 func (s *Store) SearchMessages(ctx context.Context, input SearchInput) ([]SearchResult, error) {
 	// Try FTS5 first for full-text mode
-	if input.Mode == "" || input.Mode == "full_text" {
+	if input.Mode == "" || input.Mode == "full_text" || input.Mode == "match" {
 		results, err := s.searchMessagesFTS(ctx, input)
 		if err == nil && len(results) > 0 {
 			return results, nil
@@ -1836,13 +1844,16 @@ func (s *Store) SearchMessages(ctx context.Context, input SearchInput) ([]Search
 
 func (s *Store) searchMessagesFTS(ctx context.Context, input SearchInput) ([]SearchResult, error) {
 	sanitized := SanitizeFTS5Query(input.Pattern)
+	if input.Mode == "match" {
+		sanitized = input.Pattern
+	}
 	if sanitized == "" {
 		return nil, nil
 	}
 
 	// Build WHERE clause for filters (used in both count and data queries)
-	whereClauses := []string{"messages_fts MATCH ?"}
-	args := []any{sanitized}
+	whereClauses := []string{"1=1"}
+	args := []any{sanitized, sanitized}
 
 	if input.ConversationID > 0 && !input.AllConversations {
 		whereClauses = append(whereClauses, "m.conversation_id = ?")
@@ -1866,8 +1877,8 @@ func (s *Store) searchMessagesFTS(ctx context.Context, input SearchInput) ([]Sea
 	whereStr := strings.Join(whereClauses, " AND ")
 
 	// First, get total count (bm25 conflicts with window functions in FTS5)
-	countQuery := `SELECT COUNT(*) FROM messages_fts f
-		JOIN messages m ON m.message_id = f.rowid
+	countQuery := archiveSearchCTE + ` SELECT COUNT(*) FROM search_matches f
+		JOIN search_messages m ON m.message_id = f.rowid
 		WHERE ` + whereStr
 	var totalCount int
 	if err := s.db.QueryRowContext(ctx, countQuery, args...).Scan(&totalCount); err != nil {
@@ -1875,9 +1886,9 @@ func (s *Store) searchMessagesFTS(ctx context.Context, input SearchInput) ([]Sea
 	}
 
 	// Then, get actual results with bm25 ranking
-	dataQuery := `SELECT m.message_id, m.conversation_id, m.role, m.content, m.created_at, bm25(messages_fts) as rank
-		FROM messages_fts f
-		JOIN messages m ON m.message_id = f.rowid
+	dataQuery := archiveSearchCTE + ` SELECT m.message_id, m.conversation_id, m.role, m.content, m.created_at, f.rank
+		FROM search_matches f
+		JOIN search_messages m ON m.message_id = f.rowid
 		WHERE ` + whereStr + ` ORDER BY rank`
 
 	dataArgs := append([]any{}, args...) // copy args
@@ -1905,8 +1916,8 @@ func (s *Store) searchMessagesFTS(ctx context.Context, input SearchInput) ([]Sea
 }
 
 func (s *Store) searchMessagesLike(ctx context.Context, input SearchInput) ([]SearchResult, error) {
-	query := `SELECT message_id, conversation_id, role, content, created_at, COUNT(*) OVER() as total_count
-		FROM messages WHERE content LIKE ?`
+	query := archiveMessagesCTE + ` SELECT message_id, conversation_id, role, content, created_at, COUNT(*) OVER() as total_count
+		FROM search_messages WHERE content LIKE ?`
 	args := []any{"%" + input.Pattern + "%"}
 	query, args = buildMessagesLikeQuery(query, args, input)
 

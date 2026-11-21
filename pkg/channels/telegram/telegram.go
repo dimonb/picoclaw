@@ -339,7 +339,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 					format:     format,
 				})
 				if err != nil {
-					return nil, err
+					return messageIDs, err
 				}
 				messageIDs = append(messageIDs, msgID)
 				replyToID = ""
@@ -379,7 +379,7 @@ func (c *TelegramChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]
 			format:     format,
 		})
 		if err != nil {
-			return nil, err
+			return messageIDs, err
 		}
 		messageIDs = append(messageIDs, msgID)
 		// Only the first chunk should be a reply; subsequent chunks are normal messages.
@@ -455,6 +455,11 @@ func (c *TelegramChannel) sendChunk(
 		}
 	}
 
+	// Preserve the source chunk when rendered text is not returned by Telegram.
+	bus.ObserveOutboundReceipt(
+		ctx,
+		bus.OutboundDelivery{MessageID: strconv.Itoa(pMsg.MessageID), Content: params.mdFallback},
+	)
 	msgID := strconv.Itoa(pMsg.MessageID)
 	if params.threadID != 0 {
 		return fmt.Sprintf("%d:%d:%s", params.chatID, params.threadID, msgID), nil
@@ -490,6 +495,11 @@ func (c *TelegramChannel) sendRichChunk(
 		}
 	}
 
+	// Preserve the source chunk when rendered text is not returned by Telegram.
+	bus.ObserveOutboundReceipt(
+		ctx,
+		bus.OutboundDelivery{MessageID: strconv.Itoa(pMsg.MessageID), Content: params.mdFallback},
+	)
 	msgID := strconv.Itoa(pMsg.MessageID)
 	if params.threadID != 0 {
 		return fmt.Sprintf("%d:%d:%s", params.chatID, params.threadID, msgID), nil
@@ -889,7 +899,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 	if len([]rune(leadingCaption)) > telegramCaptionLimit {
 		leadingIDs, leadingErr := c.sendCaptionText(ctx, chatID, threadID, leadingCaption)
 		if leadingErr != nil {
-			return nil, leadingErr
+			return append(messageIDs, leadingIDs...), leadingErr
 		}
 		messageIDs = append(messageIDs, leadingIDs...)
 		msg = telegramClearMediaCaptions(msg)
@@ -902,7 +912,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				"count": len(msg.Parts),
 				"error": err.Error(),
 			})
-			return nil, fmt.Errorf("telegram send media group: %w", channels.ErrTemporary)
+			return append(messageIDs, groupIDs...), fmt.Errorf("telegram send media group: %w", channels.ErrTemporary)
 		}
 		if len(groupIDs) > 0 {
 			messageIDs = append(messageIDs, groupIDs...)
@@ -945,7 +955,10 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			if err != nil && strings.Contains(err.Error(), "PHOTO_INVALID_DIMENSIONS") {
 				if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
 					file.Close()
-					return nil, fmt.Errorf("telegram rewind media after photo failure: %w", channels.ErrTemporary)
+					return messageIDs, fmt.Errorf(
+						"telegram rewind media after photo failure: %w",
+						channels.ErrTemporary,
+					)
 				}
 
 				docParams := &telego.SendDocumentParams{
@@ -995,7 +1008,11 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 			tgResult, err = c.bot.SendDocument(ctx, params)
 		}
 
-		if tgResult != nil {
+		if tgResult != nil && err == nil {
+			bus.ObserveOutboundReceipt(
+				ctx,
+				bus.OutboundDelivery{MessageID: strconv.Itoa(tgResult.MessageID), Parts: []bus.MediaPart{part}},
+			)
 			messageIDs = append(messageIDs, strconv.Itoa(tgResult.MessageID))
 		}
 		file.Close()
@@ -1005,7 +1022,7 @@ func (c *TelegramChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMe
 				"type":  part.Type,
 				"error": err.Error(),
 			})
-			return nil, fmt.Errorf("telegram send media: %w", channels.ErrTemporary)
+			return messageIDs, fmt.Errorf("telegram send media: %w", channels.ErrTemporary)
 		}
 	}
 
@@ -1045,7 +1062,7 @@ func (c *TelegramChannel) sendImageMediaGroups(
 		}
 		groupIDs, err := c.sendSingleImageMediaGroup(ctx, chatID, threadID, store, parts[start:end])
 		if err != nil {
-			return nil, err
+			return append(messageIDs, groupIDs...), err
 		}
 		messageIDs = append(messageIDs, groupIDs...)
 	}
@@ -1107,7 +1124,17 @@ func (c *TelegramChannel) sendSingleImageMediaGroup(
 	}
 
 	messageIDs := make([]string, 0, len(results))
-	for _, result := range results {
+	for i, result := range results {
+		if i < len(parts) {
+			part := parts[i]
+			if i != 0 {
+				part.Caption = ""
+			}
+			bus.ObserveOutboundReceipt(
+				ctx,
+				bus.OutboundDelivery{MessageID: strconv.Itoa(result.MessageID), Parts: []bus.MediaPart{part}},
+			)
+		}
 		messageIDs = append(messageIDs, strconv.Itoa(result.MessageID))
 	}
 	return messageIDs, nil
@@ -1138,7 +1165,7 @@ func (c *TelegramChannel) sendCaptionText(
 			format:     c.captionFormat(),
 		})
 		if err != nil {
-			return nil, err
+			return messageIDs, err
 		}
 		messageIDs = append(messageIDs, msgID)
 	}
@@ -2035,6 +2062,7 @@ func (c *TelegramChannel) BeginStream(ctx context.Context, chatID string) (chann
 // which decides whether the stream was already visible enough to keep or should
 // fall back to Chat().
 type telegramStreamer struct {
+	deliveredIDs     []string
 	bot              *telego.Bot
 	chatID           int64
 	threadID         int
@@ -2098,8 +2126,9 @@ func (s *telegramStreamer) Update(ctx context.Context, content string) error {
 
 func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 	var err error
+	var sent *telego.Message
 	if s.format == telegramFormatRich {
-		_, err = s.bot.SendRichMessage(ctx, &telego.SendRichMessageParams{
+		sent, err = s.bot.SendRichMessage(ctx, &telego.SendRichMessageParams{
 			ChatID:          tu.ID(s.chatID),
 			MessageThreadID: s.threadID,
 			RichMessage:     telego.InputRichMessage{Markdown: parseContent(content, telegramFormatRich)},
@@ -2108,16 +2137,16 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 			// Fallback to plain text so a Rich API failure never drops the reply.
 			plain := tu.Message(tu.ID(s.chatID), content)
 			plain.MessageThreadID = s.threadID
-			_, err = s.bot.SendMessage(ctx, plain)
+			sent, err = s.bot.SendMessage(ctx, plain)
 		}
 	} else {
 		tgMsg := tu.Message(tu.ID(s.chatID), markdownToTelegramHTML(content))
 		tgMsg.MessageThreadID = s.threadID
 		tgMsg.ParseMode = telego.ModeHTML
-		if _, err = s.bot.SendMessage(ctx, tgMsg); err != nil {
+		if sent, err = s.bot.SendMessage(ctx, tgMsg); err != nil {
 			// Fallback to plain text
 			tgMsg.ParseMode = ""
-			_, err = s.bot.SendMessage(ctx, tgMsg)
+			sent, err = s.bot.SendMessage(ctx, tgMsg)
 		}
 	}
 
@@ -2130,6 +2159,11 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 		return fmt.Errorf("telegram finalize: %w", err)
 	}
 
+	if sent != nil {
+		s.mu.Lock()
+		s.deliveredIDs = []string{strconv.Itoa(sent.MessageID)}
+		s.mu.Unlock()
+	}
 	s.Cancel(ctx)
 	return nil
 }
@@ -2193,4 +2227,11 @@ func isPostConnectError(err error) bool {
 // VoiceCapabilities returns the voice capabilities of the channel.
 func (c *TelegramChannel) VoiceCapabilities() channels.VoiceCapabilities {
 	return channels.VoiceCapabilities{ASR: true, TTS: true}
+}
+
+// DeliveredMessageIDs exposes the confirmed final send, not ephemeral drafts.
+func (s *telegramStreamer) DeliveredMessageIDs() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.deliveredIDs...)
 }
