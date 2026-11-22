@@ -287,10 +287,12 @@ func (c *MattermostChannel) Send(ctx context.Context, msg bus.OutboundMessage) (
 
 // EditMessage implements channels.MessageEditor via PUT /posts/{id}/patch.
 // messageID may be a raw post ID or an encoded "<channel>:[<root>:]<post>".
+// Like DeleteMessage it only touches the bot's own posts in chatID: a bot
+// account with admin rights could otherwise edit other people's posts.
 func (c *MattermostChannel) EditMessage(ctx context.Context, chatID, messageID, content string) error {
-	postID := parseMessageID(messageID).postID
-	if postID == "" {
-		return fmt.Errorf("mattermost edit: empty message id: %w", channels.ErrSendFailed)
+	postID, err := c.ownPost(ctx, chatID, messageID)
+	if err != nil {
+		return err
 	}
 	return c.patchPost(ctx, postID, content)
 }

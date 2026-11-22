@@ -181,3 +181,26 @@ func TestToolFeedbackSeparateMessages(t *testing.T) {
 		_ = m.StopAll(context.Background())
 	}
 }
+
+// Same rule for edits: only the bot's own posts in the chat's channel.
+func TestEditMessageOnlyOwnPostsInChannel(t *testing.T) {
+	fm := newFakeMattermost(t)
+	ch, _ := newTestChannel(t, fm, nil, nil)
+	startConnected(t, fm, ch)
+	ctx := context.Background()
+	fm.addPost("mine", testBotID, testChanID)
+	fm.addPost("theirs", testUserID, testChanID)
+	fm.addPost("elsewhere", testBotID, "otherchannel00000000000000")
+
+	if err := ch.EditMessage(ctx, testChanID, testChanID+":mine", "fixed"); err != nil {
+		t.Fatalf("own post: %v", err)
+	}
+	for _, id := range []string{"theirs", "elsewhere", "otherchannel00000000000000:y"} {
+		if err := ch.EditMessage(ctx, testChanID, id, "hijack"); !errors.Is(err, channels.ErrNotOwnMessage) {
+			t.Errorf("edit %q: err = %v, want ErrNotOwnMessage", id, err)
+		}
+	}
+	if p := fm.callsTo(http.MethodPut, "/api/v4/posts/"); len(p) != 1 || p[0].Path != "/api/v4/posts/mine/patch" {
+		t.Errorf("patches = %v, want only the bot's own post", p)
+	}
+}
