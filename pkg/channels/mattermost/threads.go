@@ -138,6 +138,24 @@ func resolveTarget(chatID string, outCtx *bus.InboundContext, replyTo string) (c
 	return channelID, ""
 }
 
+// CanonicalMessageRef implements channels.MessageRefCanonicalizer:
+// "<channel>:<post>" for "<channel>:<post>", "<channel>:<root>:<post>" or a
+// bare post ID in chatID's channel.
+func (c *MattermostChannel) CanonicalMessageRef(chatID, messageID string) string {
+	ref := parseMessageID(messageID)
+	if ref.postID == "" {
+		return ""
+	}
+	channelID := ref.channelID
+	if channelID == "" {
+		channelID, _, _ = strings.Cut(strings.TrimSpace(chatID), "/")
+	}
+	if channelID == "" {
+		return ""
+	}
+	return channelID + ":" + ref.postID
+}
+
 func isFinalOutbound(ctx bus.InboundContext) bool {
 	return strings.EqualFold(strings.TrimSpace(ctx.Raw[outboundKindKey]), outboundKindFinal)
 }

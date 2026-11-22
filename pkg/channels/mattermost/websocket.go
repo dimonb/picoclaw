@@ -314,7 +314,8 @@ func (c *MattermostChannel) handlePost(data postedData, post mmPost, edited bool
 	content := c.stripBotMention(post.Message)
 
 	// An edit reaches the agent only as a correction of a post it handled
-	// (text changed) or when the edit newly mentions the bot (see edits.go).
+	// (text changed) or as a new request for a post it saw but did not
+	// handle (see edits.go); the filters below still apply to the latter.
 	// Posts the bot does not remember (old, or from before a restart) are
 	// ignored. A correction shows nothing up front; the agent decides.
 	seen := false
@@ -322,7 +323,7 @@ func (c *MattermostChannel) handlePost(data postedData, post mmPost, edited bool
 		switch c.seenPosts.classifyEdit(post.ID, post.Message, mentioned) {
 		case editCorrection:
 			seen = true
-		case editNewMention:
+		case editNewRequest:
 		default:
 			return
 		}

@@ -42,6 +42,13 @@ func (c *MattermostChannel) sendToolFeedback(ctx context.Context, channelID, roo
 	c.indMu.Unlock()
 	if postID != "" {
 		if err := c.patchPost(ctx, postID, content); err == nil {
+			// Still in use: a long turn must not have its live progress
+			// post swept as stale.
+			c.indMu.Lock()
+			if fb, ok := c.feedback[key]; ok && fb.id == postID {
+				c.feedback[key] = feedbackPost{id: postID, at: time.Now()}
+			}
+			c.indMu.Unlock()
 			return []string{encodeMessageID(channelID, rootID, postID)}, nil
 		}
 	}

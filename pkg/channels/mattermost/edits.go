@@ -16,8 +16,9 @@ import (
 //     also emits post_edited for metadata such as link previews): a
 //     correction, shown without indicators — the agent decides whether it
 //     matters and otherwise answers NO_REPLY;
-//   - the post was seen but not handled (mention mode) and the edit newly
-//     @mentions the bot: a new request.
+//   - the post was seen but not handled (mention mode without a mention, or
+//     no content, e.g. just "@bot") and the edit changed it: a new request,
+//     subject to the usual filters (mention mode still needs a mention).
 //
 // Posts the channel does not remember — older than postMemoryTTL, evicted,
 // or from before a restart — are ignored, so editing an old post that
@@ -34,7 +35,7 @@ type editKind int
 const (
 	editIgnore editKind = iota
 	editCorrection
-	editNewMention
+	editNewRequest
 )
 
 type rememberedPost struct {
@@ -110,8 +111,8 @@ func (m *postMemory) classifyEdit(id, text string, mentioned bool) editKind {
 	switch {
 	case p.delivered && p.text != text:
 		return editCorrection
-	case !p.delivered && mentioned && !p.mentioned:
-		return editNewMention
+	case !p.delivered && p.text != text:
+		return editNewRequest
 	default:
 		return editIgnore
 	}
