@@ -71,7 +71,7 @@ type MattermostChannel struct {
 
 	indMu      sync.Mutex
 	indicators map[string]*threadIndicators // "<channel>/<root>" -> pending UX
-	feedback   map[string]string            // "<channel>/<root>" -> tool-feedback post
+	feedback   map[string]feedbackPost      // "<channel>/<root>" -> tool-feedback post
 	seenPosts  postMemory                   // posts delivered to the agent (for post_edited)
 	chanInfo   sync.Map                     // channel ID -> mmChannelInfo
 	threads    threadQueue
@@ -116,7 +116,7 @@ func NewMattermostChannel(
 		reconnectMin: time.Second,
 		reconnectMax: time.Minute,
 		indicators:   make(map[string]*threadIndicators),
-		feedback:     make(map[string]string),
+		feedback:     make(map[string]feedbackPost),
 	}, nil
 }
 
@@ -295,9 +295,49 @@ func (c *MattermostChannel) EditMessage(ctx context.Context, chatID, messageID, 
 	return c.patchPost(ctx, postID, content)
 }
 
-// DeleteMessage implements channels.MessageDeleter.
+// DeleteMessage implements channels.MessageDeleter. Only the bot's own posts
+// in chatID can be deleted (the bot account may have moderation rights).
 func (c *MattermostChannel) DeleteMessage(ctx context.Context, chatID, messageID string) error {
-	return c.deletePost(ctx, parseMessageID(messageID).postID)
+	postID, err := c.ownPost(ctx, chatID, messageID)
+	if err != nil {
+		return err
+	}
+	return c.deletePost(ctx, postID)
+}
+
+// IsOwnMessage implements channels.OwnMessageVerifier.
+func (c *MattermostChannel) IsOwnMessage(ctx context.Context, chatID, messageID string) (bool, error) {
+	_, err := c.ownPost(ctx, chatID, messageID)
+	if errors.Is(err, channels.ErrNotOwnMessage) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+// ownPost resolves messageID to a post ID after checking with the server
+// that the post was written by the bot in chatID's channel.
+func (c *MattermostChannel) ownPost(ctx context.Context, chatID, messageID string) (string, error) {
+	ref := parseMessageID(messageID)
+	if ref.postID == "" {
+		return "", fmt.Errorf("mattermost: empty message id: %w", channels.ErrSendFailed)
+	}
+	channelID, _, _ := strings.Cut(strings.TrimSpace(chatID), "/")
+	if ref.channelID != "" && channelID != "" && ref.channelID != channelID {
+		return "", fmt.Errorf("mattermost: post %s is not in channel %s: %w", ref.postID, channelID,
+			channels.ErrNotOwnMessage)
+	}
+	var post struct {
+		UserID    string `json:"user_id"`
+		ChannelID string `json:"channel_id"`
+	}
+	if err := c.apiJSON(ctx, http.MethodGet, "/api/v4/posts/"+url.PathEscape(ref.postID), nil, &post); err != nil {
+		return "", err
+	}
+	if post.UserID == "" || post.UserID != c.botUserID || (channelID != "" && post.ChannelID != channelID) {
+		return "", fmt.Errorf("mattermost: post %s is not the bot's post in channel %s: %w", ref.postID, channelID,
+			channels.ErrNotOwnMessage)
+	}
+	return ref.postID, nil
 }
 
 func (c *MattermostChannel) patchPost(ctx context.Context, postID, content string) error {

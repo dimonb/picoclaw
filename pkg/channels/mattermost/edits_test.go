@@ -73,16 +73,21 @@ func TestPostEditedReachesAgent(t *testing.T) {
 	expectNoInbound(t, mb)
 }
 
-// mention mode: a channel post edited to add the @mention now addresses the
-// bot (channel type comes from the API since no event announced it).
+// mention mode: a channel post the bot saw but did not handle, edited to add
+// the @mention, now addresses the bot (channel type comes from the API since
+// post_edited does not carry it).
 func TestPostEditedAddsMention(t *testing.T) {
 	fm := newFakeMattermost(t)
 	ch, mb := newTestChannel(t, fm, nil, nil)
 	ch.groupMode = groupModeMention
 	conn := startConnected(t, fm, ch)
+	ch.chanInfo.Delete(testChanID) // forget what the posted event told us
 
-	sendEdited(t, conn, post("c1", testUserID, "lunch?", ""))
-	expectNoInbound(t, mb)
+	sendPosted(t, conn, "O", post("c1", testUserID, "lunch?", ""), nil)
+	expectNoInbound(t, mb) // mention mode: not handled
+	ch.chanInfo.Delete(testChanID)
+	sendEdited(t, conn, post("c1", testUserID, "lunch!", ""))
+	expectNoInbound(t, mb) // still no mention
 	sendEdited(t, conn, post("c1", testUserID, "@picobot lunch?", ""))
 	in := nextInbound(t, mb)
 	if !strings.HasSuffix(in.Content, "lunch?") || !in.Context.Mentioned || in.Context.ChatType != "channel" {
@@ -90,6 +95,31 @@ func TestPostEditedAddsMention(t *testing.T) {
 	}
 	if calls := fm.callsTo(http.MethodGet, "/api/v4/channels/"+testChanID); len(calls) != 1 {
 		t.Errorf("channel lookups = %d, want 1", len(calls))
+	}
+	// Editing it again (mention already there) is a correction only if handled
+	// text changed; the same text is ignored.
+	sendEdited(t, conn, post("c1", testUserID, "@picobot lunch?", ""))
+	expectNoInbound(t, mb)
+}
+
+// Review fix: an old post (unknown to the channel, e.g. from before a restart)
+// that mentions the bot does not wake it when edited — in any mode.
+func TestPostEditedOldMentionIgnored(t *testing.T) {
+	fm := newFakeMattermost(t)
+	ch, mb := newTestChannel(t, fm, nil, nil) // smart mode
+	conn := startConnected(t, fm, ch)
+
+	recent := post("y1", testUserID, "@picobot what about the report?", "")
+	recent["create_at"] = time.Now().Add(-2 * time.Hour).UnixMilli() // "yesterday's question", within 24h
+	sendEdited(t, conn, recent)
+	expectNoInbound(t, mb)
+
+	old := post("o1", testUserID, "@picobot ping", "")
+	old["create_at"] = time.Now().Add(-72 * time.Hour).UnixMilli()
+	sendEdited(t, conn, old)
+	expectNoInbound(t, mb)
+	if adds := fm.callsTo(http.MethodPost, "/api/v4/reactions"); len(adds) != 0 {
+		t.Errorf("no indicators expected: %v", adds)
 	}
 }
 

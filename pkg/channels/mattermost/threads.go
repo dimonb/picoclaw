@@ -174,6 +174,7 @@ func (t *threadIndicators) stop() {
 // beginIndicators shows the configured indicators for an addressed post,
 // once per thread until a reply consumes them.
 func (c *MattermostChannel) beginIndicators(ctx context.Context, channelID, rootID, postID string) {
+	c.sweepFeedback(ctx)
 	key := threadKey(channelID, rootID)
 	c.indMu.Lock()
 	for k, ind := range c.indicators {

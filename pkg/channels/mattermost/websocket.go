@@ -313,19 +313,21 @@ func (c *MattermostChannel) handlePost(data postedData, post mmPost, edited bool
 	}
 	content := c.stripBotMention(post.Message)
 
-	// An edit reaches the agent when the post was delivered before (and its
-	// text changed), or when the edit now mentions the bot. The agent decides
-	// whether the change matters; nothing is shown up front.
+	// An edit reaches the agent only as a correction of a post it handled
+	// (text changed) or when the edit newly mentions the bot (see edits.go).
+	// Posts the bot does not remember (old, or from before a restart) are
+	// ignored. A correction shows nothing up front; the agent decides.
 	seen := false
 	if edited {
-		var changed bool
-		seen, changed = c.editedPostSeen(post)
-		if seen && !changed {
-			return // metadata-only update or repeated event
+		switch c.seenPosts.classifyEdit(post.ID, post.Message, mentioned) {
+		case editCorrection:
+			seen = true
+		case editNewMention:
+		default:
+			return
 		}
-		if !seen && (isDM || !mentioned) {
-			return // an old post the bot never handled
-		}
+	} else {
+		c.seenPosts.observe(post.ID, post.Message, mentioned)
 	}
 
 	// DMs are always addressed. In channels a post is addressed when it
@@ -367,7 +369,7 @@ func (c *MattermostChannel) handlePost(data postedData, post mmPost, edited bool
 			return
 		}
 	}
-	c.rememberPostText(post)
+	c.seenPosts.markDelivered(post.ID, post.Message, mentioned)
 
 	chatType := "channel"
 	switch data.ChannelType {
@@ -421,7 +423,10 @@ func (c *MattermostChannel) handlePost(data postedData, post mmPost, edited bool
 	if addressed {
 		c.beginIndicators(c.ctx, post.ChannelID, replyRoot, post.ID)
 	}
-	deferWhileBusy := c.threads.admit(post.ChannelID, replyRoot, addressed)
+	// An edit is a message of its own thread: if another thread's turn is
+	// running it waits for its own turn, so a reply cannot land in the wrong
+	// thread (the agent may still choose NO_REPLY).
+	deferWhileBusy := c.threads.admit(post.ChannelID, replyRoot, addressed || edited)
 
 	logger.DebugCF("mattermost", "Received message", map[string]any{
 		"sender_id": post.UserID,

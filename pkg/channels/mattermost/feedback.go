@@ -3,6 +3,7 @@ package mattermost
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/bus"
 )
@@ -12,8 +13,20 @@ import (
 // like Telegram's tracked tool-feedback message. They do not consume the
 // thread's placeholder or stop typing. When the answer arrives the feedback
 // post is reused for it (if there is no placeholder) or deleted.
+//
+// With tool_feedback.separate_messages the Manager calls
+// ClearToolFeedbackMessage before every send, so each feedback becomes its
+// own post and stays in the chat (as in Telegram).
+//
+// A tracked post that no answer or cleanup claims (e.g. the turn was stopped)
+// is deleted after indicatorTTL by sweepFeedback.
 
 const toolFeedbackKind = "tool_feedback"
+
+type feedbackPost struct {
+	id string
+	at time.Time
+}
 
 func isToolFeedback(msg bus.OutboundMessage) bool {
 	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), toolFeedbackKind)
@@ -21,10 +34,11 @@ func isToolFeedback(msg bus.OutboundMessage) bool {
 
 // sendToolFeedback shows content in the thread's tool-feedback post.
 func (c *MattermostChannel) sendToolFeedback(ctx context.Context, channelID, rootID, content string) ([]string, error) {
+	c.sweepFeedback(ctx)
 	key := threadKey(channelID, rootID)
 	content = truncateRunes(content, maxMessageLength)
 	c.indMu.Lock()
-	postID := c.feedback[key]
+	postID := c.feedback[key].id
 	c.indMu.Unlock()
 	if postID != "" {
 		if err := c.patchPost(ctx, postID, content); err == nil {
@@ -36,16 +50,50 @@ func (c *MattermostChannel) sendToolFeedback(ctx context.Context, channelID, roo
 		return nil, err
 	}
 	c.indMu.Lock()
-	c.feedback[key] = postID
+	c.feedback[key] = feedbackPost{id: postID, at: time.Now()}
 	c.indMu.Unlock()
 	return []string{encodeMessageID(channelID, rootID, postID)}, nil
+}
+
+// sweepFeedback deletes tool-feedback posts older than indicatorTTL that no
+// answer or cleanup claimed.
+func (c *MattermostChannel) sweepFeedback(ctx context.Context) {
+	var stale []string
+	c.indMu.Lock()
+	for key, fb := range c.feedback {
+		if time.Since(fb.at) > indicatorTTL {
+			stale = append(stale, fb.id)
+			delete(c.feedback, key)
+		}
+	}
+	c.indMu.Unlock()
+	for _, id := range stale {
+		_ = c.deletePost(ctx, id)
+	}
+}
+
+// RecordToolFeedbackMessage and ClearToolFeedbackMessage implement the
+// Manager's tool-feedback tracker (chatID is the key from
+// ToolFeedbackMessageChatID). Clear forgets the post without deleting it.
+func (c *MattermostChannel) RecordToolFeedbackMessage(chatID, messageID, _ string) {
+	if postID := parseMessageID(messageID).postID; postID != "" {
+		c.indMu.Lock()
+		c.feedback[chatID] = feedbackPost{id: postID, at: time.Now()}
+		c.indMu.Unlock()
+	}
+}
+
+func (c *MattermostChannel) ClearToolFeedbackMessage(chatID string) {
+	c.indMu.Lock()
+	delete(c.feedback, chatID)
+	c.indMu.Unlock()
 }
 
 func (c *MattermostChannel) takeFeedback(channelID, rootID string) string {
 	key := threadKey(channelID, rootID)
 	c.indMu.Lock()
 	defer c.indMu.Unlock()
-	postID := c.feedback[key]
+	postID := c.feedback[key].id
 	delete(c.feedback, key)
 	return postID
 }

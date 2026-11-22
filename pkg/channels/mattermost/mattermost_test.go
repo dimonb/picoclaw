@@ -47,9 +47,25 @@ type fakeMattermost struct {
 	calls    []apiCall
 	nextID   int
 	postCode int // when non-zero, POST /posts fails with this status
+	posts    map[string]fakePost
 
 	wsAuth  chan string
 	wsConns chan *websocket.Conn
+}
+
+type fakePost struct {
+	UserID    string `json:"user_id"`
+	ChannelID string `json:"channel_id"`
+}
+
+// addPost registers a post written by userID (served by GET /posts/{id}).
+func (fm *fakeMattermost) addPost(id, userID, channelID string) {
+	fm.mu.Lock()
+	defer fm.mu.Unlock()
+	if fm.posts == nil {
+		fm.posts = make(map[string]fakePost)
+	}
+	fm.posts[id] = fakePost{UserID: userID, ChannelID: channelID}
 }
 
 func newFakeMattermost(t *testing.T) *fakeMattermost {
@@ -111,6 +127,17 @@ func (fm *fakeMattermost) handle(w http.ResponseWriter, r *http.Request) {
 		}})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v4/channels/"+testChanID:
 		_ = json.NewEncoder(w).Encode(map[string]string{"type": "O", "name": "town-square", "team_id": "teamid1"})
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v4/posts/") &&
+		strings.Count(r.URL.Path, "/") == 4:
+		fm.mu.Lock()
+		p, ok := fm.posts[strings.TrimPrefix(r.URL.Path, "/api/v4/posts/")]
+		fm.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"message":"not found"}`))
+			return
+		}
+		_ = json.NewEncoder(w).Encode(p)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v4/teams/name/myteam":
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": "teamid1"})
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v4/posts":
@@ -119,6 +146,8 @@ func (fm *fakeMattermost) handle(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(`{"message":"boom"}`))
 			return
 		}
+		channelID, _ := call.Body["channel_id"].(string)
+		fm.addPost(id, testBotID, channelID)
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": id})
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v4/files":
