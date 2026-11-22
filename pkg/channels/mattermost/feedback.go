@@ -35,8 +35,9 @@ func isToolFeedback(msg bus.OutboundMessage) bool {
 
 // sendToolFeedback shows content in the thread's tool-feedback post.
 func (c *MattermostChannel) sendToolFeedback(ctx context.Context, channelID, rootID, content string) ([]string, error) {
-	c.sweepFeedback(ctx)
 	key := threadKey(channelID, rootID)
+	c.threads.markActive(key) // a turn is running in this thread
+	c.sweepFeedback(ctx)
 	content = truncateRunes(content, maxMessageLength)
 	c.indMu.Lock()
 	postID := c.feedback[key].id

@@ -287,8 +287,9 @@ func (c *MattermostChannel) takeIndicators(channelID, rootID string) threadIndic
 type threadQueue struct {
 	mu        sync.Mutex
 	byChannel map[string][]queuedThread
-	// active marks threads with an unfinished turn: set when a post of the
-	// thread is handed to the agent, cleared when the turn ends (done).
+	// active marks threads with an unfinished turn: set when an addressed
+	// post of the thread is handed to the agent or the turn posts tool
+	// feedback there, cleared when the turn ends (done).
 	active map[string]time.Time
 }
 
@@ -315,7 +316,13 @@ func (q *threadQueue) admit(channelID, root string, addressed bool) bool {
 			delete(q.active, key)
 		}
 	}
-	q.active[threadKey(channelID, root)] = now
+	if addressed {
+		// Only an addressed post (or an edit) is sure to get a turn of its
+		// own thread, ended by done. Chatter steered into another thread's
+		// turn never sees done for its own thread; such a turn's thread is
+		// marked by its tool feedback instead (markActive).
+		q.active[threadKey(channelID, root)] = now
+	}
 	list := q.byChannel[channelID]
 	for len(list) > 0 && now.Sub(list[0].at) > threadQueueTTL {
 		list = list[1:]
@@ -357,6 +364,17 @@ func (q *threadQueue) done(channelID, root string) {
 			return
 		}
 	}
+}
+
+// markActive marks the thread with key "<channel>/<root>" as having a
+// running turn (the turn posted tool feedback there).
+func (q *threadQueue) markActive(key string) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.active == nil {
+		q.active = make(map[string]time.Time)
+	}
+	q.active[key] = time.Now()
 }
 
 // turnActive reports whether the thread with key "<channel>/<root>" has an

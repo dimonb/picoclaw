@@ -112,3 +112,56 @@ func TestTurnActiveExpires(t *testing.T) {
 		t.Error("finished turn still active")
 	}
 }
+
+// Review 4, fix 1: an encoded post ID of another channel never resolves to
+// the current channel (see channels.refInChat).
+func TestMattermostCanonicalRefStaysInChannel(t *testing.T) {
+	c := &MattermostChannel{}
+	if got := c.CanonicalMessageRef("chanA", "post1"); got != "chanA:post1" {
+		t.Errorf("bare post in chanA = %q", got)
+	}
+	if got := c.CanonicalMessageRef("chanA", "chanB:root:post1"); got != "chanB:post1" {
+		t.Errorf("chanB ref seen from chanA = %q, want chanB:post1", got)
+	}
+}
+
+// Review 4, item 4: chatter (a post not addressed to the bot) does not mark
+// its thread as having a running turn: it may be steered into another
+// thread's turn and never see done for its own thread. A stale post of an
+// abandoned turn in that thread is still swept while people keep chatting.
+// A turn's tool feedback marks its thread.
+func TestChatterDoesNotMarkTurnActive(t *testing.T) {
+	var q threadQueue
+	q.admit("ch", "x", true)
+	q.admit("ch", "y", false)
+	if q.turnActive(threadKey("ch", "y")) {
+		t.Error("chatter marked its thread active")
+	}
+	if !q.turnActive(threadKey("ch", "x")) {
+		t.Error("addressed post must mark its thread active")
+	}
+
+	fm := newFakeMattermost(t)
+	ch, _ := newTestChannel(t, fm, nil, nil)
+	startConnected(t, fm, ch)
+	keyY := threadKey(testChanID, "y1")
+	ch.indMu.Lock()
+	ch.feedback[keyY] = feedbackPost{id: "stalefb", at: time.Now().Add(-2 * indicatorTTL)}
+	ch.indMu.Unlock()
+	ch.threads.admit(testChanID, "y1", false) // chatter in Y
+	ch.sweepFeedback(context.Background())
+	if d := fm.callsTo(http.MethodDelete, "/api/v4/posts/stalefb"); len(d) != 1 {
+		t.Errorf("stale post of an abandoned turn not swept: %v", d)
+	}
+
+	// Tool feedback of a running turn marks its thread.
+	msg := bus.OutboundMessage{ChatID: testChanID, Content: "🔧 exec", Context: bus.InboundContext{
+		ChatID: testChanID, MessageID: testChanID + ":z1", Raw: map[string]string{"message_kind": "tool_feedback"},
+	}}
+	if _, err := ch.Send(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	if !ch.threads.turnActive(threadKey(testChanID, "z1")) {
+		t.Error("tool feedback must mark its thread active")
+	}
+}
