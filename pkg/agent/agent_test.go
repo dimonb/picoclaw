@@ -456,7 +456,8 @@ func TestPublishResponseIfNeeded_DismissesToolFeedbackWhenMessageToolAlreadySent
 	if result == nil || result.IsError {
 		t.Fatalf("message tool execute failed: %+v", result)
 	}
-	al.PublishResponseIfNeeded(context.Background(), "telegram", "-100123", "session-1", "final reply")
+	// The final repeats what the message tool already sent: suppressed.
+	al.PublishResponseIfNeeded(context.Background(), "telegram", "-100123", "session-1", "Ack.")
 
 	if got := cm.dismissed; len(got) != 1 || got[0] != "telegram:-100123" {
 		t.Fatalf("dismissed = %v, want [telegram:-100123]", got)

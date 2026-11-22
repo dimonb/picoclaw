@@ -86,6 +86,8 @@ type channelWorker struct {
 
 type Manager struct {
 	outboundRecorder          func(context.Context, bus.OutboundDelivery) error
+	deliveryLookup            DeliveryLookup // durable own-message check (DeleteMessage)
+	ownRefs                   deliveredRefs  // the bot's confirmed deliveries (DeleteMessage)
 	channels                  map[string]Channel
 	workers                   map[string]*channelWorker
 	bus                       *bus.MessageBus
@@ -185,6 +187,12 @@ func outboundMessageIsSilent(msg bus.OutboundMessage) bool {
 func (m *Manager) handleSilentReply(ctx context.Context, name string, ch Channel, msg bus.OutboundMessage) {
 	chatID := outboundMessageChatID(msg)
 	key := name + ":" + chatID
+	// The silent signal is the turn's final: a stream marker or streamed IDs
+	// left over (e.g. the agent delivered through the message tool) must not
+	// swallow or label the next turn's final reply.
+	streamKey := streamSuppressionKey(name, chatID, msg.SessionKey)
+	m.streamActive.Delete(streamKey)
+	m.streamDelivered.Delete(streamKey)
 	if v, loaded := m.typingStops.LoadAndDelete(key); loaded {
 		if entry, ok := v.(typingEntry); ok {
 			entry.stop()
@@ -384,6 +392,11 @@ func (m *Manager) DeleteMessage(ctx context.Context, channelName, chatID, messag
 	deleter, ok := ch.(MessageDeleter)
 	if !ok {
 		return fmt.Errorf("channel %s does not support deleting messages", channelName)
+	}
+	// Only the bot's own messages in this chat: a bot may hold moderation
+	// rights, and the model must not be able to delete other people's posts.
+	if !m.isOwnMessage(ctx, channelName, ch, chatID, messageID) {
+		return fmt.Errorf("delete %s in %s:%s: %w", messageID, channelName, chatID, ErrNotOwnMessage)
 	}
 	return deleter.DeleteMessage(ctx, chatID, messageID)
 }
@@ -775,6 +788,18 @@ func (m *Manager) addStreamDelivered(streamKey string, ids []string) {
 	m.streamDelivered.Store(streamKey, append(append([]string(nil), all...), ids...))
 }
 
+// normalizeDeliveredIDs applies normalizeDeliveredID to a send's receipts.
+func (m *Manager) normalizeDeliveredIDs(channel string, msg bus.OutboundMessage, ids []string) []string {
+	if len(ids) == 0 {
+		return ids
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = m.normalizeDeliveredID(channel, outboundMessageChatID(msg), msg.Context.TopicID, id)
+	}
+	return out
+}
+
 func (m *Manager) takeStreamDelivered(streamKey string) []string {
 	v, ok := m.streamDelivered.LoadAndDelete(streamKey)
 	if !ok {
@@ -810,6 +835,8 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 	}
 
 	streamKey := streamSuppressionKey(channelName, chatID, sessionKey)
+	// A new turn's stream: IDs from an earlier, unclaimed stream are stale.
+	m.streamDelivered.Delete(streamKey)
 	wrapDelivery := func(inner bus.Streamer) bus.Streamer {
 		return &finalizeHookStreamer{
 			Streamer: inner,
@@ -1821,7 +1848,7 @@ func (m *Manager) sendWithRetry(
 		var fallback []string
 		msgIDs, fallback = receipts(msgIDs)
 		m.publishOutboundSent(name, msg, msgIDs)
-		return msgIDs, m.recordTextDelivery(ctx, name, msg, fallback)
+		return m.normalizeDeliveredIDs(name, msg, msgIDs), m.recordTextDelivery(ctx, name, msg, fallback)
 	}
 
 	var lastErr error
@@ -1832,7 +1859,8 @@ func (m *Manager) sendWithRetry(
 		msgIDs, fallback = receipts(msgIDs)
 		if lastErr == nil || len(msgIDs) > 0 {
 			m.publishOutboundSent(name, msg, msgIDs)
-			return msgIDs, errors.Join(lastErr, m.recordTextDelivery(ctx, name, msg, fallback))
+			return m.normalizeDeliveredIDs(name, msg, msgIDs),
+				errors.Join(lastErr, m.recordTextDelivery(ctx, name, msg, fallback))
 		}
 
 		// Permanent failures — don't retry

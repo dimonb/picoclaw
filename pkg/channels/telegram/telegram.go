@@ -626,12 +626,11 @@ func (c *TelegramChannel) EditMessage(ctx context.Context, chatID string, messag
 }
 
 // DeleteMessage implements channels.MessageDeleter.
+// messageID may be an opaque "chat:msg" / "chat:topic:msg" ref (as the agent
+// sees them) or a bare message ID paired with chatID. An opaque ref that
+// points into another chat than chatID is rejected.
 func (c *TelegramChannel) DeleteMessage(ctx context.Context, chatID string, messageID string) error {
-	cid, _, err := parseTelegramChatID(chatID)
-	if err != nil {
-		return err
-	}
-	mid, err := strconv.Atoi(messageID)
+	cid, mid, err := resolveTelegramDeleteTarget(chatID, messageID)
 	if err != nil {
 		return err
 	}
@@ -639,6 +638,28 @@ func (c *TelegramChannel) DeleteMessage(ctx context.Context, chatID string, mess
 		ChatID:    tu.ID(cid),
 		MessageID: mid,
 	})
+}
+
+func resolveTelegramDeleteTarget(chatID, messageID string) (int64, int, error) {
+	messageID = strings.TrimSpace(messageID)
+	if ocid, _, omid, err := parseTelegramOpaqueID(messageID); err == nil {
+		if strings.TrimSpace(chatID) != "" {
+			if cid, _, err := parseTelegramChatID(chatID); err == nil && cid != ocid {
+				return 0, 0, fmt.Errorf("telegram delete: message %q is not in chat %s: %w",
+					messageID, chatID, channels.ErrNotOwnMessage)
+			}
+		}
+		return ocid, omid, nil
+	}
+	cid, _, err := parseTelegramChatID(chatID)
+	if err != nil {
+		return 0, 0, err
+	}
+	mid, err := strconv.Atoi(messageID)
+	if err != nil {
+		return 0, 0, err
+	}
+	return cid, mid, nil
 }
 
 // ReactToMessage implements channels.ReactionCapable. The Telegram channel uses
@@ -1877,6 +1898,15 @@ func parseTelegramChatID(chatID string) (int64, int, error) {
 	return cid, tid, nil
 }
 
+// telegramOpaqueID formats the ref the agent sees for messages:
+// "chat:msg", or "chat:topic:msg" inside a forum topic.
+func telegramOpaqueID(chatID int64, threadID, messageID int) string {
+	if threadID != 0 {
+		return fmt.Sprintf("%d:%d:%d", chatID, threadID, messageID)
+	}
+	return fmt.Sprintf("%d:%d", chatID, messageID)
+}
+
 // parseTelegramOpaqueID splits "chat_id:message_id" or "chat_id:thread_id:message_id"
 // into its components.
 func parseTelegramOpaqueID(opaqueID string) (chatID int64, threadID int, messageID int, err error) {
@@ -2175,7 +2205,7 @@ func (s *telegramStreamer) Finalize(ctx context.Context, content string) error {
 
 	if sent != nil {
 		s.mu.Lock()
-		s.deliveredIDs = []string{strconv.Itoa(sent.MessageID)}
+		s.deliveredIDs = []string{telegramOpaqueID(s.chatID, s.threadID, sent.MessageID)}
 		s.mu.Unlock()
 	}
 	s.Cancel(ctx)

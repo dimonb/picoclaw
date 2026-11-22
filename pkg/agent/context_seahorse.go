@@ -655,3 +655,12 @@ func init() {
 func (m *seahorseContextManager) RecordOutboundDelivery(ctx context.Context, d bus.OutboundDelivery) error {
 	return m.engine.GetRetrieval().Store().RecordOutboundDelivery(ctx, d)
 }
+
+// HasOutboundDelivery reports whether the bot delivered ref in the chat
+// (channels.DeliveryLookup for Manager.DeleteMessage).
+func (m *seahorseContextManager) HasOutboundDelivery(ctx context.Context, channel, chatID, ref string) (bool, error) {
+	if m.engine == nil || m.engine.GetRetrieval() == nil {
+		return false, nil
+	}
+	return m.engine.GetRetrieval().Store().HasOutboundDelivery(ctx, channel, chatID, ref)
+}

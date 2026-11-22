@@ -203,6 +203,29 @@ func TestEditMessageTool_Delete(t *testing.T) {
 	if res := tool.Execute(ctx, map[string]any{"message_id": "chan1:post"}); !res.IsError {
 		t.Error("edit without content must fail")
 	}
+	// Deleting is limited to the current chat, whatever the model passes.
+	for _, args := range []map[string]any{
+		{"message_id": "chan2:post", "delete": true, "chat_id": "chan2"},
+		{"message_id": "chan1:post", "delete": true, "channel": "telegram"},
+	} {
+		if res := tool.Execute(ctx, args); !res.IsError {
+			t.Errorf("delete outside the current chat must fail: %v", args)
+		}
+	}
+	noConversation := map[string]any{"message_id": "x", "delete": true, "channel": "mattermost", "chat_id": "chan1"}
+	if res := tool.Execute(context.Background(), noConversation); !res.IsError {
+		t.Error("delete without a current conversation must fail")
+	}
+	if len(deleted) != 1 {
+		t.Errorf("deleted = %v, want only the first delete", deleted)
+	}
+	// Passing the current chat explicitly is fine.
+	explicitCurrent := map[string]any{
+		"message_id": "chan1:p2", "delete": true, "channel": "mattermost", "chat_id": "chan1",
+	}
+	if res := tool.Execute(ctx, explicitCurrent); res.IsError {
+		t.Errorf("explicit current chat: %+v", res)
+	}
 	// Without a delete callback the tool reports it.
 	if res := NewEditMessageTool().Execute(ctx, map[string]any{"message_id": "x", "delete": true}); !res.IsError {
 		t.Error("delete without callback must fail")

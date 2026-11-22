@@ -45,7 +45,7 @@ func (t *EditMessageTool) Parameters() map[string]any {
 			},
 			"delete": map[string]any{
 				"type":        "boolean",
-				"description": "If true, delete the message instead of editing it (on channels that support deleting).",
+				"description": "If true, delete the message instead of editing it. Only your own messages in the current chat can be deleted.",
 			},
 			"channel": map[string]any{
 				"type":        "string",
@@ -83,6 +83,19 @@ func (t *EditMessageTool) Execute(ctx context.Context, args map[string]any) *Too
 
 	channel, _ := args["channel"].(string)
 	chatID, _ := args["chat_id"].(string)
+	if remove {
+		// Deleting is limited to the conversation being handled; the model
+		// must not delete in another chat by passing channel/chat_id.
+		curChannel, curChat := strings.TrimSpace(ToolChannel(ctx)), strings.TrimSpace(ToolChatID(ctx))
+		if curChannel == "" || curChat == "" {
+			return &ToolResult{ForLLM: "delete is only available while handling a chat conversation", IsError: true}
+		}
+		if (strings.TrimSpace(channel) != "" && strings.TrimSpace(channel) != curChannel) ||
+			(strings.TrimSpace(chatID) != "" && strings.TrimSpace(chatID) != curChat) {
+			return &ToolResult{ForLLM: "you can only delete your own messages in the current chat", IsError: true}
+		}
+		channel, chatID = curChannel, curChat
+	}
 	if strings.TrimSpace(channel) == "" {
 		channel = ToolChannel(ctx)
 	}

@@ -34,6 +34,7 @@ type messageMediaArg struct {
 type sentTarget struct {
 	Channel string
 	ChatID  string
+	Content string
 }
 
 type MessageTool struct {
@@ -177,6 +178,20 @@ func (t *MessageTool) HasSentTo(sessionKey, channel, chatID string) bool {
 	return false
 }
 
+// SentContentTo returns the texts the message tool sent to channel+chatID
+// during the current round, so the final response can be compared with them.
+func (t *MessageTool) SentContentTo(sessionKey, channel, chatID string) []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []string
+	for _, st := range t.sentTargets[sessionKey] {
+		if st.Channel == channel && st.ChatID == chatID {
+			out = append(out, st.Content)
+		}
+	}
+	return out
+}
+
 func (t *MessageTool) SetSendCallback(callback SendCallbackWithContext) {
 	t.sendCallback = callback
 }
@@ -237,7 +252,8 @@ func (t *MessageTool) Execute(ctx context.Context, args map[string]any) *ToolRes
 
 	sessionKey := ToolSessionKey(ctx)
 	t.mu.Lock()
-	t.sentTargets[sessionKey] = append(t.sentTargets[sessionKey], sentTarget{Channel: channel, ChatID: chatID})
+	t.sentTargets[sessionKey] = append(t.sentTargets[sessionKey],
+		sentTarget{Channel: channel, ChatID: chatID, Content: content})
 	t.mu.Unlock()
 
 	res := fmt.Sprintf("Message sent to %s:%s", channel, chatID)

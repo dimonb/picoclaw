@@ -18,4 +18,8 @@ var (
 	// ErrSendFailed indicates a permanent failure (e.g. invalid chat ID, 4xx non-429).
 	// Manager will not retry.
 	ErrSendFailed = errors.New("send failed")
+
+	// ErrNotOwnMessage indicates a request to delete a message the bot did
+	// not send in the given chat.
+	ErrNotOwnMessage = errors.New("not a message the bot sent in this chat")
 )

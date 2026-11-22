@@ -2,7 +2,9 @@ package seahorse
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -166,4 +168,36 @@ func (s *Store) GetMessageByChannelMessageIDScoped(
 		return s.GetMessageByID(ctx, matched)
 	}
 	return s.getLegacyMessageByChannelMessageID(ctx, ref)
+}
+
+// HasOutboundDelivery reports whether a confirmed delivery of ref exists in
+// the chat. ref may be the full opaque ref or one whose last segment is the
+// platform message ID (e.g. Mattermost "<channel>:<post>" for a stored
+// "<channel>:<root>:<post>"). Used to allow deleting only the bot's own
+// messages.
+func (s *Store) HasOutboundDelivery(ctx context.Context, channel, chatID, ref string) (bool, error) {
+	ref = strings.TrimSpace(ref)
+	if channel == "" || chatID == "" || ref == "" {
+		return false, nil
+	}
+	last := ref
+	if i := strings.LastIndex(last, ":"); i >= 0 {
+		last = last[i+1:]
+	}
+	chat, _, _ := strings.Cut(chatID, "/")
+	ctx, cancel := context.WithTimeout(ctx, outboundReceiptTimeout)
+	defer cancel()
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM outbound_deliveries
+ WHERE channel=? AND (chat_id=? OR chat_id LIKE ? ESCAPE '\')
+ AND (channel_message_id=? OR channel_message_id=? OR channel_message_id LIKE ? ESCAPE '\') LIMIT 1`,
+		channel, chat, likeEscape(chat)+"/%", ref, last, "%:"+likeEscape(last)).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
+func likeEscape(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }

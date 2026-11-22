@@ -62,6 +62,40 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 	return al.publishFinalResponse(ctx, nil, channel, chatID, sessionKey, response)
 }
 
+// isDuplicateOfSent reports whether response repeats one of the texts the
+// message tool sent to the same chat this round: equal after normalizing case,
+// whitespace and trailing punctuation, or one containing the other with
+// nearly the same length (formatting/wrapping differences).
+func isDuplicateOfSent(response string, sent []string) bool {
+	resp := normalizeForDuplicate(response)
+	if resp == "" {
+		return false
+	}
+	for _, s := range sent {
+		other := normalizeForDuplicate(s)
+		if other == "" {
+			continue
+		}
+		if resp == other {
+			return true
+		}
+		short, long := resp, other
+		if len([]rune(short)) > len([]rune(long)) {
+			short, long = long, short
+		}
+		if len([]rune(short)) >= 20 && strings.Contains(long, short) &&
+			float64(len([]rune(short))) >= 0.9*float64(len([]rune(long))) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeForDuplicate(s string) string {
+	s = strings.ToLower(strings.Join(strings.Fields(s), " "))
+	return strings.TrimRight(s, " .!?…,;:")
+}
+
 // finalOutboundContext addresses a final response. When the turn's inbound
 // context belongs to the same chat it is attached, so channels can tell which
 // message is being answered (Mattermost replies into that post's thread,
@@ -98,20 +132,24 @@ func (al *AgentLoop) publishFinalResponse(
 		return nil
 	}
 
-	alreadySentToSameChat := false
+	// The message tool may already have delivered this answer during the
+	// turn (models sometimes send it and then repeat it as the final). Only
+	// such a duplicate is suppressed; a different final (e.g. "done" after
+	// drafting through the message tool) is still delivered.
+	duplicateOfSent := false
 	defaultAgent := al.GetRegistry().GetDefaultAgent()
 	if defaultAgent != nil {
 		if tool, ok := defaultAgent.Tools.Get("message"); ok {
 			if mt, ok := tool.(*tools.MessageTool); ok {
-				alreadySentToSameChat = mt.HasSentTo(sessionKey, channel, chatID)
+				duplicateOfSent = isDuplicateOfSent(response, mt.SentContentTo(sessionKey, channel, chatID))
 			}
 		}
 	}
 
-	if alreadySentToSameChat {
+	if duplicateOfSent {
 		logger.DebugCF(
 			"agent",
-			"Skipped outbound (message tool already sent to same chat)",
+			"Skipped outbound (duplicates what the message tool already sent to this chat)",
 			map[string]any{"channel": channel, "chat_id": chatID},
 		)
 		if inbound != nil && al.channelManager != nil {
