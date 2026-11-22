@@ -299,6 +299,12 @@ func registerSharedTools(
 					return al.channelManager.EditMessage(ctx, channel, chatID, messageID, content)
 				},
 			)
+			editMessageTool.SetDeleteCallback(func(ctx context.Context, channel, chatID, messageID string) error {
+				if al.channelManager == nil {
+					return fmt.Errorf("channel manager not configured")
+				}
+				return al.channelManager.DeleteMessage(ctx, channel, chatID, messageID)
+			})
 			agent.Tools.Register(editMessageTool)
 		}
 

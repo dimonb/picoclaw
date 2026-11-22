@@ -72,6 +72,8 @@ type MattermostChannel struct {
 	indMu      sync.Mutex
 	indicators map[string]*threadIndicators // "<channel>/<root>" -> pending UX
 	feedback   map[string]string            // "<channel>/<root>" -> tool-feedback post
+	seenPosts  postMemory                   // posts delivered to the agent (for post_edited)
+	chanInfo   sync.Map                     // channel ID -> mmChannelInfo
 	threads    threadQueue
 	users      sync.Map // user id -> userInfo
 	botThreads sync.Map // "<channel>/<root>" -> bool (bot takes part in the thread)

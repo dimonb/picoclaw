@@ -166,7 +166,7 @@ func TestEditMessageTool_Parameters(t *testing.T) {
 	if !ok {
 		t.Fatal("expected properties map")
 	}
-	for _, key := range []string{"message_id", "content", "channel", "chat_id"} {
+	for _, key := range []string{"message_id", "content", "channel", "chat_id", "delete"} {
 		if _, ok := props[key]; !ok {
 			t.Fatalf("expected %s parameter", key)
 		}
@@ -178,8 +178,33 @@ func TestEditMessageTool_Parameters(t *testing.T) {
 			t.Errorf("message_id description missing %q: %q", want, messageIDDesc)
 		}
 	}
+	// content is required for edits only (validated in Execute): delete=true
+	// needs just the message ID.
 	required, _ := params["required"].([]string)
-	if !contains(required, "message_id") || !contains(required, "content") {
-		t.Errorf("required missing message_id/content: %v", required)
+	if !contains(required, "message_id") || contains(required, "content") {
+		t.Errorf("required = %v, want message_id only", required)
+	}
+}
+
+func TestEditMessageTool_Delete(t *testing.T) {
+	tool := NewEditMessageTool()
+	var deleted []string
+	tool.SetDeleteCallback(func(_ context.Context, channel, chatID, messageID string) error {
+		deleted = append(deleted, channel+"|"+chatID+"|"+messageID)
+		return nil
+	})
+	ctx := WithToolContext(context.Background(), "mattermost", "chan1")
+
+	res := tool.Execute(ctx, map[string]any{"message_id": "chan1:root:post", "delete": true})
+	if res.IsError || len(deleted) != 1 || deleted[0] != "mattermost|chan1|chan1:root:post" {
+		t.Fatalf("delete: res=%+v deleted=%v", res, deleted)
+	}
+	// Editing still requires content.
+	if res := tool.Execute(ctx, map[string]any{"message_id": "chan1:post"}); !res.IsError {
+		t.Error("edit without content must fail")
+	}
+	// Without a delete callback the tool reports it.
+	if res := NewEditMessageTool().Execute(ctx, map[string]any{"message_id": "x", "delete": true}); !res.IsError {
+		t.Error("delete without callback must fail")
 	}
 }

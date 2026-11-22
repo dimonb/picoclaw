@@ -101,6 +101,7 @@ type Manager struct {
 	typingStops               sync.Map          // "channel:chatID" → func()
 	reactionUndos             sync.Map          // "channel:chatID" → reactionEntry
 	streamActive              sync.Map          // streamSuppressionKey → true (set when streamer.Finalize sent the message)
+	streamDelivered           sync.Map          // streamSuppressionKey → []string (IDs of the finalized stream's posts)
 	streamAuxiliaryTombstones sync.Map          // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
 	channelHashes             map[string]string // channel name → config hash
 }
@@ -373,6 +374,20 @@ func (m *Manager) dropInboundReactionUndo(channel, chatID string) {
 	m.reactionUndos.LoadAndDelete(channel + ":" + chatID)
 }
 
+// DeleteMessage delegates to the channel's MessageDeleter implementation if
+// available. Returns an error if the channel does not support deleting.
+func (m *Manager) DeleteMessage(ctx context.Context, channelName, chatID, messageID string) error {
+	ch, ok := m.GetChannel(channelName)
+	if !ok {
+		return fmt.Errorf("channel %s not found", channelName)
+	}
+	deleter, ok := ch.(MessageDeleter)
+	if !ok {
+		return fmt.Errorf("channel %s does not support deleting messages", channelName)
+	}
+	return deleter.DeleteMessage(ctx, chatID, messageID)
+}
+
 // EditMessage delegates to the channel's MessageEditor implementation if
 // available. Returns an error if the channel does not support editing.
 func (m *Manager) EditMessage(ctx context.Context, channelName, chatID, messageID, content string) error {
@@ -558,6 +573,9 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	// outbound. Earlier queued visible messages must still be delivered.
 	if isFinalMessage {
 		if _, loaded := m.streamActive.LoadAndDelete(streamKey); loaded {
+			// The stream delivered this final: report its posts as the
+			// final's IDs so the agent can address (e.g. edit) its reply.
+			streamedIDs := m.takeStreamDelivered(streamKey)
 			if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
 				if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
 					// Prefer deleting the placeholder (cleaner UX than editing to same content)
@@ -584,7 +602,7 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
 				}
 			}
-			return nil, true
+			return streamedIDs, true
 		}
 	}
 
@@ -678,6 +696,7 @@ func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.Outboun
 
 	// 3. Clear any finalized stream markers for this chat before media delivery.
 	m.streamActive.LoadAndDelete(streamKey)
+	m.streamDelivered.Delete(streamKey)
 	m.streamAuxiliaryTombstones.Delete(streamKey)
 
 	if m.toolFeedbackSeparateMessagesEnabled() {
@@ -743,6 +762,28 @@ func (m *Manager) SetMediaStore(store media.MediaStore) {
 	}
 }
 
+// addStreamDelivered accumulates the post IDs of finalized stream segments
+// (several with split_on_marker) until the turn's final outbound claims them.
+func (m *Manager) addStreamDelivered(streamKey string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	var all []string
+	if v, ok := m.streamDelivered.Load(streamKey); ok {
+		all, _ = v.([]string)
+	}
+	m.streamDelivered.Store(streamKey, append(append([]string(nil), all...), ids...))
+}
+
+func (m *Manager) takeStreamDelivered(streamKey string) []string {
+	v, ok := m.streamDelivered.LoadAndDelete(streamKey)
+	if !ok {
+		return nil
+	}
+	ids, _ := v.([]string)
+	return ids
+}
+
 // GetStreamer implements bus.StreamDelegate.
 // It checks if the named channel supports streaming and returns a Streamer.
 func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionKey string) (bus.Streamer, bool) {
@@ -768,11 +809,13 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 		return nil, false
 	}
 
+	streamKey := streamSuppressionKey(channelName, chatID, sessionKey)
 	wrapDelivery := func(inner bus.Streamer) bus.Streamer {
 		return &finalizeHookStreamer{
 			Streamer: inner,
 			afterFinalize: func(deliveryCtx context.Context, content string) error {
 				if receipt, ok := inner.(interface{ DeliveredMessageIDs() []string }); ok {
+					m.addStreamDelivered(streamKey, receipt.DeliveredMessageIDs())
 					return m.recordTextDelivery(
 						deliveryCtx,
 						channelName,
@@ -793,10 +836,10 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 
 	// Mark streamActive on Finalize so preSend knows to clean up the placeholder
 	// and late auxiliary messages cannot leak after streaming produced a final.
-	streamKey := streamSuppressionKey(channelName, chatID, sessionKey)
 	placeholderKey := channelName + ":" + chatID
 	clearMarker := func() {
 		m.streamActive.Delete(streamKey)
+		m.streamDelivered.Delete(streamKey)
 	}
 	onFinalize := func(finalizeCtx context.Context, finalContent string) {
 		if m.toolFeedbackSeparateMessagesEnabled() {

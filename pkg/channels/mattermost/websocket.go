@@ -51,6 +51,8 @@ type postedData struct {
 
 type mmPost struct {
 	ID        string         `json:"id"`
+	CreateAt  int64          `json:"create_at"`
+	EditAt    int64          `json:"edit_at"`
 	UserID    string         `json:"user_id"`
 	ChannelID string         `json:"channel_id"`
 	RootID    string         `json:"root_id"`
@@ -225,7 +227,7 @@ func (c *MattermostChannel) serveConnection(connectionID *string, lastSeq *int64
 		}
 		*lastSeq = ev.Seq
 
-		if ev.Event != "posted" {
+		if ev.Event != "posted" && ev.Event != "post_edited" {
 			continue
 		}
 		select {
@@ -258,7 +260,11 @@ func (c *MattermostChannel) eventWorker() {
 		case <-c.ctx.Done():
 			return
 		case ev := <-c.events:
-			c.handlePosted(ev.Data)
+			if ev.Event == "post_edited" {
+				c.handlePostEdited(ev.Data)
+			} else {
+				c.handlePosted(ev.Data)
+			}
 		}
 	}
 }
@@ -272,7 +278,12 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 	if err := json.Unmarshal([]byte(data.Post), &post); err != nil || post.ID == "" || post.ChannelID == "" {
 		return
 	}
+	c.rememberChannel(post.ChannelID, data)
+	c.handlePost(data, post, false)
+}
 
+// handlePost processes a new post or (edited=true) a user's edit of one.
+func (c *MattermostChannel) handlePost(data postedData, post mmPost, edited bool) {
 	// Own posts, system messages (join/leave/header changes…) and other bots
 	// (avoids bot-to-bot loops) are never processed.
 	if post.UserID == "" || post.UserID == c.botUserID || post.Type != "" || isTruthy(post.Props["from_bot"]) {
@@ -302,6 +313,21 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 	}
 	content := c.stripBotMention(post.Message)
 
+	// An edit reaches the agent when the post was delivered before (and its
+	// text changed), or when the edit now mentions the bot. The agent decides
+	// whether the change matters; nothing is shown up front.
+	seen := false
+	if edited {
+		var changed bool
+		seen, changed = c.editedPostSeen(post)
+		if seen && !changed {
+			return // metadata-only update or repeated event
+		}
+		if !seen && (isDM || !mentioned) {
+			return // an old post the bot never handled
+		}
+	}
+
 	// DMs are always addressed. In channels a post is addressed when it
 	// mentions the bot, follows up in a thread the bot takes part in, or
 	// matches a group_trigger prefix. Mention mode drops everything else;
@@ -314,7 +340,7 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 				addressed, content = true, cleaned
 			}
 		}
-		if !addressed && (c.groupMode == groupModeMention || c.bc.GroupTrigger.MentionOnly) {
+		if !addressed && !seen && (c.groupMode == groupModeMention || c.bc.GroupTrigger.MentionOnly) {
 			return
 		}
 	}
@@ -327,11 +353,21 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 		rootID = post.ID
 	}
 
-	mediaPaths, fileNote := c.downloadFiles(post, chatID)
-	content += fileNote
-	if strings.TrimSpace(content) == "" {
-		return
+	var mediaPaths []string
+	if edited {
+		if strings.TrimSpace(content) == "" {
+			return
+		}
+		content = editedPrefix + content
+	} else {
+		var fileNote string
+		mediaPaths, fileNote = c.downloadFiles(post, chatID)
+		content += fileNote
+		if strings.TrimSpace(content) == "" {
+			return
+		}
 	}
+	c.rememberPostText(post)
 
 	chatType := "channel"
 	switch data.ChannelType {
@@ -378,6 +414,10 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 		inboundCtx.SpaceType = "team"
 	}
 
+	if edited {
+		inboundCtx.Raw["edited"] = "true"
+		addressed = addressed && !seen // a correction is never an "addressed" new request
+	}
 	if addressed {
 		c.beginIndicators(c.ctx, post.ChannelID, replyRoot, post.ID)
 	}

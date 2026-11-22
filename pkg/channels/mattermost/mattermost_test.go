@@ -109,6 +109,8 @@ func (fm *fakeMattermost) handle(w http.ResponseWriter, r *http.Request) {
 			"botroot": map[string]string{"user_id": testUserID},
 			"botrep":  map[string]string{"user_id": testBotID},
 		}})
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v4/channels/"+testChanID:
+		_ = json.NewEncoder(w).Encode(map[string]string{"type": "O", "name": "town-square", "team_id": "teamid1"})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v4/teams/name/myteam":
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": "teamid1"})
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v4/posts":

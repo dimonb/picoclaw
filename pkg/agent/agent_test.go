@@ -120,6 +120,10 @@ func (m *recordingChannelManager) EditMessage(
 	return nil
 }
 
+func (m *recordingChannelManager) DeleteMessage(ctx context.Context, channel, chatID, messageID string) error {
+	return nil
+}
+
 func newStartedTestChannelManager(
 	t *testing.T,
 	msgBus *bus.MessageBus,
