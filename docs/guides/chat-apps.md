@@ -4,7 +4,7 @@
 
 ## 💬 Chat Apps
 
-Talk to your picoclaw through Telegram, Discord, WhatsApp, Matrix, QQ, DingTalk, LINE, WeCom, Feishu, Slack, IRC, OneBot, MQTT, MaixCam, or Pico (native protocol)
+Talk to your picoclaw through Telegram, Discord, WhatsApp, Matrix, QQ, DingTalk, LINE, WeCom, Feishu, Slack, Mattermost, IRC, OneBot, MQTT, MaixCam, or Pico (native protocol)
 
 > **Note**: Channels that rely on HTTP callbacks share a single Gateway HTTP server (`gateway.host`:`gateway.port`, default `127.0.0.1:18790`). Socket/stream-based channels such as Feishu, DingTalk, and WeCom do not rely on the shared webhook server for inbound delivery.
 
@@ -15,6 +15,7 @@ Talk to your picoclaw through Telegram, Discord, WhatsApp, Matrix, QQ, DingTalk,
 | **WhatsApp**         | ⭐ Easy            | Native (QR scan) or Bridge URL                        | [Docs](#whatsapp)                                                                                                |
 | **Weixin**           | ⭐ Easy            | Native QR scan (Tencent iLink API)                    | [Docs](#weixin)                                                                            |
 | **Slack**            | ⭐ Easy            | **Socket Mode** (no public IP needed), enterprise     | [Docs](../channels/slack/README.md)                                                                             |
+| **Mattermost**       | ⭐ Easy            | WebSocket (no public IP needed), self-hosted          | [Docs](../channels/mattermost/README.md)                                                                        |
 | **Matrix**           | ⭐⭐ Medium        | Federated protocol, self-hosting supported            | [Docs](../channels/matrix/README.md)                                                                            |
 | **QQ**               | ⭐⭐ Medium        | Official bot API, Chinese community                   | [Docs](../channels/qq/README.md)                                                                                |
 | **DingTalk**         | ⭐⭐ Medium        | Stream mode (no public IP needed), enterprise         | [Docs](../channels/dingtalk/README.md)                                                                          |
@@ -513,6 +514,44 @@ For full options, see [Feishu Channel Configuration Guide](../channels/feishu/RE
 ```bash
 picoclaw gateway
 ```
+
+</details>
+
+<a id="mattermost"></a>
+<details>
+<summary><b>Mattermost</b></summary>
+
+**1. Create a bot account**
+
+* In Mattermost, go to **Integrations → Bot Accounts → Add Bot Account** (enable bot accounts in the System Console if needed)
+* Copy the bot's **access token**
+* Add the bot to the team and the channels it should listen in
+
+**2. Configure**
+
+```json
+{
+  "channel_list": {
+    "mattermost": {
+      "enabled": true,
+      "type": "mattermost",
+      "allow_from": ["YOUR_MATTERMOST_USER_ID"],
+      "settings": {
+        "url": "https://mattermost.example.com",
+        "bot_token": "YOUR_MATTERMOST_BOT_TOKEN"
+      }
+    }
+  }
+}
+```
+
+**3. Run**
+
+```bash
+picoclaw gateway
+```
+
+For full options, see [Mattermost Channel Configuration Guide](../channels/mattermost/README.md).
 
 </details>
 

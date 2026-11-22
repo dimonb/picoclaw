@@ -54,7 +54,22 @@ func (m *Manager) recordMediaDelivery(
 	)
 }
 
+// recordDelivery records confirmed sends: in memory as the bot's own messages
+// (independent of the durable recorder; see own_messages.go) and durably.
 func (m *Manager) recordDelivery(ctx context.Context, d bus.OutboundDelivery, ids []string) error {
+	d.Origin = bus.OutboundOriginSend
+	for _, id := range ids {
+		if id != "" {
+			m.rememberOwnDelivery(d.Channel, d.ChatID, id)
+		}
+	}
+	return m.persistDelivery(ctx, d, ids)
+}
+
+// persistDelivery writes delivery records to the durable recorder only. It
+// does not make a message the bot's own: edits pass OutboundOriginEdit, and
+// the durable lookup accepts only OutboundOriginSend records.
+func (m *Manager) persistDelivery(ctx context.Context, d bus.OutboundDelivery, ids []string) error {
 	m.mu.RLock()
 	recorder := m.outboundRecorder
 	m.mu.RUnlock()
@@ -69,19 +84,7 @@ func (m *Manager) recordDelivery(ctx context.Context, d bus.OutboundDelivery, id
 		if id == "" {
 			continue
 		}
-		d.MessageID = id
-		// Telegram Send returns a bare numeric ID. Match the inbound opaque ref,
-		// preserving topic routing, but never prefix an already-opaque receipt.
-		if channelTypeForEvent(m, d.Channel) == "telegram" && !strings.Contains(id, ":") {
-			chat, topic, _ := strings.Cut(d.ChatID, "/")
-			if topic == "" {
-				topic = d.TopicID
-			}
-			d.MessageID = chat + ":" + id
-			if topic != "" {
-				d.MessageID = chat + ":" + topic + ":" + id
-			}
-		}
+		d.MessageID = m.normalizeDeliveredID(d.Channel, d.ChatID, d.TopicID, id)
 		if err := recorder(persistCtx, d); err != nil {
 			logger.ErrorCF(
 				"channels",
@@ -91,6 +94,24 @@ func (m *Manager) recordDelivery(ctx context.Context, d bus.OutboundDelivery, id
 		}
 	}
 	return nil
+}
+
+// normalizeDeliveredID turns a channel's native receipt into the opaque ref
+// the agent sees for inbound messages. Telegram Send returns a bare numeric
+// ID: match the inbound "chat:msg" / "chat:topic:msg" ref, preserving topic
+// routing, but never prefix an already-opaque receipt.
+func (m *Manager) normalizeDeliveredID(channel, chatID, topicID, id string) string {
+	if id == "" || strings.Contains(id, ":") || channelTypeForEvent(m, channel) != "telegram" {
+		return id
+	}
+	chat, topic, _ := strings.Cut(chatID, "/")
+	if topic == "" {
+		topic = topicID
+	}
+	if topic != "" {
+		return chat + ":" + topic + ":" + id
+	}
+	return chat + ":" + id
 }
 
 // observeDelivery persists native receipts immediately. The per-request set also

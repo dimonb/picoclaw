@@ -31,6 +31,11 @@ func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 		}); ok {
 			cm.SetOutboundRecorder(recorder.RecordOutboundDelivery)
 		}
+		if lookup, ok := al.contextManager.(interface {
+			OutboundDeliveryRefs(ctx context.Context, channel, chatID, refKey string) ([]string, error)
+		}); ok {
+			cm.SetDeliveryLookup(lookup.OutboundDeliveryRefs)
+		}
 	}
 }
 

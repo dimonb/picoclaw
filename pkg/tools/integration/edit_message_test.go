@@ -37,28 +37,46 @@ func TestEditMessageTool_Execute_HappyPath(t *testing.T) {
 	}
 }
 
-func TestEditMessageTool_Execute_ExplicitChannelChatOverridesContext(t *testing.T) {
+// Review 3, fix 5: editing is limited to the current chat, like deleting.
+func TestEditMessageTool_Execute_OnlyCurrentChat(t *testing.T) {
 	tool := NewEditMessageTool()
 
-	var gotChannel, gotChatID string
+	var edits []string
 	tool.SetEditCallback(func(ctx context.Context, channel, chatID, messageID, content string) error {
-		gotChannel = channel
-		gotChatID = chatID
+		edits = append(edits, channel+"|"+chatID+"|"+messageID)
 		return nil
 	})
 
 	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
-	result := tool.Execute(ctx, map[string]any{
-		"message_id": "12345:67",
-		"content":    "hi",
-		"channel":    "discord",
-		"chat_id":    "chat-9",
-	})
-	if result.IsError {
-		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	for _, args := range []map[string]any{
+		{"message_id": "12345:67", "content": "hi", "channel": "discord", "chat_id": "chat-9"},
+		{"message_id": "12345:67", "content": "hi", "chat_id": "chat-9"},
+		{"message_id": "12345:67", "content": "hi", "channel": "discord"},
+	} {
+		result := tool.Execute(ctx, args)
+		if !result.IsError || !strings.Contains(result.ForLLM, "only edit your own messages in the current chat") {
+			t.Errorf("edit in another chat %v: %+v", args, result)
+		}
 	}
-	if gotChannel != "discord" || gotChatID != "chat-9" {
-		t.Fatalf("expected explicit channel/chat, got %q/%q", gotChannel, gotChatID)
+	// Without a current conversation (cron and similar) there is no chat to edit in.
+	noConversation := map[string]any{"message_id": "x", "content": "hi", "channel": "telegram", "chat_id": "chat-1"}
+	if res := tool.Execute(context.Background(), noConversation); !res.IsError {
+		t.Error("edit without a current conversation must fail")
+	}
+	if len(edits) != 0 {
+		t.Fatalf("edits = %v, want none", edits)
+	}
+	// The current chat, implicit or explicit, is fine.
+	for _, args := range []map[string]any{
+		{"message_id": "12345:67", "content": "hi"},
+		{"message_id": "12345:67", "content": "hi", "channel": "telegram", "chat_id": "chat-1"},
+	} {
+		if res := tool.Execute(ctx, args); res.IsError {
+			t.Errorf("edit in the current chat %v: %+v", args, res)
+		}
+	}
+	if len(edits) != 2 || edits[0] != "telegram|chat-1|12345:67" || edits[1] != edits[0] {
+		t.Errorf("edits = %v", edits)
 	}
 }
 
@@ -166,7 +184,7 @@ func TestEditMessageTool_Parameters(t *testing.T) {
 	if !ok {
 		t.Fatal("expected properties map")
 	}
-	for _, key := range []string{"message_id", "content", "channel", "chat_id"} {
+	for _, key := range []string{"message_id", "content", "channel", "chat_id", "delete"} {
 		if _, ok := props[key]; !ok {
 			t.Fatalf("expected %s parameter", key)
 		}
@@ -178,8 +196,56 @@ func TestEditMessageTool_Parameters(t *testing.T) {
 			t.Errorf("message_id description missing %q: %q", want, messageIDDesc)
 		}
 	}
+	// content is required for edits only (validated in Execute): delete=true
+	// needs just the message ID.
 	required, _ := params["required"].([]string)
-	if !contains(required, "message_id") || !contains(required, "content") {
-		t.Errorf("required missing message_id/content: %v", required)
+	if !contains(required, "message_id") || contains(required, "content") {
+		t.Errorf("required = %v, want message_id only", required)
+	}
+}
+
+func TestEditMessageTool_Delete(t *testing.T) {
+	tool := NewEditMessageTool()
+	var deleted []string
+	tool.SetDeleteCallback(func(_ context.Context, channel, chatID, messageID string) error {
+		deleted = append(deleted, channel+"|"+chatID+"|"+messageID)
+		return nil
+	})
+	ctx := WithToolContext(context.Background(), "mattermost", "chan1")
+
+	res := tool.Execute(ctx, map[string]any{"message_id": "chan1:root:post", "delete": true})
+	if res.IsError || len(deleted) != 1 || deleted[0] != "mattermost|chan1|chan1:root:post" {
+		t.Fatalf("delete: res=%+v deleted=%v", res, deleted)
+	}
+	// Editing still requires content.
+	if res := tool.Execute(ctx, map[string]any{"message_id": "chan1:post"}); !res.IsError {
+		t.Error("edit without content must fail")
+	}
+	// Deleting is limited to the current chat, whatever the model passes.
+	for _, args := range []map[string]any{
+		{"message_id": "chan2:post", "delete": true, "chat_id": "chan2"},
+		{"message_id": "chan1:post", "delete": true, "channel": "telegram"},
+	} {
+		if res := tool.Execute(ctx, args); !res.IsError {
+			t.Errorf("delete outside the current chat must fail: %v", args)
+		}
+	}
+	noConversation := map[string]any{"message_id": "x", "delete": true, "channel": "mattermost", "chat_id": "chan1"}
+	if res := tool.Execute(context.Background(), noConversation); !res.IsError {
+		t.Error("delete without a current conversation must fail")
+	}
+	if len(deleted) != 1 {
+		t.Errorf("deleted = %v, want only the first delete", deleted)
+	}
+	// Passing the current chat explicitly is fine.
+	explicitCurrent := map[string]any{
+		"message_id": "chan1:p2", "delete": true, "channel": "mattermost", "chat_id": "chan1",
+	}
+	if res := tool.Execute(ctx, explicitCurrent); res.IsError {
+		t.Errorf("explicit current chat: %+v", res)
+	}
+	// Without a delete callback the tool reports it.
+	if res := NewEditMessageTool().Execute(ctx, map[string]any{"message_id": "x", "delete": true}); !res.IsError {
+		t.Error("delete without callback must fail")
 	}
 }

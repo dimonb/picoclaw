@@ -86,6 +86,8 @@ type channelWorker struct {
 
 type Manager struct {
 	outboundRecorder          func(context.Context, bus.OutboundDelivery) error
+	deliveryLookup            DeliveryLookup // durable own-message check (DeleteMessage)
+	ownRefs                   deliveredRefs  // the bot's confirmed deliveries (DeleteMessage)
 	channels                  map[string]Channel
 	workers                   map[string]*channelWorker
 	bus                       *bus.MessageBus
@@ -101,6 +103,7 @@ type Manager struct {
 	typingStops               sync.Map          // "channel:chatID" → func()
 	reactionUndos             sync.Map          // "channel:chatID" → reactionEntry
 	streamActive              sync.Map          // streamSuppressionKey → true (set when streamer.Finalize sent the message)
+	streamDelivered           sync.Map          // streamSuppressionKey → []string (IDs of the finalized stream's posts)
 	streamAuxiliaryTombstones sync.Map          // streamSuppressionKey → time.Time (drops late auxiliary messages after stream final)
 	channelHashes             map[string]string // channel name → config hash
 }
@@ -169,6 +172,52 @@ func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
 		return false
 	}
 	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
+}
+
+func outboundMessageIsSilent(msg bus.OutboundMessage) bool {
+	if len(msg.Context.Raw) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), bus.MessageKindSilent)
+}
+
+// handleSilentReply runs when the agent decided not to reply (NO_REPLY):
+// nothing is delivered, and whatever the turn showed while working (typing,
+// inbound reaction, placeholder, tool feedback) is removed.
+func (m *Manager) handleSilentReply(ctx context.Context, name string, ch Channel, msg bus.OutboundMessage) {
+	chatID := outboundMessageChatID(msg)
+	key := name + ":" + chatID
+	// The silent signal is the turn's final: a stream marker or streamed IDs
+	// left over (e.g. the agent delivered through the message tool) must not
+	// swallow or label the next turn's final reply.
+	streamKey := streamSuppressionKey(name, chatID, msg.SessionKey)
+	m.streamActive.Delete(streamKey)
+	m.streamDelivered.Delete(streamKey)
+	if v, loaded := m.typingStops.LoadAndDelete(key); loaded {
+		if entry, ok := v.(typingEntry); ok {
+			entry.stop()
+		}
+	}
+	if v, loaded := m.reactionUndos.LoadAndDelete(key); loaded {
+		if entry, ok := v.(reactionEntry); ok {
+			entry.undo()
+		}
+	}
+	if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
+		if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
+			if deleter, ok := ch.(MessageDeleter); ok {
+				_ = deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
+			}
+		}
+	}
+	dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
+	if handler, ok := ch.(SilentReplyHandler); ok {
+		handler.HandleSilentReply(ctx, msg)
+	}
+	logger.DebugCF("channels", "Silent reply: nothing delivered", map[string]any{
+		"channel": name,
+		"chat_id": chatID,
+	})
 }
 
 func outboundMessageIsToolCalls(msg bus.OutboundMessage) bool {
@@ -333,8 +382,31 @@ func (m *Manager) dropInboundReactionUndo(channel, chatID string) {
 	m.reactionUndos.LoadAndDelete(channel + ":" + chatID)
 }
 
+// DeleteMessage delegates to the channel's MessageDeleter implementation if
+// available. Returns an error if the channel does not support deleting.
+func (m *Manager) DeleteMessage(ctx context.Context, channelName, chatID, messageID string) error {
+	ch, ok := m.GetChannel(channelName)
+	if !ok {
+		return fmt.Errorf("channel %s not found", channelName)
+	}
+	deleter, ok := ch.(MessageDeleter)
+	if !ok {
+		return fmt.Errorf("channel %s does not support deleting messages", channelName)
+	}
+	// Only the bot's own messages in this chat: a bot may hold moderation
+	// rights, and the model must not be able to delete other people's posts.
+	if !m.isOwnMessage(ctx, channelName, ch, chatID, messageID) {
+		return fmt.Errorf("delete %s in %s:%s: %w", messageID, channelName, chatID, ErrNotOwnMessage)
+	}
+	return deleter.DeleteMessage(ctx, chatID, messageID)
+}
+
 // EditMessage delegates to the channel's MessageEditor implementation if
 // available. Returns an error if the channel does not support editing.
+// Like DeleteMessage it accepts only the bot's own messages in this chat:
+// some platforms (Matrix) accept edits of any message, and a bot with
+// moderation rights could otherwise rewrite other people's posts or reach
+// into another chat by its message reference.
 func (m *Manager) EditMessage(ctx context.Context, channelName, chatID, messageID, content string) error {
 	ch, ok := m.GetChannel(channelName)
 	if !ok {
@@ -344,17 +416,22 @@ func (m *Manager) EditMessage(ctx context.Context, channelName, chatID, messageI
 	if !ok {
 		return fmt.Errorf("channel %s does not support message editing", channelName)
 	}
+	if !m.isOwnMessage(ctx, channelName, ch, chatID, messageID) {
+		return fmt.Errorf("edit %s in %s:%s: %w", messageID, channelName, chatID, ErrNotOwnMessage)
+	}
 	if err := editor.EditMessage(ctx, chatID, messageID, content); err != nil {
 		return err
 	}
-	// The remote edit succeeded. A database failure must not turn this into a
-	// failed remote operation (which would invite duplicate sends on retry).
-	_ = m.recordTextDelivery(
-		ctx,
-		channelName,
-		bus.OutboundMessage{ChatID: chatID, Context: bus.NewOutboundContext(channelName, chatID, ""), Content: content},
-		[]string{messageID},
-	)
+	// The remote edit succeeded: update the stored content. The record is an
+	// edit, which never makes a message the bot's own. A database failure
+	// must not turn this into a failed remote operation (which would invite
+	// duplicate sends on retry).
+	_ = m.persistDelivery(ctx, bus.OutboundDelivery{
+		Channel: channelName,
+		ChatID:  chatID,
+		Content: content,
+		Origin:  bus.OutboundOriginEdit,
+	}, []string{messageID})
 	return nil
 }
 
@@ -518,6 +595,9 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 	// outbound. Earlier queued visible messages must still be delivered.
 	if isFinalMessage {
 		if _, loaded := m.streamActive.LoadAndDelete(streamKey); loaded {
+			// The stream delivered this final: report its posts as the
+			// final's IDs so the agent can address (e.g. edit) its reply.
+			streamedIDs := m.takeStreamDelivered(streamKey)
 			if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
 				if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
 					// Prefer deleting the placeholder (cleaner UX than editing to same content)
@@ -544,7 +624,7 @@ func (m *Manager) preSend(ctx context.Context, name string, msg bus.OutboundMess
 					dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
 				}
 			}
-			return nil, true
+			return streamedIDs, true
 		}
 	}
 
@@ -638,6 +718,7 @@ func (m *Manager) preSendMedia(ctx context.Context, name string, msg bus.Outboun
 
 	// 3. Clear any finalized stream markers for this chat before media delivery.
 	m.streamActive.LoadAndDelete(streamKey)
+	m.streamDelivered.Delete(streamKey)
 	m.streamAuxiliaryTombstones.Delete(streamKey)
 
 	if m.toolFeedbackSeparateMessagesEnabled() {
@@ -703,6 +784,52 @@ func (m *Manager) SetMediaStore(store media.MediaStore) {
 	}
 }
 
+// addStreamDelivered accumulates the post IDs of finalized stream segments
+// (several with split_on_marker) until the turn's final outbound claims them.
+func (m *Manager) addStreamDelivered(streamKey string, ids []string) {
+	if len(ids) == 0 {
+		return
+	}
+	var all []string
+	if v, ok := m.streamDelivered.Load(streamKey); ok {
+		all, _ = v.([]string)
+	}
+	m.streamDelivered.Store(streamKey, append(append([]string(nil), all...), ids...))
+}
+
+// normalizeDeliveredIDs applies normalizeDeliveredID to a send's receipts.
+func (m *Manager) normalizeDeliveredIDs(channel string, msg bus.OutboundMessage, ids []string) []string {
+	if len(ids) == 0 {
+		return ids
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = m.normalizeDeliveredID(channel, outboundMessageChatID(msg), msg.Context.TopicID, id)
+	}
+	return out
+}
+
+// normalizeDeliveredMediaIDs is normalizeDeliveredIDs for media sends.
+func (m *Manager) normalizeDeliveredMediaIDs(channel string, msg bus.OutboundMediaMessage, ids []string) []string {
+	if len(ids) == 0 {
+		return ids
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = m.normalizeDeliveredID(channel, outboundMediaChatID(msg), msg.Context.TopicID, id)
+	}
+	return out
+}
+
+func (m *Manager) takeStreamDelivered(streamKey string) []string {
+	v, ok := m.streamDelivered.LoadAndDelete(streamKey)
+	if !ok {
+		return nil
+	}
+	ids, _ := v.([]string)
+	return ids
+}
+
 // GetStreamer implements bus.StreamDelegate.
 // It checks if the named channel supports streaming and returns a Streamer.
 func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionKey string) (bus.Streamer, bool) {
@@ -728,11 +855,15 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 		return nil, false
 	}
 
+	streamKey := streamSuppressionKey(channelName, chatID, sessionKey)
+	// A new turn's stream: IDs from an earlier, unclaimed stream are stale.
+	m.streamDelivered.Delete(streamKey)
 	wrapDelivery := func(inner bus.Streamer) bus.Streamer {
 		return &finalizeHookStreamer{
 			Streamer: inner,
 			afterFinalize: func(deliveryCtx context.Context, content string) error {
 				if receipt, ok := inner.(interface{ DeliveredMessageIDs() []string }); ok {
+					m.addStreamDelivered(streamKey, receipt.DeliveredMessageIDs())
 					return m.recordTextDelivery(
 						deliveryCtx,
 						channelName,
@@ -753,10 +884,10 @@ func (m *Manager) GetStreamer(ctx context.Context, channelName, chatID, sessionK
 
 	// Mark streamActive on Finalize so preSend knows to clean up the placeholder
 	// and late auxiliary messages cannot leak after streaming produced a final.
-	streamKey := streamSuppressionKey(channelName, chatID, sessionKey)
 	placeholderKey := channelName + ":" + chatID
 	clearMarker := func() {
 		m.streamActive.Delete(streamKey)
+		m.streamDelivered.Delete(streamKey)
 	}
 	onFinalize := func(finalizeCtx context.Context, finalContent string) {
 		if m.toolFeedbackSeparateMessagesEnabled() {
@@ -1174,6 +1305,8 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 		return bc, settings.ClientID != ""
 	case *config.SlackSettings:
 		return bc, settings.BotToken.String() != ""
+	case *config.MattermostSettings:
+		return bc, settings.URL != "" && settings.BotToken.String() != ""
 	case *config.WeixinSettings:
 		return bc, settings.Token.String() != ""
 	case *config.PicoSettings:
@@ -1500,28 +1633,20 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		m.dispatchTask = nil
 	}
 
-	// Close all worker queues and wait for them to drain
-	for _, w := range m.workers {
+	// Detach the workers, then let them drain without holding m.mu: a send
+	// in flight records its delivery under m.mu (read lock), so waiting for
+	// it while holding the write lock deadlocks (seen under load as a hung
+	// StopAll). Detached workers are no longer found by new sends.
+	workers := make([]*channelWorker, 0, len(m.workers))
+	for name, w := range m.workers {
 		if w != nil {
-			close(w.queue)
+			workers = append(workers, w)
 		}
+		delete(m.workers, name)
 	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.done
-		}
-	}
-	// Close all media worker queues and wait for them to drain
-	for _, w := range m.workers {
-		if w != nil {
-			close(w.mediaQueue)
-		}
-	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.mediaDone
-		}
-	}
+	m.mu.Unlock()
+	drainWorkers(workers)
+	m.mu.Lock()
 
 	// Stop all channels
 	for name, channel := range m.channels {
@@ -1546,6 +1671,23 @@ func (m *Manager) StopAll(ctx context.Context) error {
 
 	logger.InfoC("channels", "All channels stopped")
 	return nil
+}
+
+// drainWorkers closes the workers' queues and waits until each has handled
+// what was queued. Callers must not hold m.mu.
+func drainWorkers(workers []*channelWorker) {
+	for _, w := range workers {
+		close(w.queue)
+	}
+	for _, w := range workers {
+		<-w.done
+	}
+	for _, w := range workers {
+		close(w.mediaQueue)
+	}
+	for _, w := range workers {
+		<-w.mediaDone
+	}
 }
 
 // newChannelWorker creates a channelWorker with a rate limiter configured
@@ -1578,6 +1720,16 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 		case msg, ok := <-w.queue:
 			if !ok {
 				return
+			}
+			if outboundMessageIsSilent(msg) {
+				m.handleSilentReply(ctx, name, w.ch, msg)
+				if msg.Feedback != nil {
+					select {
+					case msg.Feedback <- bus.DeliveryResult{}:
+					default:
+					}
+				}
+				continue
 			}
 			maxLen := 0
 			if mlp, ok := w.ch.(MessageLengthProvider); ok {
@@ -1726,7 +1878,7 @@ func (m *Manager) sendWithRetry(
 		var fallback []string
 		msgIDs, fallback = receipts(msgIDs)
 		m.publishOutboundSent(name, msg, msgIDs)
-		return msgIDs, m.recordTextDelivery(ctx, name, msg, fallback)
+		return m.normalizeDeliveredIDs(name, msg, msgIDs), m.recordTextDelivery(ctx, name, msg, fallback)
 	}
 
 	var lastErr error
@@ -1737,7 +1889,8 @@ func (m *Manager) sendWithRetry(
 		msgIDs, fallback = receipts(msgIDs)
 		if lastErr == nil || len(msgIDs) > 0 {
 			m.publishOutboundSent(name, msg, msgIDs)
-			return msgIDs, errors.Join(lastErr, m.recordTextDelivery(ctx, name, msg, fallback))
+			return m.normalizeDeliveredIDs(name, msg, msgIDs),
+				errors.Join(lastErr, m.recordTextDelivery(ctx, name, msg, fallback))
 		}
 
 		// Permanent failures — don't retry
@@ -1951,7 +2104,8 @@ func (m *Manager) sendMediaWithRetry(
 		msgIDs, fallback = receipts(msgIDs)
 		if lastErr == nil || len(msgIDs) > 0 {
 			m.publishOutboundMediaSent(name, msg, msgIDs)
-			return msgIDs, errors.Join(lastErr, m.recordMediaDelivery(ctx, name, msg, fallback))
+			return m.normalizeDeliveredMediaIDs(name, msg, msgIDs),
+				errors.Join(lastErr, m.recordMediaDelivery(ctx, name, msg, fallback))
 		}
 
 		// Permanent failures — don't retry
@@ -2210,18 +2364,17 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 
 func (m *Manager) UnregisterChannel(name string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if ch, ok := m.channels[name]; ok && m.mux != nil {
 		m.unregisterChannelHTTPHandler(name, ch)
 	}
-	if w, ok := m.workers[name]; ok && w != nil {
-		close(w.queue)
-		<-w.done
-		close(w.mediaQueue)
-		<-w.mediaDone
-	}
+	w := m.workers[name]
 	delete(m.workers, name)
 	delete(m.channels, name)
+	m.mu.Unlock()
+	// Drain outside m.mu, like StopAll: an in-flight send needs the read lock.
+	if w != nil {
+		drainWorkers([]*channelWorker{w})
+	}
 }
 
 // SendMessage sends an outbound message synchronously through the channel

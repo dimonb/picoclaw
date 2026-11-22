@@ -82,6 +82,15 @@ type StreamingCapable interface {
 // This alias keeps channel implementations using channels.Streamer unchanged.
 type Streamer = bus.Streamer
 
+// SilentReplyHandler — channels that keep their own per-message "working on
+// it" state (typing, reactions, placeholders) can clean it up when the agent
+// decided not to reply (final answer NO_REPLY). msg carries the turn's
+// context and Context.Raw["message_kind"] == bus.MessageKindSilent; it must
+// not be delivered.
+type SilentReplyHandler interface {
+	HandleSilentReply(ctx context.Context, msg bus.OutboundMessage)
+}
+
 // PlaceholderRecorder is injected into channels by Manager.
 // Channels call these methods on inbound to register typing/placeholder state.
 // Manager uses the registered state on outbound to stop typing and edit placeholders.

@@ -79,4 +79,7 @@ type ChannelMessaging interface {
 
 	// EditMessage edits a previously-sent message via the channel's editor.
 	EditMessage(ctx context.Context, channel, chatID, messageID, content string) error
+
+	// DeleteMessage deletes a previously-sent message via the channel's deleter.
+	DeleteMessage(ctx context.Context, channel, chatID, messageID string) error
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/providers"
 )
@@ -30,6 +31,11 @@ func promptBuildRequestForTurn(
 		ReplyToMessageID:  ts.opts.Dispatch.ReplyToMessageID(),
 		ActiveSkills:      activeSkillNames(ts.agent, ts.opts),
 		Overlays:          promptOverlaysForOptions(ts.opts),
+	}
+	if inbound := ts.opts.Dispatch.InboundContext; inbound != nil {
+		req.ChatType = inbound.ChatType
+		req.Mentioned = inbound.Mentioned
+		req.ReplyPlacement = inbound.Raw[bus.InboundRawReplyPlacement]
 	}
 	hasCallableTools := true
 	if ts.profile.Enabled {

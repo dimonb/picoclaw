@@ -3119,6 +3119,11 @@ func TestFilterSensitiveData_AllTokenTypes(t *testing.T) {
 			want:    "Slack bot: [FILTERED], app: [FILTERED]",
 		},
 		{
+			name:    "mattermost_token",
+			content: "Mattermost bot token: mattermost-bot-token-123",
+			want:    "Mattermost bot token: [FILTERED]",
+		},
+		{
 			name:    "matrix_token",
 			content: "Matrix access token: matrix-access-token-abc",
 			want:    "Matrix access token: [FILTERED]",
@@ -3340,6 +3345,7 @@ func testChannelsConfigWithTokens() ChannelsConfig {
 				AppToken: *NewSecureString("xapp-slack-app-token"),
 			},
 		},
+		{"mattermost", MattermostSettings{BotToken: *NewSecureString("mattermost-bot-token-123")}},
 		{"matrix", MatrixSettings{AccessToken: *NewSecureString("matrix-access-token-abc")}},
 		{
 			"feishu",

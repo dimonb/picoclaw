@@ -1,6 +1,7 @@
 package seahorse
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
@@ -81,6 +82,7 @@ func runSchema(db *sql.DB) error {
 			content TEXT NOT NULL DEFAULT '',
 			parts TEXT NOT NULL DEFAULT '[]',
 			created_at TEXT NOT NULL DEFAULT (datetime('now')),
+			origin TEXT NOT NULL DEFAULT '',
 			UNIQUE (channel, account, channel_message_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_outbound_delivery_ref ON outbound_deliveries(channel_message_id)`,
@@ -186,6 +188,9 @@ func runSchema(db *sql.DB) error {
 	}
 
 	if err := ensureOutboundSearch(db); err != nil {
+		return err
+	}
+	if err := ensureOutboundDeliveryOriginColumn(db); err != nil {
 		return err
 	}
 	if err := ensureMessagesFTS(db); err != nil {
@@ -383,6 +388,53 @@ func ensureMessagesChannelIDColumn(db *sql.DB) error {
 		return fmt.Errorf("create index idx_messages_channel_id: %w", err)
 	}
 	return nil
+}
+
+// ensureOutboundDeliveryOriginColumn adds outbound_deliveries.origin ("send"
+// or "edit", see bus.OutboundDelivery.Origin). Older versions recorded both
+// sends and edits (of any message, possibly in another chat) without telling
+// them apart. Rows with a session key are sends (edits never carried one) and
+// become "send". The rest stay unknown and are not trusted as the bot's own:
+// a sessionless send from before the upgrade (cron, heartbeat) cannot be
+// told from an edit of someone else's message.
+func ensureOutboundDeliveryOriginColumn(db *sql.DB) (err error) {
+	// Several processes may open the database at once and all run this. The
+	// check and the change happen in one write transaction (BEGIN IMMEDIATE
+	// on one connection), so a second opener waits, then sees the column.
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if _, err = conn.ExecContext(ctx, "PRAGMA busy_timeout = 5000"); err != nil {
+		return err
+	}
+	if _, err = conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return fmt.Errorf("add outbound_deliveries.origin: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+		}
+	}()
+	var n int
+	if err = conn.QueryRowContext(ctx,
+		`SELECT count(*) FROM pragma_table_info('outbound_deliveries') WHERE name='origin'`).Scan(&n); err != nil {
+		return fmt.Errorf("check outbound_deliveries.origin: %w", err)
+	}
+	if n == 0 {
+		for _, q := range []string{
+			`ALTER TABLE outbound_deliveries ADD COLUMN origin TEXT NOT NULL DEFAULT ''`,
+			`UPDATE outbound_deliveries SET origin='send' WHERE session_key<>''`,
+		} {
+			if _, err = conn.ExecContext(ctx, q); err != nil {
+				return fmt.Errorf("add outbound_deliveries.origin: %w", err)
+			}
+		}
+	}
+	_, err = conn.ExecContext(ctx, "COMMIT")
+	return err
 }
 
 func tableHasColumn(db *sql.DB, tableName, columnName string) (bool, error) {

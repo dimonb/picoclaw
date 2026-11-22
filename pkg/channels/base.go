@@ -271,6 +271,38 @@ func (c *BaseChannel) HandleMessageWithContext(
 	inboundCtx bus.InboundContext,
 	senderOpts ...bus.SenderInfo,
 ) {
+	c.handleInbound(ctx, deliveryChatID, content, media, inboundCtx, InboundOptions{}, senderOpts...)
+}
+
+// InboundOptions tunes how an inbound message is handed to the agent.
+type InboundOptions struct {
+	// DeferWhileBusy makes the agent wait until the session is idle and run
+	// the message as its own turn instead of steering it into a running turn
+	// (see bus.InboundMessage.DeferWhileBusy).
+	DeferWhileBusy bool
+}
+
+// HandleInboundContextWithOptions is HandleInboundContext with extra
+// queueing options.
+func (c *BaseChannel) HandleInboundContextWithOptions(
+	ctx context.Context,
+	deliveryChatID, content string,
+	media []string,
+	inboundCtx bus.InboundContext,
+	opts InboundOptions,
+	senderOpts ...bus.SenderInfo,
+) {
+	c.handleInbound(ctx, deliveryChatID, content, media, inboundCtx, opts, senderOpts...)
+}
+
+func (c *BaseChannel) handleInbound(
+	ctx context.Context,
+	deliveryChatID, content string,
+	media []string,
+	inboundCtx bus.InboundContext,
+	opts InboundOptions,
+	senderOpts ...bus.SenderInfo,
+) {
 	// Use SenderInfo-based allow check when available, else fall back to string
 	var sender bus.SenderInfo
 	if len(senderOpts) > 0 {
@@ -313,6 +345,8 @@ func (c *BaseChannel) HandleMessageWithContext(
 		Content:    content,
 		Media:      media,
 		MediaScope: scope,
+
+		DeferWhileBusy: opts.DeferWhileBusy,
 	}
 	msg = bus.NormalizeInboundMessage(msg)
 
@@ -322,7 +356,10 @@ func (c *BaseChannel) HandleMessageWithContext(
 	// If streaming actually activates, preSend will skip the placeholder edit (streamActive map)
 	// and the typing stop will still be called. This avoids the problem of compile-time interface
 	// checks incorrectly skipping indicators when streaming may not work at runtime.
-	if c.owner != nil && c.placeholderRecorder != nil {
+	// Group messages that do not address the bot may well end in a silent
+	// reply (NO_REPLY), so they get no typing / reaction / placeholder up
+	// front; the answer, if any, simply appears.
+	if c.owner != nil && c.placeholderRecorder != nil && isAddressedInbound(inboundCtx) {
 		// Typing
 		if tc, ok := c.owner.(TypingCapable); ok {
 			if stop, err := tc.StartTyping(ctx, deliveryChatID); err == nil {
@@ -365,6 +402,18 @@ func (c *BaseChannel) HandleMessageWithContext(
 			"chat_id": deliveryChatID,
 			"error":   err.Error(),
 		})
+	}
+}
+
+// isAddressedInbound reports whether an inbound message is directed at the
+// bot: every direct message, and group/channel messages that mention it (or
+// that the channel otherwise marks as addressed via Mentioned).
+func isAddressedInbound(inboundCtx bus.InboundContext) bool {
+	switch strings.ToLower(strings.TrimSpace(inboundCtx.ChatType)) {
+	case "group", "channel":
+		return inboundCtx.Mentioned
+	default:
+		return true
 	}
 }
 

@@ -167,4 +167,15 @@ type VoiceControl struct {
 type OutboundDelivery struct {
 	Channel, Account, ChatID, TopicID, SessionKey, MessageID, Content string
 	Parts                                                             []MediaPart
+	// Origin says how the record came about: OutboundOriginSend for a
+	// message the bot delivered, OutboundOriginEdit for an edit that only
+	// updates the stored content. Only sends make a message the bot's own;
+	// an empty origin (older records) is not treated as a send.
+	Origin string
 }
+
+// Outbound delivery origins (OutboundDelivery.Origin).
+const (
+	OutboundOriginSend = "send"
+	OutboundOriginEdit = "edit"
+)

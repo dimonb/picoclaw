@@ -30,7 +30,10 @@ func (t *ReactionTool) Name() string {
 }
 
 func (t *ReactionTool) Description() string {
-	return "Add or remove an emoji reaction on a specific message. Use explicit message IDs from context."
+	return "Add or remove an emoji reaction on a specific message. Use explicit message IDs from context. " +
+		"Reacting is a normal, lightweight way to respond, like a person in chat: use it when it fits " +
+		"(acknowledge, agree, thank, celebrate), not on every message. When a reaction says it all, " +
+		"you may skip the text reply (answer exactly NO_REPLY)."
 }
 
 func (t *ReactionTool) Parameters() map[string]any {
@@ -43,7 +46,7 @@ func (t *ReactionTool) Parameters() map[string]any {
 			},
 			"message_id": map[string]any{
 				"type":        "string",
-				"description": "Target message ID to react to. Format depends on channel — Telegram: \"chat_id:msg_id\" or \"chat_id:topic_id:msg_id\"; Matrix: \"room_id event_id\".",
+				"description": "Target message ID to react to. Format depends on channel — Telegram: \"chat_id:msg_id\" or \"chat_id:topic_id:msg_id\"; Matrix: \"room_id event_id\"; Mattermost: \"channel_id:post_id\" or \"channel_id:root_id:post_id\" (Mattermost also accepts emoji names like \":thumbsup:\").",
 			},
 			"channel": map[string]any{
 				"type":        "string",

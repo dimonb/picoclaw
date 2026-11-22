@@ -18,11 +18,23 @@ import (
 )
 
 func (al *AgentLoop) maybePublishError(ctx context.Context, channel, chatID, sessionKey string, err error) error {
+	return al.maybePublishErrorFor(ctx, nil, channel, chatID, sessionKey, err)
+}
+
+// maybePublishErrorFor is maybePublishError addressed to the message being
+// answered (see publishFinalResponse).
+func (al *AgentLoop) maybePublishErrorFor(
+	ctx context.Context,
+	inbound *bus.InboundContext,
+	channel, chatID, sessionKey string,
+	err error,
+) error {
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
-	return al.PublishResponseIfNeeded(
+	return al.publishFinalResponse(
 		ctx,
+		inbound,
 		channel,
 		chatID,
 		sessionKey,
@@ -32,20 +44,81 @@ func (al *AgentLoop) maybePublishError(ctx context.Context, channel, chatID, ses
 
 func (al *AgentLoop) publishResponseOrError(
 	ctx context.Context,
+	inbound *bus.InboundContext,
 	channel, chatID, sessionKey string,
 	response string,
 	err error,
 ) error {
 	if err != nil {
-		if pubErr := al.maybePublishError(ctx, channel, chatID, sessionKey, err); pubErr != nil {
+		if pubErr := al.maybePublishErrorFor(ctx, inbound, channel, chatID, sessionKey, err); pubErr != nil {
 			return pubErr
 		}
 		return nil
 	}
-	return al.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, response)
+	return al.publishFinalResponse(ctx, inbound, channel, chatID, sessionKey, response)
 }
 
 func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string) error {
+	return al.publishFinalResponse(ctx, nil, channel, chatID, sessionKey, response)
+}
+
+// isDuplicateOfSent reports whether response repeats one of the texts the
+// message tool sent to the same chat this round: equal after normalizing case,
+// whitespace and trailing punctuation, or one containing the other with
+// nearly the same length (formatting/wrapping differences).
+func isDuplicateOfSent(response string, sent []string) bool {
+	resp := normalizeForDuplicate(response)
+	if resp == "" {
+		return false
+	}
+	for _, s := range sent {
+		other := normalizeForDuplicate(s)
+		if other == "" {
+			continue
+		}
+		if resp == other {
+			return true
+		}
+		short, long := resp, other
+		if len([]rune(short)) > len([]rune(long)) {
+			short, long = long, short
+		}
+		if len([]rune(short)) >= 20 && strings.Contains(long, short) &&
+			float64(len([]rune(short))) >= 0.9*float64(len([]rune(long))) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeForDuplicate(s string) string {
+	s = strings.ToLower(strings.Join(strings.Fields(s), " "))
+	return strings.TrimRight(s, " .!?…,;:")
+}
+
+// finalOutboundContext addresses a final response. When the turn's inbound
+// context belongs to the same chat it is attached, so channels can tell which
+// message is being answered (Mattermost replies into that post's thread,
+// Slack into its thread_ts via TopicID). ReplyToMessageID is cleared: the
+// final answer is not a quote-reply to whatever the user was replying to,
+// which keeps Telegram/Discord/Slack/VK reply behavior unchanged.
+func finalOutboundContext(inbound *bus.InboundContext, channel, chatID string) bus.InboundContext {
+	if inbound == nil || strings.TrimSpace(inbound.ChatID) != strings.TrimSpace(chatID) ||
+		(inbound.Channel != "" && inbound.Channel != channel) {
+		return bus.NewOutboundContext(channel, chatID, "")
+	}
+	outboundCtx := outboundContextFromInbound(inbound, channel, chatID, "")
+	outboundCtx.ReplyToMessageID = ""
+	return outboundCtx
+}
+
+// publishFinalResponse publishes a turn's final response. inbound (optional)
+// is the context of the message being answered.
+func (al *AgentLoop) publishFinalResponse(
+	ctx context.Context,
+	inbound *bus.InboundContext,
+	channel, chatID, sessionKey, response string,
+) error {
 	// Trim, not just an empty check: a model told to stay silent unless it has
 	// something to report answers with a space rather than an empty string, and
 	// " " is not deliverable — Telegram rejects it as RICH_MESSAGE_EMPTY and
@@ -54,18 +127,39 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 	if strings.TrimSpace(response) == "" {
 		return nil
 	}
+	if bus.IsSilentReply(response) {
+		al.publishSilentReply(ctx, inbound, channel, chatID, sessionKey)
+		return nil
+	}
 
-	alreadySentToSameChat := false
+	// The message tool may already have delivered this answer during the
+	// turn (models sometimes send it and then repeat it as the final). Only
+	// such a duplicate is suppressed; a different final (e.g. "done" after
+	// drafting through the message tool) is still delivered.
+	duplicateOfSent := false
 	defaultAgent := al.GetRegistry().GetDefaultAgent()
 	if defaultAgent != nil {
 		if tool, ok := defaultAgent.Tools.Get("message"); ok {
 			if mt, ok := tool.(*tools.MessageTool); ok {
-				alreadySentToSameChat = mt.HasSentTo(sessionKey, channel, chatID)
+				duplicateOfSent = isDuplicateOfSent(response, mt.SentContentTo(sessionKey, channel, chatID))
 			}
 		}
 	}
 
-	if alreadySentToSameChat {
+	if duplicateOfSent {
+		logger.DebugCF(
+			"agent",
+			"Skipped outbound (duplicates what the message tool already sent to this chat)",
+			map[string]any{"channel": channel, "chat_id": chatID},
+		)
+		if inbound != nil && al.channelManager != nil {
+			// The agent delivered its answer itself (possibly somewhere else
+			// than the default, e.g. top level instead of the thread). Treat
+			// the final answer as silent so the channel clears what it
+			// showed for this turn (placeholder, typing, tool feedback).
+			al.publishSilentReply(ctx, inbound, channel, chatID, sessionKey)
+			return nil
+		}
 		if al.channelManager != nil && channel != "" && chatID != "" {
 			dismissCtx, dismissCancel := context.WithTimeout(ctx, 5*time.Second)
 			al.channelManager.DismissToolFeedback(
@@ -76,16 +170,11 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 			)
 			dismissCancel()
 		}
-		logger.DebugCF(
-			"agent",
-			"Skipped outbound (message tool already sent to same chat)",
-			map[string]any{"channel": channel, "chat_id": chatID},
-		)
 		return nil
 	}
 
 	msg := bus.OutboundMessage{
-		Context:    bus.NewOutboundContext(channel, chatID, ""),
+		Context:    finalOutboundContext(inbound, channel, chatID),
 		SessionKey: sessionKey,
 		Content:    response,
 	}
@@ -419,4 +508,42 @@ func awaitDelivery(
 	case <-ctx.Done():
 		return bus.DeliveryResult{}, ctx.Err()
 	}
+}
+
+// publishSilentReply handles a turn whose final answer is NO_REPLY: nothing
+// is delivered. A content-less outbound marked bus.MessageKindSilent goes
+// through the normal outbound queue (after anything the turn already queued)
+// so the channel manager removes typing, reactions, placeholders and tool
+// feedback shown for the turn. The assistant NO_REPLY stays in history.
+func (al *AgentLoop) publishSilentReply(
+	ctx context.Context,
+	inbound *bus.InboundContext,
+	channel, chatID, sessionKey string,
+) {
+	if channel == "" || chatID == "" {
+		return
+	}
+	logger.InfoCF("agent", "Silent final reply: nothing more delivered",
+		map[string]any{"channel": channel, "chat_id": chatID, "session_key": sessionKey})
+	msg := bus.OutboundMessage{
+		Channel:    channel,
+		ChatID:     chatID,
+		Context:    finalOutboundContext(inbound, channel, chatID),
+		SessionKey: sessionKey,
+	}
+	if msg.Context.Raw == nil {
+		msg.Context.Raw = make(map[string]string, 2)
+	}
+	msg.Context.Raw[metadataKeyMessageKind] = bus.MessageKindSilent
+	markFinalOutbound(&msg)
+	if al.channelManager != nil {
+		if _, ok := al.channelManager.GetChannel(channel); ok {
+			if _, err := al.PublishOutboundSync(ctx, msg); err != nil {
+				logger.DebugCF("agent", "Silent reply cleanup not delivered",
+					map[string]any{"channel": channel, "error": err.Error()})
+			}
+			return
+		}
+	}
+	_ = al.bus.PublishOutbound(ctx, msg)
 }

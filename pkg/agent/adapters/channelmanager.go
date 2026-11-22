@@ -73,3 +73,7 @@ func (a *channelManagerAdapter) EditMessage(
 ) error {
 	return a.inner.EditMessage(ctx, channel, chatID, messageID, content)
 }
+
+func (a *channelManagerAdapter) DeleteMessage(ctx context.Context, channel, chatID, messageID string) error {
+	return a.inner.DeleteMessage(ctx, channel, chatID, messageID)
+}

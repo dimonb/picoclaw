@@ -307,7 +307,9 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 						return
 					}
 					if continued != "" {
-						al.PublishResponseIfNeeded(ctx, target.Channel, target.ChatID, target.SessionKey, continued)
+						al.publishFinalResponse(
+							ctx, &m.Context, target.Channel, target.ChatID, target.SessionKey, continued,
+						)
 					}
 					return
 				}
@@ -719,6 +721,11 @@ func (al *AgentLoop) maybeDeliverFinalResponse(
 	result turnResult,
 ) (string, error) {
 	if !opts.SendResponse || result.finalContent == "" {
+		return "", nil
+	}
+	if bus.IsSilentReply(result.finalContent) {
+		al.publishSilentReply(ctx, opts.Dispatch.InboundContext, opts.Dispatch.Channel(),
+			opts.Dispatch.ChatID(), opts.Dispatch.SessionKey)
 		return "", nil
 	}
 	agentID, sessionKey, scope := outboundTurnMetadata(

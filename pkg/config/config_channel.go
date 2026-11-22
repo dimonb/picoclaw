@@ -26,6 +26,7 @@ const (
 	ChannelWeCom          = "wecom"
 	ChannelDingTalk       = "dingtalk"
 	ChannelSlack          = "slack"
+	ChannelMattermost     = "mattermost"
 	ChannelMatrix         = "matrix"
 	ChannelLINE           = "line"
 	ChannelOneBot         = "onebot"
@@ -670,6 +671,7 @@ var channelSettingsFactory = map[string]any{
 	ChannelWeCom:          (WeComSettings{}),
 	ChannelDingTalk:       (DingTalkSettings{}),
 	ChannelSlack:          (SlackSettings{}),
+	ChannelMattermost:     (MattermostSettings{}),
 	ChannelMatrix:         (MatrixSettings{}),
 	ChannelLINE:           (LINESettings{}),
 	ChannelOneBot:         (OneBotSettings{}),
@@ -797,6 +799,8 @@ func validateChannelStreamingConfig(channelName string, target any) error {
 	case *TelegramSettings:
 		streaming = settings.Streaming
 	case *WeComSettings:
+		streaming = settings.Streaming
+	case *MattermostSettings:
 		streaming = settings.Streaming
 	default:
 		return nil
