@@ -19,7 +19,7 @@ var (
 	// Manager will not retry.
 	ErrSendFailed = errors.New("send failed")
 
-	// ErrNotOwnMessage indicates a request to delete a message the bot did
-	// not send in the given chat.
+	// ErrNotOwnMessage indicates a request to edit or delete a message the
+	// bot did not send in the given chat.
 	ErrNotOwnMessage = errors.New("not a message the bot sent in this chat")
 )

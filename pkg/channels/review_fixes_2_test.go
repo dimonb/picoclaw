@@ -33,19 +33,20 @@ func TestEditDoesNotMakeMessageOwn_MatrixLike(t *testing.T) {
 	m.channels["matrix"] = ch
 	var recorded []string
 	m.SetOutboundRecorder(func(_ context.Context, d bus.OutboundDelivery) error {
-		recorded = append(recorded, d.ChatID+"|"+d.MessageID+"|"+d.Content)
+		recorded = append(recorded, d.ChatID+"|"+d.MessageID+"|"+d.Content+"|"+d.Origin)
 		return nil
 	})
 
 	const room, foreign = "!room:example.org", "$foreign:example.org"
-	if err := m.EditMessage(ctx, "matrix", room, foreign, "hijacked"); err != nil {
-		t.Fatal(err)
+	// Review 3, fix 5: the edit itself is refused (not the bot's message).
+	if err := m.EditMessage(ctx, "matrix", room, foreign, "hijacked"); !errors.Is(err, ErrNotOwnMessage) {
+		t.Errorf("edit of a foreign event: err = %v, want ErrNotOwnMessage", err)
 	}
 	if err := m.DeleteMessage(ctx, "matrix", room, foreign); !errors.Is(err, ErrNotOwnMessage) {
 		t.Errorf("delete after edit: err = %v, want ErrNotOwnMessage", err)
 	}
-	if len(ch.deleted) != 0 || len(recorded) != 0 {
-		t.Errorf("deleted=%v recorded=%v, want nothing", ch.deleted, recorded)
+	if len(ch.edited) != 0 || len(ch.deleted) != 0 || len(recorded) != 0 {
+		t.Errorf("edited=%v deleted=%v recorded=%v, want nothing", ch.edited, ch.deleted, recorded)
 	}
 
 	// Editing the bot's own message still updates its stored content.
@@ -59,7 +60,7 @@ func TestEditDoesNotMakeMessageOwn_MatrixLike(t *testing.T) {
 	if err := m.EditMessage(ctx, "matrix", room, "$mine:example.org", "fixed"); err != nil {
 		t.Fatal(err)
 	}
-	if len(recorded) != 1 || recorded[0] != room+"|$mine:example.org|fixed" {
+	if len(recorded) != 1 || recorded[0] != room+"|$mine:example.org|fixed|"+bus.OutboundOriginEdit {
 		t.Errorf("own edit recorded = %v", recorded)
 	}
 }
@@ -129,9 +130,12 @@ func TestEditCrossChatDoesNotEnableDelete_TelegramLike(t *testing.T) {
 
 	// The bot's own message 77 in chat C (-100).
 	_ = m.recordTextDelivery(ctx, "telegram", bus.OutboundMessage{ChatID: "-100", SessionKey: "s"}, []string{"77"})
-	// Edit it while handling group G (-200).
-	if err := m.EditMessage(ctx, "telegram", "-200", "-100:77", "fixed"); err != nil {
-		t.Fatal(err)
+	// Edit it while handling group G (-200): refused since review 3 (fix 5).
+	if err := m.EditMessage(ctx, "telegram", "-200", "-100:77", "fixed"); !errors.Is(err, ErrNotOwnMessage) {
+		t.Errorf("cross-chat edit: err = %v, want ErrNotOwnMessage", err)
+	}
+	if len(ch.edited) != 0 {
+		t.Errorf("edited = %v, want nothing", ch.edited)
 	}
 	for _, id := range []string{"77", "-200:77"} {
 		if err := m.DeleteMessage(ctx, "telegram", "-200", id); !errors.Is(err, ErrNotOwnMessage) {

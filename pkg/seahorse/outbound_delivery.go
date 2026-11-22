@@ -48,13 +48,16 @@ func (s *Store) insertOutboundDelivery(ctx context.Context, d OutboundDelivery, 
 	if err != nil {
 		return fmt.Errorf("encode delivery parts: %w", err)
 	}
+	// A send makes the row "send" for good; an edit only updates the
+	// content and never moves an existing row to another chat or session.
 	_, err = s.db.ExecContext(ctx, `INSERT INTO outbound_deliveries
- (channel,account,channel_message_id,chat_id,topic_id,session_key,content,parts,created_at)
- VALUES (?,?,?,?,?,?,?,?,?) ON CONFLICT(channel,account,channel_message_id) DO UPDATE SET
- chat_id=CASE WHEN excluded.chat_id='' THEN outbound_deliveries.chat_id ELSE excluded.chat_id END,
- topic_id=CASE WHEN excluded.topic_id='' THEN outbound_deliveries.topic_id ELSE excluded.topic_id END,
- session_key=CASE WHEN excluded.session_key='' THEN outbound_deliveries.session_key ELSE excluded.session_key END,
- content=excluded.content,parts=excluded.parts`, d.Channel, d.Account, d.MessageID, d.ChatID, d.TopicID, d.SessionKey, d.Content, string(parts), created)
+ (channel,account,channel_message_id,chat_id,topic_id,session_key,content,parts,created_at,origin)
+ VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(channel,account,channel_message_id) DO UPDATE SET
+ chat_id=CASE WHEN excluded.chat_id='' OR excluded.origin='edit' THEN outbound_deliveries.chat_id ELSE excluded.chat_id END,
+ topic_id=CASE WHEN excluded.topic_id='' OR excluded.origin='edit' THEN outbound_deliveries.topic_id ELSE excluded.topic_id END,
+ session_key=CASE WHEN excluded.session_key='' OR excluded.origin='edit' THEN outbound_deliveries.session_key ELSE excluded.session_key END,
+ origin=CASE WHEN outbound_deliveries.origin='send' OR excluded.origin='send' THEN 'send' ELSE excluded.origin END,
+ content=excluded.content,parts=excluded.parts`, d.Channel, d.Account, d.MessageID, d.ChatID, d.TopicID, d.SessionKey, d.Content, string(parts), created, d.Origin)
 	return err
 }
 
@@ -168,21 +171,22 @@ func (s *Store) GetMessageByChannelMessageIDScoped(
 	return s.getLegacyMessageByChannelMessageID(ctx, ref)
 }
 
-// OutboundDeliveryRefs returns the references of confirmed deliveries in the
-// chat (chat_id, or chat_id/<topic>) whose reference ends with refSuffix,
+// OutboundDeliveryRefs returns the references of the bot's own sends in the
+// chat (chat_id, or chat_id/<topic>) that equal refKey or end with ":" or
+// " " + refKey (Matrix "room event"),
 // newest first, at most limit. The caller compares canonical forms exactly;
-// the suffix is only a prefilter. Rows without a session key are skipped:
-// genuine sends carry the turn's session, while rows created by recording an
-// edit (older versions recorded edits of any message) do not, and an edit
-// must never make a message count as the bot's own.
+// refKey is only a prefilter. Only rows recorded as sends (origin "send")
+// count: edits never make a message the bot's own, and rows from older
+// versions without an origin are not trusted, except those the migration
+// could prove to be sends (see ensureOutboundDeliveryOriginColumn).
 func (s *Store) OutboundDeliveryRefs(
 	ctx context.Context,
-	channel, chatID, refSuffix string,
+	channel, chatID, refKey string,
 	limit int,
 ) ([]string, error) {
-	refSuffix = strings.TrimSpace(refSuffix)
+	refKey = strings.TrimSpace(refKey)
 	chat, _, _ := strings.Cut(strings.TrimSpace(chatID), "/")
-	if channel == "" || chat == "" || refSuffix == "" {
+	if channel == "" || chat == "" || refKey == "" {
 		return nil, nil
 	}
 	if limit <= 0 {
@@ -191,9 +195,11 @@ func (s *Store) OutboundDeliveryRefs(
 	ctx, cancel := context.WithTimeout(ctx, outboundReceiptTimeout)
 	defer cancel()
 	rows, err := s.db.QueryContext(ctx, `SELECT channel_message_id FROM outbound_deliveries
- WHERE channel=? AND (chat_id=? OR chat_id LIKE ? ESCAPE '\') AND session_key<>''
- AND channel_message_id LIKE ? ESCAPE '\' ORDER BY created_at DESC LIMIT ?`,
-		channel, chat, likeEscape(chat)+"/%", "%"+likeEscape(refSuffix), limit)
+ WHERE channel=? AND (chat_id=? OR chat_id LIKE ? ESCAPE '\') AND origin='send'
+ AND (channel_message_id=? OR channel_message_id LIKE ? ESCAPE '\'
+ OR channel_message_id LIKE ? ESCAPE '\')
+ ORDER BY created_at DESC LIMIT ?`,
+		channel, chat, likeEscape(chat)+"/%", refKey, "%:"+likeEscape(refKey), "% "+likeEscape(refKey), limit)
 	if err != nil {
 		return nil, err
 	}

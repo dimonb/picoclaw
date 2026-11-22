@@ -30,16 +30,18 @@ type OwnMessageVerifier interface {
 // come in several forms. CanonicalMessageRef returns one form for messageID as
 // seen from chatID, including the chat the message lives in (Telegram
 // "chat:msg" for "chat:topic:msg" or a bare "msg"; Mattermost "channel:post"
-// for "channel:root:post" or a bare "post"), or "" if it cannot be parsed.
+// for "channel:root:post" or a bare "post"; Matrix "room event" for a bare
+// "event"), or "" if it cannot be parsed.
 type MessageRefCanonicalizer interface {
 	CanonicalMessageRef(chatID, messageID string) string
 }
 
-// DeliveryLookup returns the durable references of the bot's confirmed
-// deliveries in the chat whose reference ends with refSuffix (a prefilter;
-// the Manager compares canonical forms exactly). Installed by the agent loop
-// next to the outbound recorder (e.g. seahorse outbound_deliveries).
-type DeliveryLookup func(ctx context.Context, channel, chatID, refSuffix string) ([]string, error)
+// DeliveryLookup returns the durable references of the bot's confirmed sends
+// in the chat that equal refKey or end with ":" or " " + refKey (a prefilter, see
+// lookupKey; the Manager compares canonical forms exactly). Installed by the
+// agent loop next to the outbound recorder (e.g. seahorse
+// outbound_deliveries).
+type DeliveryLookup func(ctx context.Context, channel, chatID, refKey string) ([]string, error)
 
 // SetDeliveryLookup installs the durable own-message lookup used by
 // DeleteMessage when a message is not in the in-memory delivery record.
@@ -61,14 +63,31 @@ func canonicalMessageRef(ch Channel, chatID, messageID string) string {
 	return ref
 }
 
-// refSuffix is the prefilter for DeliveryLookup: the part after the last
-// ':' (Telegram message ID, Mattermost post ID), which every stored form of
-// the same message ends with.
-func refSuffix(ref string) string {
-	if i := strings.LastIndex(ref, ":"); i >= 0 && i < len(ref)-1 {
-		return ref[i+1:]
+// lookupKey is the prefilter for DeliveryLookup. Every stored form of the
+// same message equals it or ends with ":" or " " + it.
+//   - A reference "<container> <message>" (Matrix "!room:server
+//     $event:server") is keyed by the part after the space: the event ID.
+//   - Other channels with a MessageRefCanonicalizer (Telegram, Mattermost)
+//     store the message in several forms ("chat:msg", "chat:topic:msg", a
+//     bare "msg"); their canonical form ends with the native message ID
+//     after the last ':'.
+//   - For any other channel the canonical form is the reference itself and
+//     must match exactly.
+//
+// Never cut a Matrix ID at its last ':': that yields the server name, which
+// matches every event from that server and lets the lookup limit hide the
+// bot's older messages.
+func lookupKey(ch Channel, canonicalRef string) string {
+	if i := strings.LastIndex(canonicalRef, " "); i >= 0 && i < len(canonicalRef)-1 {
+		return canonicalRef[i+1:]
 	}
-	return ref
+	if _, ok := ch.(MessageRefCanonicalizer); !ok {
+		return canonicalRef
+	}
+	if i := strings.LastIndex(canonicalRef, ":"); i >= 0 && i < len(canonicalRef)-1 {
+		return canonicalRef[i+1:]
+	}
+	return canonicalRef
 }
 
 // rememberOwnDelivery records a confirmed send in the in-memory record.
@@ -103,7 +122,7 @@ func (m *Manager) isOwnMessage(ctx context.Context, channel string, ch Channel, 
 	if lookup == nil {
 		return false
 	}
-	refs, err := lookup(ctx, channel, chatID, refSuffix(want))
+	refs, err := lookup(ctx, channel, chatID, lookupKey(ch, want))
 	if err != nil {
 		return false
 	}

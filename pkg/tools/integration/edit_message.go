@@ -26,9 +26,10 @@ func (t *EditMessageTool) Name() string {
 }
 
 func (t *EditMessageTool) Description() string {
-	return "Edit (or delete) a message you sent earlier, by ID. Your own delivered messages show their ID in the " +
-		"msgs:# annotation in the conversation. Like a person in chat, when you made a mistake or a status " +
-		"changed, you may fix or update your earlier message instead of sending a new one."
+	return "Edit (or delete) a message you sent earlier in the current chat, by ID. Your own delivered messages " +
+		"show their ID in the msgs:# annotation in the conversation. Like a person in chat, when you made a " +
+		"mistake or a status changed, you may fix or update your earlier message instead of sending a new one. " +
+		"Only your own messages in the chat you are handling can be edited or deleted."
 }
 
 func (t *EditMessageTool) Parameters() map[string]any {
@@ -45,15 +46,15 @@ func (t *EditMessageTool) Parameters() map[string]any {
 			},
 			"delete": map[string]any{
 				"type":        "boolean",
-				"description": "If true, delete the message instead of editing it. Only your own messages in the current chat can be deleted.",
+				"description": "If true, delete the message instead of editing it.",
 			},
 			"channel": map[string]any{
 				"type":        "string",
-				"description": "Optional target channel; defaults to current inbound channel.",
+				"description": "Optional; must be the current channel (messages in other chats cannot be edited or deleted).",
 			},
 			"chat_id": map[string]any{
 				"type":        "string",
-				"description": "Optional target chat ID; defaults to current inbound chat.",
+				"description": "Optional; must be the current chat (messages in other chats cannot be edited or deleted).",
 			},
 		},
 		"required": []string{"message_id"},
@@ -81,32 +82,34 @@ func (t *EditMessageTool) Execute(ctx context.Context, args map[string]any) *Too
 		return &ToolResult{ForLLM: "content is required", IsError: true}
 	}
 
+	// Editing and deleting are limited to the conversation being handled:
+	// the model must not reach into another chat by passing channel/chat_id
+	// (or by a reference into another chat, which the Manager refuses as not
+	// the bot's own message in this chat).
+	action := "edit"
+	if remove {
+		action = "delete"
+	}
 	channel, _ := args["channel"].(string)
 	chatID, _ := args["chat_id"].(string)
-	if remove {
-		// Deleting is limited to the conversation being handled; the model
-		// must not delete in another chat by passing channel/chat_id.
-		curChannel, curChat := strings.TrimSpace(ToolChannel(ctx)), strings.TrimSpace(ToolChatID(ctx))
-		if curChannel == "" || curChat == "" {
-			return &ToolResult{ForLLM: "delete is only available while handling a chat conversation", IsError: true}
+	channel, chatID = strings.TrimSpace(channel), strings.TrimSpace(chatID)
+	curChannel, curChat := strings.TrimSpace(ToolChannel(ctx)), strings.TrimSpace(ToolChatID(ctx))
+	if curChannel == "" || curChat == "" {
+		return &ToolResult{
+			ForLLM:  fmt.Sprintf("%s is only available while handling a chat conversation", action),
+			IsError: true,
 		}
-		if (strings.TrimSpace(channel) != "" && strings.TrimSpace(channel) != curChannel) ||
-			(strings.TrimSpace(chatID) != "" && strings.TrimSpace(chatID) != curChat) {
-			return &ToolResult{ForLLM: "you can only delete your own messages in the current chat", IsError: true}
+	}
+	if (channel != "" && channel != curChannel) || (chatID != "" && chatID != curChat) {
+		return &ToolResult{
+			ForLLM: fmt.Sprintf(
+				"you can only %s your own messages in the current chat (%s:%s), not in %s:%s",
+				action, curChannel, curChat, firstNonEmpty(channel, curChannel), firstNonEmpty(chatID, curChat),
+			),
+			IsError: true,
 		}
-		channel, chatID = curChannel, curChat
 	}
-	if strings.TrimSpace(channel) == "" {
-		channel = ToolChannel(ctx)
-	}
-	if strings.TrimSpace(chatID) == "" {
-		chatID = ToolChatID(ctx)
-	}
-	channel = strings.TrimSpace(channel)
-	chatID = strings.TrimSpace(chatID)
-	if channel == "" || chatID == "" {
-		return &ToolResult{ForLLM: "No target channel/chat specified", IsError: true}
-	}
+	channel, chatID = curChannel, curChat
 
 	if remove {
 		if t.deleteCallback == nil {
@@ -134,4 +137,11 @@ func (t *EditMessageTool) Execute(ctx context.Context, args map[string]any) *Too
 		ForLLM: fmt.Sprintf("Message %s on %s:%s edited", messageID, channel, chatID),
 		Silent: true,
 	}
+}
+
+func firstNonEmpty(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }

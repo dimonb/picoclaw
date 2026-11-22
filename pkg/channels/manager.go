@@ -403,6 +403,10 @@ func (m *Manager) DeleteMessage(ctx context.Context, channelName, chatID, messag
 
 // EditMessage delegates to the channel's MessageEditor implementation if
 // available. Returns an error if the channel does not support editing.
+// Like DeleteMessage it accepts only the bot's own messages in this chat:
+// some platforms (Matrix) accept edits of any message, and a bot with
+// moderation rights could otherwise rewrite other people's posts or reach
+// into another chat by its message reference.
 func (m *Manager) EditMessage(ctx context.Context, channelName, chatID, messageID, content string) error {
 	ch, ok := m.GetChannel(channelName)
 	if !ok {
@@ -412,21 +416,22 @@ func (m *Manager) EditMessage(ctx context.Context, channelName, chatID, messageI
 	if !ok {
 		return fmt.Errorf("channel %s does not support message editing", channelName)
 	}
+	if !m.isOwnMessage(ctx, channelName, ch, chatID, messageID) {
+		return fmt.Errorf("edit %s in %s:%s: %w", messageID, channelName, chatID, ErrNotOwnMessage)
+	}
 	if err := editor.EditMessage(ctx, chatID, messageID, content); err != nil {
 		return err
 	}
-	// The remote edit succeeded. An edit never makes a message the bot's own
-	// (some platforms accept edits of any message, and messageID may point
-	// into another chat), so only an existing own delivery in this chat gets
-	// its stored content updated. A database failure must not turn this into
-	// a failed remote operation (which would invite duplicate sends on retry).
-	if m.isOwnMessage(ctx, channelName, ch, chatID, messageID) {
-		_ = m.persistDelivery(ctx, bus.OutboundDelivery{
-			Channel: channelName,
-			ChatID:  chatID,
-			Content: content,
-		}, []string{messageID})
-	}
+	// The remote edit succeeded: update the stored content. The record is an
+	// edit, which never makes a message the bot's own. A database failure
+	// must not turn this into a failed remote operation (which would invite
+	// duplicate sends on retry).
+	_ = m.persistDelivery(ctx, bus.OutboundDelivery{
+		Channel: channelName,
+		ChatID:  chatID,
+		Content: content,
+		Origin:  bus.OutboundOriginEdit,
+	}, []string{messageID})
 	return nil
 }
 
@@ -1628,28 +1633,20 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		m.dispatchTask = nil
 	}
 
-	// Close all worker queues and wait for them to drain
-	for _, w := range m.workers {
+	// Detach the workers, then let them drain without holding m.mu: a send
+	// in flight records its delivery under m.mu (read lock), so waiting for
+	// it while holding the write lock deadlocks (seen under load as a hung
+	// StopAll). Detached workers are no longer found by new sends.
+	workers := make([]*channelWorker, 0, len(m.workers))
+	for name, w := range m.workers {
 		if w != nil {
-			close(w.queue)
+			workers = append(workers, w)
 		}
+		delete(m.workers, name)
 	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.done
-		}
-	}
-	// Close all media worker queues and wait for them to drain
-	for _, w := range m.workers {
-		if w != nil {
-			close(w.mediaQueue)
-		}
-	}
-	for _, w := range m.workers {
-		if w != nil {
-			<-w.mediaDone
-		}
-	}
+	m.mu.Unlock()
+	drainWorkers(workers)
+	m.mu.Lock()
 
 	// Stop all channels
 	for name, channel := range m.channels {
@@ -1674,6 +1671,23 @@ func (m *Manager) StopAll(ctx context.Context) error {
 
 	logger.InfoC("channels", "All channels stopped")
 	return nil
+}
+
+// drainWorkers closes the workers' queues and waits until each has handled
+// what was queued. Callers must not hold m.mu.
+func drainWorkers(workers []*channelWorker) {
+	for _, w := range workers {
+		close(w.queue)
+	}
+	for _, w := range workers {
+		<-w.done
+	}
+	for _, w := range workers {
+		close(w.mediaQueue)
+	}
+	for _, w := range workers {
+		<-w.mediaDone
+	}
 }
 
 // newChannelWorker creates a channelWorker with a rate limiter configured
@@ -2350,18 +2364,17 @@ func (m *Manager) RegisterChannel(name string, channel Channel) {
 
 func (m *Manager) UnregisterChannel(name string) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if ch, ok := m.channels[name]; ok && m.mux != nil {
 		m.unregisterChannelHTTPHandler(name, ch)
 	}
-	if w, ok := m.workers[name]; ok && w != nil {
-		close(w.queue)
-		<-w.done
-		close(w.mediaQueue)
-		<-w.mediaDone
-	}
+	w := m.workers[name]
 	delete(m.workers, name)
 	delete(m.channels, name)
+	m.mu.Unlock()
+	// Drain outside m.mu, like StopAll: an in-flight send needs the read lock.
+	if w != nil {
+		drainWorkers([]*channelWorker{w})
+	}
 }
 
 // SendMessage sends an outbound message synchronously through the channel

@@ -37,28 +37,46 @@ func TestEditMessageTool_Execute_HappyPath(t *testing.T) {
 	}
 }
 
-func TestEditMessageTool_Execute_ExplicitChannelChatOverridesContext(t *testing.T) {
+// Review 3, fix 5: editing is limited to the current chat, like deleting.
+func TestEditMessageTool_Execute_OnlyCurrentChat(t *testing.T) {
 	tool := NewEditMessageTool()
 
-	var gotChannel, gotChatID string
+	var edits []string
 	tool.SetEditCallback(func(ctx context.Context, channel, chatID, messageID, content string) error {
-		gotChannel = channel
-		gotChatID = chatID
+		edits = append(edits, channel+"|"+chatID+"|"+messageID)
 		return nil
 	})
 
 	ctx := WithToolContext(context.Background(), "telegram", "chat-1")
-	result := tool.Execute(ctx, map[string]any{
-		"message_id": "12345:67",
-		"content":    "hi",
-		"channel":    "discord",
-		"chat_id":    "chat-9",
-	})
-	if result.IsError {
-		t.Fatalf("expected success, got error: %s", result.ForLLM)
+	for _, args := range []map[string]any{
+		{"message_id": "12345:67", "content": "hi", "channel": "discord", "chat_id": "chat-9"},
+		{"message_id": "12345:67", "content": "hi", "chat_id": "chat-9"},
+		{"message_id": "12345:67", "content": "hi", "channel": "discord"},
+	} {
+		result := tool.Execute(ctx, args)
+		if !result.IsError || !strings.Contains(result.ForLLM, "only edit your own messages in the current chat") {
+			t.Errorf("edit in another chat %v: %+v", args, result)
+		}
 	}
-	if gotChannel != "discord" || gotChatID != "chat-9" {
-		t.Fatalf("expected explicit channel/chat, got %q/%q", gotChannel, gotChatID)
+	// Without a current conversation (cron and similar) there is no chat to edit in.
+	noConversation := map[string]any{"message_id": "x", "content": "hi", "channel": "telegram", "chat_id": "chat-1"}
+	if res := tool.Execute(context.Background(), noConversation); !res.IsError {
+		t.Error("edit without a current conversation must fail")
+	}
+	if len(edits) != 0 {
+		t.Fatalf("edits = %v, want none", edits)
+	}
+	// The current chat, implicit or explicit, is fine.
+	for _, args := range []map[string]any{
+		{"message_id": "12345:67", "content": "hi"},
+		{"message_id": "12345:67", "content": "hi", "channel": "telegram", "chat_id": "chat-1"},
+	} {
+		if res := tool.Execute(ctx, args); res.IsError {
+			t.Errorf("edit in the current chat %v: %+v", args, res)
+		}
+	}
+	if len(edits) != 2 || edits[0] != "telegram|chat-1|12345:67" || edits[1] != edits[0] {
+		t.Errorf("edits = %v", edits)
 	}
 }
 

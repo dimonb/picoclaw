@@ -87,10 +87,11 @@ func TestManagerEditCrossChatThenDeleteRefused(t *testing.T) {
 	m.RegisterChannel("telegram", ch)
 	ctx := context.Background()
 
-	require.NoError(t, m.EditMessage(ctx, "telegram", "-200", "-100:77", "fixed"))
-	require.Len(t, caller.calls, 1)
-	assert.Contains(t, caller.calls[0].URL, "editMessage")
-	assert.Contains(t, string(caller.calls[0].Data.BodyRaw), `"chat_id":-100`)
+	// Since review 3 (fix 5) the cross-chat edit itself is refused: the
+	// message is not the bot's own in -200, and nothing reaches the API.
+	err = m.EditMessage(ctx, "telegram", "-200", "-100:77", "fixed")
+	assert.True(t, errors.Is(err, channels.ErrNotOwnMessage), "cross-chat edit: err = %v", err)
+	assert.Empty(t, caller.calls, "the edit must not reach the API")
 
 	for _, id := range []string{"77", "-200:77"} {
 		err := m.DeleteMessage(ctx, "telegram", "-200", id)
@@ -111,5 +112,38 @@ func TestCanonicalMessageRef(t *testing.T) {
 		{"-100", "x", ""},
 	} {
 		assert.Equal(t, tc.want, ch.CanonicalMessageRef(tc.chatID, tc.ref), "%+v", tc)
+	}
+}
+
+// Review 3, fix 5: with the real Telegram channel, the bot's own message is
+// editable in its chat (by bare or opaque ID) and not from another chat.
+func TestManagerEditOwnMessageOnlyInCurrentChat(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(context.Context, string, *ta.RequestData) (*ta.Response, error) {
+			return successResponseWithMessageID(t, 77), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	cfg := &config.Config{Channels: config.ChannelsConfig{"telegram": &config.Channel{Type: "telegram"}}}
+	m, err := channels.NewManager(cfg, bus.NewMessageBus(), nil)
+	require.NoError(t, err)
+	m.RegisterChannel("telegram", ch)
+	ctx := context.Background()
+
+	require.NoError(t, m.SendToChannel(ctx, "telegram", "-100", "hello"))
+	sent := len(caller.calls)
+
+	err = m.EditMessage(ctx, "telegram", "-200", "-100:77", "from another chat")
+	assert.True(t, errors.Is(err, channels.ErrNotOwnMessage), "edit from -200: err = %v", err)
+	require.Len(t, caller.calls, sent, "the cross-chat edit must not reach the API")
+
+	for _, id := range []string{"77", "-100:77"} {
+		require.NoError(t, m.EditMessage(ctx, "telegram", "-100", id, "fixed"), "edit %q in -100", id)
+	}
+	edits := caller.calls[sent:]
+	require.Len(t, edits, 2)
+	for _, call := range edits {
+		assert.Contains(t, call.URL, "editMessage")
+		assert.Contains(t, string(call.Data.BodyRaw), `"chat_id":-100`)
 	}
 }

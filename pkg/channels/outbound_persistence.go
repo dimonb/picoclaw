@@ -57,6 +57,7 @@ func (m *Manager) recordMediaDelivery(
 // recordDelivery records confirmed sends: in memory as the bot's own messages
 // (independent of the durable recorder; see own_messages.go) and durably.
 func (m *Manager) recordDelivery(ctx context.Context, d bus.OutboundDelivery, ids []string) error {
+	d.Origin = bus.OutboundOriginSend
 	for _, id := range ids {
 		if id != "" {
 			m.rememberOwnDelivery(d.Channel, d.ChatID, id)
@@ -66,7 +67,8 @@ func (m *Manager) recordDelivery(ctx context.Context, d bus.OutboundDelivery, id
 }
 
 // persistDelivery writes delivery records to the durable recorder only. It
-// does not make a message the bot's own (used for edits).
+// does not make a message the bot's own: edits pass OutboundOriginEdit, and
+// the durable lookup accepts only OutboundOriginSend records.
 func (m *Manager) persistDelivery(ctx context.Context, d bus.OutboundDelivery, ids []string) error {
 	m.mu.RLock()
 	recorder := m.outboundRecorder

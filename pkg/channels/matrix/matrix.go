@@ -663,6 +663,23 @@ func (c *MatrixChannel) EditMessage(ctx context.Context, chatID string, messageI
 	return err
 }
 
+// CanonicalMessageRef implements channels.MessageRefCanonicalizer: the opaque
+// "room_id event_id" form, also for a bare event ID seen from chatID's room.
+func (c *MatrixChannel) CanonicalMessageRef(chatID, messageID string) string {
+	ref := strings.TrimSpace(messageID)
+	if roomID, eventID, err := parseMatrixOpaqueID(ref); err == nil {
+		if roomID == "" || eventID == "" {
+			return ""
+		}
+		return string(roomID) + " " + string(eventID)
+	}
+	room := strings.TrimSpace(chatID)
+	if room == "" || !strings.HasPrefix(ref, "$") || strings.ContainsAny(ref, " ") {
+		return ""
+	}
+	return room + " " + ref
+}
+
 // parseMatrixOpaqueID splits "room_id event_id" into its components.
 func parseMatrixOpaqueID(opaqueID string) (id.RoomID, id.EventID, error) {
 	parts := strings.Split(opaqueID, " ")
