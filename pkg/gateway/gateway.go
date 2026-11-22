@@ -204,13 +204,11 @@ func Run(debug bool, homePath, configPath string, allowEmptyStartup bool) (runEr
 		}
 	}()
 
-	provider, modelID, err := createStartupProvider(cfg, allowEmptyStartup)
+	// Keep the configured model_name alias: replacing it with the bare model ID
+	// breaks model_list lookups (thinking_level, fallback identity, ...).
+	provider, _, err := createStartupProvider(cfg, allowEmptyStartup)
 	if err != nil {
 		return fmt.Errorf("error creating provider: %w", err)
-	}
-
-	if modelID != "" {
-		cfg.Agents.Defaults.ModelName = modelID
 	}
 
 	msgBus := bus.NewMessageBus()
@@ -564,7 +562,7 @@ func handleConfigReload(
 	logger.Info("  Stopping all services...")
 	stopAndCleanupServices(runningServices, serviceShutdownTimeout, true)
 
-	newProvider, newModelID, err := createStartupProvider(newCfg, allowEmptyStartup)
+	newProvider, _, err := createStartupProvider(newCfg, allowEmptyStartup)
 	if err != nil {
 		logger.Errorf("  ⚠ Error creating new provider: %v", err)
 		logger.Warn("  Attempting to restart services with old provider and config...")
@@ -572,10 +570,6 @@ func handleConfigReload(
 			logger.Errorf("  ⚠ Failed to restart services: %v", restartErr)
 		}
 		return fmt.Errorf("error creating new provider: %w", err)
-	}
-
-	if newModelID != "" {
-		newCfg.Agents.Defaults.ModelName = newModelID
 	}
 
 	reloadCtx, reloadCancel := context.WithTimeout(context.Background(), providerReloadTimeout)
