@@ -391,6 +391,35 @@ func TestChannel_WebhookSettingsDecode(t *testing.T) {
 	assert.Equal(t, 7, settings.ResultTTLSeconds)
 }
 
+func TestChannel_MattermostSettingsDecodeAndMask(t *testing.T) {
+	ch := Channel{
+		Enabled: true,
+		Type:    ChannelMattermost,
+		name:    ChannelMattermost,
+		Settings: mustParseRawNode(
+			`{"url":"https://mm.example.com","bot_token":"mm-secret-token","team":"eng","bot_username":"picobot",` +
+				`"streaming":{"enabled":true}}`,
+		),
+	}
+
+	require.NoError(t, InitChannelList(ChannelsConfig{ChannelMattermost: &ch}))
+
+	decoded, err := ch.GetDecoded()
+	require.NoError(t, err)
+	settings, ok := decoded.(*MattermostSettings)
+	require.True(t, ok, "decoded type = %T", decoded)
+	assert.Equal(t, "https://mm.example.com", settings.URL)
+	assert.Equal(t, "mm-secret-token", settings.BotToken.String())
+	assert.Equal(t, "eng", settings.Team)
+	assert.Equal(t, "picobot", settings.BotUsername)
+	assert.True(t, settings.Streaming.Enabled)
+
+	data, err := json.Marshal(ch)
+	require.NoError(t, err)
+	assert.NotContains(t, string(data), "mm-secret-token")
+	assert.Contains(t, string(data), "mm.example.com")
+}
+
 // ═══════════════════════════════════════════════════
 //  YAML marshal: only secure fields
 // ═══════════════════════════════════════════════════

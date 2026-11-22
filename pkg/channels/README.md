@@ -60,6 +60,7 @@ pkg/channels/
 ├── discord/
 │   ├── init.go
 │   └── discord.go
+├── mattermost/          # WebSocket inbound + REST v4 outbound, no SDK
 ├── slack/ line/ onebot/ dingtalk/ feishu/ wecom/ qq/ whatsapp/ whatsapp_native/ maixcam/ pico/
 │   └── ...
 
@@ -1301,6 +1302,7 @@ make test                                       # Full test suite
 | `pkg/channels/telegram/` | `"telegram"` | TypingCapable, PlaceholderCapable, MessageEditor, MediaSender |
 | `pkg/channels/discord/` | `"discord"` | TypingCapable, PlaceholderCapable, MessageEditor, MediaSender |
 | `pkg/channels/slack/` | `"slack"` | ReactionCapable, MediaSender |
+| `pkg/channels/mattermost/` | `"mattermost"` | TypingCapable, PlaceholderCapable, MessageEditor, MessageDeleter, StreamingCapable, ReactionCapable, MediaSender |
 | `pkg/channels/line/` | `"line"` | TypingCapable, MediaSender, WebhookHandler |
 | `pkg/channels/onebot/` | `"onebot"` | ReactionCapable, MediaSender |
 | `pkg/channels/dingtalk/` | `"dingtalk"` | — |
@@ -1429,6 +1431,13 @@ agentLoop.Stop()               // Stop Agent
 
 6. **DingTalk uses Stream mode**: DingTalk uses the SDK's Stream/WebSocket mode (not HTTP webhook), so it does not implement `WebhookHandler`.
 
-7. **PlaceholderConfig vs implementation**: `PlaceholderConfig` appears in 6 channel configs (Telegram, Discord, Slack, LINE, OneBot, Pico), but only channels that implement both `PlaceholderCapable` + `MessageEditor` (Telegram, Discord, Pico) can actually use placeholder message editing. The rest are reserved fields.
+7. **PlaceholderConfig vs implementation**: `PlaceholderConfig` appears in 6 channel configs (Telegram, Discord, Slack, LINE, OneBot, Pico), but only channels that implement both `PlaceholderCapable` + `MessageEditor` (Telegram, Discord, Pico, Mattermost) can actually use placeholder message editing. The rest are reserved fields.
 
 8. **ReasoningChannelID**: Most channel configs include a `reasoning_channel_id` field to route LLM reasoning/thinking output to a designated channel (WhatsApp, Telegram, Feishu, Discord, MaixCam, QQ, DingTalk, Slack, LINE, OneBot, WeCom). Note: `PicoConfig` does not currently expose this field. `BaseChannel` exposes this via the `WithReasoningChannelID` option and `ReasoningChannelID()` method.
+
+9. **Mattermost** (`pkg/channels/mattermost/`): talks to the Mattermost v4 API directly (no SDK). Inbound uses the WebSocket (`GET /api/v4/websocket`, Bearer auth plus an `authentication_challenge`, client pings, reconnect with exponential backoff and `connection_id`/`sequence_number` resume); outbound uses `POST /api/v4/posts`. Behavior:
+   - DMs (`channel_type` `D`) are always handled; channel/group posts (`O`/`P`/`G`) only when the bot is @mentioned (via the event's `mentions` list or `@username` in the text; the mention is stripped). Explicit `group_trigger.prefixes` are honored as an alternative trigger.
+   - Own posts, system posts (non-empty `post.type`) and posts from other bots (`props.from_bot`) are ignored. `allow_from` matches Mattermost user IDs (or `mattermost:<user_id>`).
+   - Replies always go to a thread: `root_id` is the inbound post's `root_id`, or its `id` for top-level posts. The chat ID is `<channel_id>/<root_post_id>` (same convention as Slack's `channel/thread_ts`), so each thread is its own session.
+   - Long replies are split at 16383 runes. Edits use `PUT /api/v4/posts/{id}/patch`; typing uses `POST /api/v4/users/me/typing` (enable with `typing.enabled`); placeholders need `placeholder.enabled`; streaming (edit-in-place) needs `settings.streaming.enabled`. Inbound posts get a 👀 reaction that is removed on reply. Attachments are downloaded from / uploaded to `/api/v4/files`.
+   - Settings: `url`, `bot_token` (secret, stored like Slack's tokens), optional `team` (name or ID; restricts channel posts to that team) and `bot_username` (overrides the name from `/users/me` for text mention detection). See `docs/channels/mattermost/README.md`.

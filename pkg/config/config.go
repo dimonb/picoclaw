@@ -639,6 +639,17 @@ type SlackSettings struct {
 	AppToken SecureString `json:"app_token,omitzero" yaml:"app_token,omitempty" env:"PICOCLAW_CHANNELS_SLACK_APP_TOKEN"`
 }
 
+// MattermostSettings configures the Mattermost channel (WebSocket inbound,
+// REST v4 outbound). The bot token is a Mattermost bot account access token
+// (or a personal access token) and is handled as a secret like Slack's tokens.
+type MattermostSettings struct {
+	URL         string          `json:"url"                    yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_URL"`
+	BotToken    SecureString    `json:"bot_token,omitzero"     yaml:"bot_token,omitempty" env:"PICOCLAW_CHANNELS_MATTERMOST_BOT_TOKEN"`
+	Team        string          `json:"team,omitempty"         yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_TEAM"`
+	BotUsername string          `json:"bot_username,omitempty" yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_BOT_USERNAME"`
+	Streaming   StreamingConfig `json:"streaming,omitzero"     yaml:"-"`
+}
+
 type MatrixSettings struct {
 	Homeserver         string       `json:"homeserver"                     yaml:"-"                      env:"PICOCLAW_CHANNELS_MATRIX_HOMESERVER"`
 	UserID             string       `json:"user_id"                        yaml:"-"                      env:"PICOCLAW_CHANNELS_MATRIX_USER_ID"`

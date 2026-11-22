@@ -215,6 +215,8 @@ channels:
 	slack:
 	  bot_token: "value"
 	  app_token: "value"
+	mattermost:
+	  bot_token: "value"
 	matrix:
 	  access_token: "value"
 	line:

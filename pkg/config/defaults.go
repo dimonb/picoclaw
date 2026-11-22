@@ -570,6 +570,9 @@ func defaultChannels() ChannelsConfig {
 		},
 		"dingtalk": map[string]any{},
 		"slack":    map[string]any{},
+		"mattermost": map[string]any{
+			"typing": map[string]any{"enabled": true},
+		},
 		"matrix": map[string]any{
 			"group_trigger": map[string]any{"mention_only": true},
 			"placeholder":   map[string]any{"enabled": true, "text": []string{"Thinking... 💭"}},

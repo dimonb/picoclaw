@@ -63,6 +63,10 @@ func hiddenValues(key string, value map[string]any, ch *config.Channel) {
 			value["bot_token"] = settings.BotToken.String()
 			value["app_token"] = settings.AppToken.String()
 		}
+	case "mattermost":
+		if settings, ok := v.(*config.MattermostSettings); ok {
+			value["bot_token"] = settings.BotToken.String()
+		}
 	case "matrix":
 		if settings, ok := v.(*config.MatrixSettings); ok {
 			value["token"] = settings.AccessToken.String()

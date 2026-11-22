@@ -1174,6 +1174,8 @@ func (m *Manager) getChannelConfigAndEnabled(channelName string) (*config.Channe
 		return bc, settings.ClientID != ""
 	case *config.SlackSettings:
 		return bc, settings.BotToken.String() != ""
+	case *config.MattermostSettings:
+		return bc, settings.URL != "" && settings.BotToken.String() != ""
 	case *config.WeixinSettings:
 		return bc, settings.Token.String() != ""
 	case *config.PicoSettings:
