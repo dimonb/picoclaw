@@ -640,6 +640,25 @@ func (c *TelegramChannel) DeleteMessage(ctx context.Context, chatID string, mess
 	})
 }
 
+// CanonicalMessageRef implements channels.MessageRefCanonicalizer:
+// "chat:msg" for "chat:msg", "chat:topic:msg" or a bare msg in chatID
+// (message IDs are unique per chat, so the topic is dropped).
+func (c *TelegramChannel) CanonicalMessageRef(chatID, messageID string) string {
+	messageID = strings.TrimSpace(messageID)
+	if cid, _, mid, err := parseTelegramOpaqueID(messageID); err == nil {
+		return fmt.Sprintf("%d:%d", cid, mid)
+	}
+	cid, _, err := parseTelegramChatID(strings.TrimSpace(chatID))
+	if err != nil {
+		return ""
+	}
+	mid, err := strconv.Atoi(messageID)
+	if err != nil {
+		return ""
+	}
+	return fmt.Sprintf("%d:%d", cid, mid)
+}
+
 func resolveTelegramDeleteTarget(chatID, messageID string) (int64, int, error) {
 	messageID = strings.TrimSpace(messageID)
 	if ocid, _, omid, err := parseTelegramOpaqueID(messageID); err == nil {

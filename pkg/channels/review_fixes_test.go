@@ -38,22 +38,19 @@ func TestManagerDeleteMessage_OnlyOwnMessagesInChat(t *testing.T) {
 	if err := m.DeleteMessage(ctx, "test", "chat1", "chat1:42"); err != nil {
 		t.Fatalf("own message: %v", err)
 	}
-	// Bare ID of the same delivery also matches.
-	if err := m.DeleteMessage(ctx, "test", "chat1", "42"); err != nil {
-		t.Fatalf("own message, bare id: %v", err)
-	}
 	for _, tc := range []struct{ chatID, messageID string }{
 		{"chat1", "chat1:43"}, // someone else's message in the chat
 		{"chat2", "chat2:42"}, // same ID, other chat
 		{"chat2", "42"},
+		{"chat1", "42"}, // no canonicalizer: only the full reference matches
 	} {
 		err := m.DeleteMessage(ctx, "test", tc.chatID, tc.messageID)
 		if !errors.Is(err, ErrNotOwnMessage) {
 			t.Errorf("%+v: err = %v, want ErrNotOwnMessage", tc, err)
 		}
 	}
-	if len(ch.deleted) != 2 {
-		t.Errorf("deleted = %v, want only the two own deletes", ch.deleted)
+	if len(ch.deleted) != 1 {
+		t.Errorf("deleted = %v, want only the own delete", ch.deleted)
 	}
 }
 
@@ -75,9 +72,9 @@ func TestManagerDeleteMessage_VerifierAndLookup(t *testing.T) {
 	dch := &deletingChannel{}
 	m.channels["tg"] = dch
 	var looked []string
-	m.SetDeliveryLookup(func(_ context.Context, channel, chatID, messageID string) (bool, error) {
-		looked = append(looked, channel+"|"+chatID+"|"+messageID)
-		return messageID == "100:7", nil
+	m.SetDeliveryLookup(func(_ context.Context, channel, chatID, suffix string) ([]string, error) {
+		looked = append(looked, channel+"|"+chatID+"|"+suffix)
+		return []string{"100:7"}, nil
 	})
 	if err := m.DeleteMessage(ctx, "tg", "100", "100:7"); err != nil {
 		t.Errorf("durable own: %v", err)

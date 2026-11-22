@@ -32,9 +32,9 @@ func (al *AgentLoop) SetChannelManager(cm *channels.Manager) {
 			cm.SetOutboundRecorder(recorder.RecordOutboundDelivery)
 		}
 		if lookup, ok := al.contextManager.(interface {
-			HasOutboundDelivery(ctx context.Context, channel, chatID, ref string) (bool, error)
+			OutboundDeliveryRefs(ctx context.Context, channel, chatID, refSuffix string) ([]string, error)
 		}); ok {
-			cm.SetDeliveryLookup(lookup.HasOutboundDelivery)
+			cm.SetDeliveryLookup(lookup.OutboundDeliveryRefs)
 		}
 	}
 }

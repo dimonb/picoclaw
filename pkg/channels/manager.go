@@ -415,14 +415,18 @@ func (m *Manager) EditMessage(ctx context.Context, channelName, chatID, messageI
 	if err := editor.EditMessage(ctx, chatID, messageID, content); err != nil {
 		return err
 	}
-	// The remote edit succeeded. A database failure must not turn this into a
-	// failed remote operation (which would invite duplicate sends on retry).
-	_ = m.recordTextDelivery(
-		ctx,
-		channelName,
-		bus.OutboundMessage{ChatID: chatID, Context: bus.NewOutboundContext(channelName, chatID, ""), Content: content},
-		[]string{messageID},
-	)
+	// The remote edit succeeded. An edit never makes a message the bot's own
+	// (some platforms accept edits of any message, and messageID may point
+	// into another chat), so only an existing own delivery in this chat gets
+	// its stored content updated. A database failure must not turn this into
+	// a failed remote operation (which would invite duplicate sends on retry).
+	if m.isOwnMessage(ctx, channelName, ch, chatID, messageID) {
+		_ = m.persistDelivery(ctx, bus.OutboundDelivery{
+			Channel: channelName,
+			ChatID:  chatID,
+			Content: content,
+		}, []string{messageID})
+	}
 	return nil
 }
 
@@ -796,6 +800,18 @@ func (m *Manager) normalizeDeliveredIDs(channel string, msg bus.OutboundMessage,
 	out := make([]string, len(ids))
 	for i, id := range ids {
 		out[i] = m.normalizeDeliveredID(channel, outboundMessageChatID(msg), msg.Context.TopicID, id)
+	}
+	return out
+}
+
+// normalizeDeliveredMediaIDs is normalizeDeliveredIDs for media sends.
+func (m *Manager) normalizeDeliveredMediaIDs(channel string, msg bus.OutboundMediaMessage, ids []string) []string {
+	if len(ids) == 0 {
+		return ids
+	}
+	out := make([]string, len(ids))
+	for i, id := range ids {
+		out[i] = m.normalizeDeliveredID(channel, outboundMediaChatID(msg), msg.Context.TopicID, id)
 	}
 	return out
 }
@@ -2074,7 +2090,8 @@ func (m *Manager) sendMediaWithRetry(
 		msgIDs, fallback = receipts(msgIDs)
 		if lastErr == nil || len(msgIDs) > 0 {
 			m.publishOutboundMediaSent(name, msg, msgIDs)
-			return msgIDs, errors.Join(lastErr, m.recordMediaDelivery(ctx, name, msg, fallback))
+			return m.normalizeDeliveredMediaIDs(name, msg, msgIDs),
+				errors.Join(lastErr, m.recordMediaDelivery(ctx, name, msg, fallback))
 		}
 
 		// Permanent failures — don't retry

@@ -2,9 +2,7 @@ package seahorse
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -170,32 +168,45 @@ func (s *Store) GetMessageByChannelMessageIDScoped(
 	return s.getLegacyMessageByChannelMessageID(ctx, ref)
 }
 
-// HasOutboundDelivery reports whether a confirmed delivery of ref exists in
-// the chat. ref may be the full opaque ref or one whose last segment is the
-// platform message ID (e.g. Mattermost "<channel>:<post>" for a stored
-// "<channel>:<root>:<post>"). Used to allow deleting only the bot's own
-// messages.
-func (s *Store) HasOutboundDelivery(ctx context.Context, channel, chatID, ref string) (bool, error) {
-	ref = strings.TrimSpace(ref)
-	if channel == "" || chatID == "" || ref == "" {
-		return false, nil
+// OutboundDeliveryRefs returns the references of confirmed deliveries in the
+// chat (chat_id, or chat_id/<topic>) whose reference ends with refSuffix,
+// newest first, at most limit. The caller compares canonical forms exactly;
+// the suffix is only a prefilter. Rows without a session key are skipped:
+// genuine sends carry the turn's session, while rows created by recording an
+// edit (older versions recorded edits of any message) do not, and an edit
+// must never make a message count as the bot's own.
+func (s *Store) OutboundDeliveryRefs(
+	ctx context.Context,
+	channel, chatID, refSuffix string,
+	limit int,
+) ([]string, error) {
+	refSuffix = strings.TrimSpace(refSuffix)
+	chat, _, _ := strings.Cut(strings.TrimSpace(chatID), "/")
+	if channel == "" || chat == "" || refSuffix == "" {
+		return nil, nil
 	}
-	last := ref
-	if i := strings.LastIndex(last, ":"); i >= 0 {
-		last = last[i+1:]
+	if limit <= 0 {
+		limit = 200
 	}
-	chat, _, _ := strings.Cut(chatID, "/")
 	ctx, cancel := context.WithTimeout(ctx, outboundReceiptTimeout)
 	defer cancel()
-	var one int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM outbound_deliveries
- WHERE channel=? AND (chat_id=? OR chat_id LIKE ? ESCAPE '\')
- AND (channel_message_id=? OR channel_message_id=? OR channel_message_id LIKE ? ESCAPE '\') LIMIT 1`,
-		channel, chat, likeEscape(chat)+"/%", ref, last, "%:"+likeEscape(last)).Scan(&one)
-	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+	rows, err := s.db.QueryContext(ctx, `SELECT channel_message_id FROM outbound_deliveries
+ WHERE channel=? AND (chat_id=? OR chat_id LIKE ? ESCAPE '\') AND session_key<>''
+ AND channel_message_id LIKE ? ESCAPE '\' ORDER BY created_at DESC LIMIT ?`,
+		channel, chat, likeEscape(chat)+"/%", "%"+likeEscape(refSuffix), limit)
+	if err != nil {
+		return nil, err
 	}
-	return err == nil, err
+	defer rows.Close()
+	var refs []string
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	return refs, rows.Err()
 }
 
 func likeEscape(s string) string {

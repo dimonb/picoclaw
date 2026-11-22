@@ -656,11 +656,14 @@ func (m *seahorseContextManager) RecordOutboundDelivery(ctx context.Context, d b
 	return m.engine.GetRetrieval().Store().RecordOutboundDelivery(ctx, d)
 }
 
-// HasOutboundDelivery reports whether the bot delivered ref in the chat
-// (channels.DeliveryLookup for Manager.DeleteMessage).
-func (m *seahorseContextManager) HasOutboundDelivery(ctx context.Context, channel, chatID, ref string) (bool, error) {
+// OutboundDeliveryRefs lists the bot's delivered refs in the chat that end
+// with refSuffix (channels.DeliveryLookup for Manager.DeleteMessage).
+func (m *seahorseContextManager) OutboundDeliveryRefs(
+	ctx context.Context,
+	channel, chatID, refSuffix string,
+) ([]string, error) {
 	if m.engine == nil || m.engine.GetRetrieval() == nil {
-		return false, nil
+		return nil, nil
 	}
-	return m.engine.GetRetrieval().Store().HasOutboundDelivery(ctx, channel, chatID, ref)
+	return m.engine.GetRetrieval().Store().OutboundDeliveryRefs(ctx, channel, chatID, refSuffix, 200)
 }

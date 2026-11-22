@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/config"
 )
@@ -67,5 +68,48 @@ func TestStreamer_DeliveredMessageIDsAreOpaque(t *testing.T) {
 		receipt, ok := st.(interface{ DeliveredMessageIDs() []string })
 		require.True(t, ok)
 		assert.Equal(t, []string{want}, receipt.DeliveredMessageIDs(), "chat %s", chatID)
+	}
+}
+
+// Review 2, fix 1: with the real Telegram channel behind the Manager, editing
+// the bot's message -100:77 while handling group -200 must not make message
+// 77 in -200 (someone else's, bot is admin) deletable.
+func TestManagerEditCrossChatThenDeleteRefused(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(context.Context, string, *ta.RequestData) (*ta.Response, error) {
+			return successResponseWithMessageID(t, 77), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	cfg := &config.Config{Channels: config.ChannelsConfig{"telegram": &config.Channel{Type: "telegram"}}}
+	m, err := channels.NewManager(cfg, bus.NewMessageBus(), nil)
+	require.NoError(t, err)
+	m.RegisterChannel("telegram", ch)
+	ctx := context.Background()
+
+	require.NoError(t, m.EditMessage(ctx, "telegram", "-200", "-100:77", "fixed"))
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, caller.calls[0].URL, "editMessage")
+	assert.Contains(t, string(caller.calls[0].Data.BodyRaw), `"chat_id":-100`)
+
+	for _, id := range []string{"77", "-200:77"} {
+		err := m.DeleteMessage(ctx, "telegram", "-200", id)
+		assert.True(t, errors.Is(err, channels.ErrNotOwnMessage), "delete %q: err = %v", id, err)
+	}
+	for _, call := range caller.calls {
+		assert.NotContains(t, call.URL, "deleteMessage", "nothing may be deleted")
+	}
+}
+
+func TestCanonicalMessageRef(t *testing.T) {
+	ch := newTestChannel(t, &stubCaller{})
+	for _, tc := range []struct{ chatID, ref, want string }{
+		{"-100", "-100:7", "-100:7"},
+		{"-100/42", "-100:42:7", "-100:7"},
+		{"-100/42", "7", "-100:7"},
+		{"-200", "-100:7", "-100:7"},
+		{"-100", "x", ""},
+	} {
+		assert.Equal(t, tc.want, ch.CanonicalMessageRef(tc.chatID, tc.ref), "%+v", tc)
 	}
 }
