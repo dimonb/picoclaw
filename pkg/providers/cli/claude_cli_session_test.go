@@ -172,3 +172,27 @@ func TestChat_PassesEffort(t *testing.T) {
 		t.Error("claude cli provider should support thinking")
 	}
 }
+
+// A silent group turn stores an assistant "NO_REPLY" row and the group note
+// changes the system prompt; the next turn must still resume the session.
+func TestChat_ResumesAfterSilentReply(t *testing.T) {
+	p, dir := newSessionTestProvider(t)
+	opts := map[string]any{"session_key": "group-1"}
+	h1 := []Message{{Role: "system", Content: "sys"}, {Role: "user", Content: "lunch at 12?"}}
+	if _, err := p.Chat(context.Background(), h1, nil, "", opts); err != nil {
+		t.Fatal(err)
+	}
+	h2 := []Message{
+		{Role: "system", Content: "sys\n\n## Group Chat\n... addressed to you: yes"},
+		{Role: "user", Content: "lunch at 12?"},
+		{Role: "assistant", Content: "NO_REPLY"},
+		{Role: "user", Content: "@bot what do you think?"},
+	}
+	if _, err := p.Chat(context.Background(), h2, nil, "", opts); err != nil {
+		t.Fatal(err)
+	}
+	args, stdin := readCall(t, dir, 1)
+	if !strings.Contains(args, "--resume sid-1") || stdin != "@bot what do you think?" {
+		t.Fatalf("expected resume with only the new message, args=%s stdin=%q", args, stdin)
+	}
+}
