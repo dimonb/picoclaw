@@ -117,10 +117,16 @@ func TestConcurrentThreadsAnsweredInOwnThread(t *testing.T) {
 	// Replies arrive out of order; each carries its own turn context.
 	final := map[string]string{"outbound_kind": "final"}
 	inB.Context.Raw, inA.Context.Raw = final, final
-	if _, err := ch.Send(ctx, bus.OutboundMessage{ChatID: testChanID, Content: "answer B", Context: inB.Context}); err != nil {
+	if _, err := ch.Send(
+		ctx,
+		bus.OutboundMessage{ChatID: testChanID, Content: "answer B", Context: inB.Context},
+	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ch.Send(ctx, bus.OutboundMessage{ChatID: testChanID, Content: "answer A", Context: inA.Context}); err != nil {
+	if _, err := ch.Send(
+		ctx,
+		bus.OutboundMessage{ChatID: testChanID, Content: "answer A", Context: inA.Context},
+	); err != nil {
 		t.Fatal(err)
 	}
 	for root, content := range map[string]string{"tb": "answer B", "ta": "answer A"} {

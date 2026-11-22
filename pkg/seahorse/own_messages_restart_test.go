@@ -128,7 +128,8 @@ func TestMatrixOwnMessageBeyondLookupLimitAfterRestart(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	const room = "!r:example.org"
-	ids := []string{room + " $mine:example.org"}
+	ids := make([]string, 0, 251)
+	ids = append(ids, room+" $mine:example.org")
 	for i := range 250 {
 		ids = append(ids, fmt.Sprintf("%s $e%d:example.org", room, i))
 	}
@@ -165,10 +166,14 @@ func TestMatrixOwnMessageBeyondLookupLimitAfterRestart(t *testing.T) {
 func openLegacyDeliveryStore(t *testing.T, rows string) *Store {
 	t.Helper()
 	db := openTestDB(t)
-	if _, err := db.Exec(`CREATE TABLE outbound_deliveries (delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,channel TEXT NOT NULL,account TEXT NOT NULL DEFAULT '',channel_message_id TEXT NOT NULL,chat_id TEXT NOT NULL DEFAULT '',topic_id TEXT NOT NULL DEFAULT '',session_key TEXT NOT NULL DEFAULT '',content TEXT NOT NULL DEFAULT '',parts TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL DEFAULT (datetime('now')),UNIQUE(channel,account,channel_message_id))`); err != nil {
+	if _, err := db.Exec(
+		`CREATE TABLE outbound_deliveries (delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,channel TEXT NOT NULL,account TEXT NOT NULL DEFAULT '',channel_message_id TEXT NOT NULL,chat_id TEXT NOT NULL DEFAULT '',topic_id TEXT NOT NULL DEFAULT '',session_key TEXT NOT NULL DEFAULT '',content TEXT NOT NULL DEFAULT '',parts TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL DEFAULT (datetime('now')),UNIQUE(channel,account,channel_message_id))`,
+	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO outbound_deliveries (channel,channel_message_id,chat_id,session_key,content) VALUES ` + rows); err != nil {
+	if _, err := db.Exec(
+		`INSERT INTO outbound_deliveries (channel,channel_message_id,chat_id,session_key,content) VALUES ` + rows,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := runSchema(db); err != nil {

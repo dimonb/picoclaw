@@ -57,7 +57,13 @@ func (c *MattermostChannel) botInThread(ctx context.Context, channelID, rootID s
 			UserID string `json:"user_id"`
 		} `json:"posts"`
 	}
-	if err := c.apiJSON(ctx, http.MethodGet, "/api/v4/posts/"+url.PathEscape(rootID)+"/thread", nil, &thread); err != nil {
+	if err := c.apiJSON(
+		ctx,
+		http.MethodGet,
+		"/api/v4/posts/"+url.PathEscape(rootID)+"/thread",
+		nil,
+		&thread,
+	); err != nil {
 		return false // not cached: retried on the next post
 	}
 	in := false

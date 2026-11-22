@@ -169,7 +169,13 @@ func (c *MattermostChannel) channelInfo(channelID string) (mmChannelInfo, bool) 
 	var info mmChannelInfo
 	reqCtx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
 	defer cancel()
-	if err := c.apiJSON(reqCtx, http.MethodGet, "/api/v4/channels/"+url.PathEscape(channelID), nil, &info); err != nil ||
+	if err := c.apiJSON(
+		reqCtx,
+		http.MethodGet,
+		"/api/v4/channels/"+url.PathEscape(channelID),
+		nil,
+		&info,
+	); err != nil ||
 		info.Type == "" {
 		return mmChannelInfo{}, false
 	}

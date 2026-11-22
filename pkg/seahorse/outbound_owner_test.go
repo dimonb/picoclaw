@@ -83,12 +83,16 @@ func TestOutboundDeliveryEditKeepsOrigin(t *testing.T) {
 // cannot be told apart) are not trusted.
 func TestOutboundDeliveryOriginMigration(t *testing.T) {
 	db := openTestDB(t)
-	if _, err := db.Exec(`CREATE TABLE outbound_deliveries (delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,channel TEXT NOT NULL,account TEXT NOT NULL DEFAULT '',channel_message_id TEXT NOT NULL,chat_id TEXT NOT NULL DEFAULT '',topic_id TEXT NOT NULL DEFAULT '',session_key TEXT NOT NULL DEFAULT '',content TEXT NOT NULL DEFAULT '',parts TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL DEFAULT (datetime('now')),UNIQUE(channel,account,channel_message_id))`); err != nil {
+	if _, err := db.Exec(
+		`CREATE TABLE outbound_deliveries (delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,channel TEXT NOT NULL,account TEXT NOT NULL DEFAULT '',channel_message_id TEXT NOT NULL,chat_id TEXT NOT NULL DEFAULT '',topic_id TEXT NOT NULL DEFAULT '',session_key TEXT NOT NULL DEFAULT '',content TEXT NOT NULL DEFAULT '',parts TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL DEFAULT (datetime('now')),UNIQUE(channel,account,channel_message_id))`,
+	); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := db.Exec(`INSERT INTO outbound_deliveries (channel,channel_message_id,chat_id,session_key,content) VALUES
+	if _, err := db.Exec(
+		`INSERT INTO outbound_deliveries (channel,channel_message_id,chat_id,session_key,content) VALUES
  ('telegram','-100:7','-100','agent:main:telegram:-100','sent'),
- ('telegram','-100:8','-100','','edited or cron')`); err != nil {
+ ('telegram','-100:8','-100','','edited or cron')`,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := runSchema(db); err != nil {

@@ -103,8 +103,10 @@ func TestChat_FreshSessionWhenHistoryDiverges(t *testing.T) {
 	}
 	// History was summarized: the prefix no longer matches.
 	if _, err := p.Chat(context.Background(), []Message{
-		{Role: "user", Content: "summary of a/b"}, {Role: "user", Content: "c"},
-		{Role: "assistant", Content: "reply0"}, {Role: "user", Content: "d"},
+		{Role: "user", Content: "summary of a/b"},
+		{Role: "user", Content: "c"},
+		{Role: "assistant", Content: "reply0"},
+		{Role: "user", Content: "d"},
 	}, nil, "", opts); err != nil {
 		t.Fatal(err)
 	}

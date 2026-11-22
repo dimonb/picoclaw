@@ -293,7 +293,11 @@ func TestNewMattermostChannelValidation(t *testing.T) {
 	if _, err := NewMattermostChannel(bc, &config.MattermostSettings{BotToken: tok}, mb); err == nil {
 		t.Error("expected error for missing url")
 	}
-	if _, err := NewMattermostChannel(bc, &config.MattermostSettings{URL: "mm.example.com", BotToken: tok}, mb); err == nil {
+	if _, err := NewMattermostChannel(
+		bc,
+		&config.MattermostSettings{URL: "mm.example.com", BotToken: tok},
+		mb,
+	); err == nil {
 		t.Error("expected error for url without scheme")
 	}
 	if _, err := NewMattermostChannel(bc, &config.MattermostSettings{URL: "https://mm.example.com"}, mb); err == nil {
@@ -314,7 +318,10 @@ func TestNewMattermostChannelValidation(t *testing.T) {
 	if got := ch.websocketURL("", 0); got != "wss://mm.example.com/api/v4/websocket" {
 		t.Errorf("websocketURL = %q", got)
 	}
-	if got := ch.websocketURL("abc", 7); got != "wss://mm.example.com/api/v4/websocket?connection_id=abc&sequence_number=7" {
+	if got := ch.websocketURL(
+		"abc",
+		7,
+	); got != "wss://mm.example.com/api/v4/websocket?connection_id=abc&sequence_number=7" {
 		t.Errorf("websocketURL resume = %q", got)
 	}
 }
