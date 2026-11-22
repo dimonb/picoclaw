@@ -317,11 +317,13 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 		content = cleaned
 	}
 
+	// One session per channel: the chat ID is the plain channel ID and the
+	// thread travels with the message (see threads.go).
+	chatID := post.ChannelID
 	rootID := post.RootID
 	if rootID == "" {
 		rootID = post.ID
 	}
-	chatID := buildChatID(post.ChannelID, rootID)
 
 	mediaPaths, fileNote := c.downloadFiles(post, chatID)
 	content += fileNote
@@ -337,36 +339,52 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 		chatType = "group"
 	}
 
+	user := c.lookupUser(c.ctx, post.UserID, data.SenderName)
+	sender.Username = user.username
+	sender.DisplayName = user.displayName
+
 	inboundCtx := bus.InboundContext{
 		Channel:   c.Name(),
 		ChatID:    chatID,
 		ChatType:  chatType,
-		TopicID:   rootID,
 		SenderID:  post.UserID,
-		MessageID: post.ID,
+		MessageID: encodeMessageID(post.ChannelID, post.RootID, post.ID),
 		Mentioned: mentioned,
 		Raw: map[string]string{
 			"platform":     config.ChannelMattermost,
 			"post_id":      post.ID,
 			"root_id":      post.RootID,
+			"thread_root":  rootID,
 			"channel_id":   post.ChannelID,
 			"channel_type": data.ChannelType,
 			"channel_name": data.ChannelName,
-			"sender_name":  strings.TrimPrefix(data.SenderName, "@"),
+			"sender_name":  user.username,
 			"team_id":      data.TeamID,
 		},
+	}
+	if post.RootID != "" {
+		inboundCtx.ReplyToMessageID = encodeMessageID(post.ChannelID, "", post.RootID)
 	}
 	if data.TeamID != "" {
 		inboundCtx.SpaceID = data.TeamID
 		inboundCtx.SpaceType = "team"
 	}
 
+	addressed := true // DMs, @mentions and prefix triggers
+	if addressed {
+		c.beginIndicators(c.ctx, post.ChannelID, rootID, post.ID)
+	}
+	deferWhileBusy := c.threads.admit(post.ChannelID, rootID, addressed)
+
 	logger.DebugCF("mattermost", "Received message", map[string]any{
 		"sender_id": post.UserID,
 		"chat_id":   chatID,
+		"thread":    rootID,
+		"deferred":  deferWhileBusy,
 		"preview":   utils.Truncate(content, 50),
 	})
-	c.HandleInboundContext(c.ctx, chatID, content, mediaPaths, inboundCtx, sender)
+	c.HandleInboundContextWithOptions(c.ctx, chatID, content, mediaPaths, inboundCtx,
+		channels.InboundOptions{DeferWhileBusy: deferWhileBusy}, sender)
 }
 
 // channelWideMentionRe detects Mattermost's channel-wide mention keywords.

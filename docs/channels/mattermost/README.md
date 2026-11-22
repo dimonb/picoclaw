@@ -45,7 +45,9 @@ The token can also be supplied via `PICOCLAW_CHANNELS_MATTERMOST_BOT_TOKEN` (and
 ## Behavior
 
 - **Direct messages** are always answered. **Channel and group messages** are answered only when the bot is @mentioned; the mention is removed from the text before it reaches the agent.
-- Replies are posted **in a thread**: under the thread the message belongs to, or under the message itself if it was top-level. Each thread is a separate conversation (session).
+- **One conversation per channel.** A DM is one continuous conversation, and each channel or group is one conversation across all of its threads, so the bot remembers context from other threads in the same channel.
+- Replies are still posted **in a thread**: under the thread the message belongs to, or under the message itself if it was top-level. Placeholders, streamed edits, the typing indicator and files go to that same thread. If messages arrive in two different threads at once, each is answered in its own thread.
+- Message IDs shown to the agent (and accepted by the message tool's `reply_to_message_id`) look like `<channel_id>:<post_id>` for top-level posts and `<channel_id>:<root_id>:<post_id>` inside a thread. Sending to a bare channel ID with no reply target creates a top-level post.
 - The bot ignores its own posts, system messages (joins, header changes, …) and posts from other bots.
 - Replies longer than 16383 characters are split into several posts.
 - Inbound posts receive a 👀 reaction while the agent works. Attachments are downloaded for the agent; files the agent sends are uploaded as attachments.

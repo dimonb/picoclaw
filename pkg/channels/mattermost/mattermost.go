@@ -68,8 +68,10 @@ type MattermostChannel struct {
 	reconnectMin time.Duration
 	reconnectMax time.Duration
 
-	typingMu   sync.Mutex
-	typingStop map[string]chan struct{}
+	indMu      sync.Mutex
+	indicators map[string]*threadIndicators // "<channel>/<root>" -> pending UX
+	threads    threadQueue
+	users      sync.Map // user id -> userInfo
 }
 
 // NewMattermostChannel validates the settings and builds a channel instance.
@@ -103,7 +105,7 @@ func NewMattermostChannel(
 		ctx:          context.Background(),
 		reconnectMin: time.Second,
 		reconnectMax: time.Minute,
-		typingStop:   make(map[string]chan struct{}),
+		indicators:   make(map[string]*threadIndicators),
 	}, nil
 }
 
@@ -188,12 +190,12 @@ func (c *MattermostChannel) Stop(ctx context.Context) error {
 	}
 	c.closeConn()
 
-	c.typingMu.Lock()
-	for chatID, stop := range c.typingStop {
-		close(stop)
-		delete(c.typingStop, chatID)
+	c.indMu.Lock()
+	for key, ind := range c.indicators {
+		ind.stop()
+		delete(c.indicators, key)
 	}
-	c.typingMu.Unlock()
+	c.indMu.Unlock()
 
 	done := make(chan struct{})
 	go func() {
@@ -227,42 +229,13 @@ func (c *MattermostChannel) resolveTeam(ctx context.Context, team string) (strin
 	return "", fmt.Errorf("mattermost: cannot resolve team %q (by name or id): %w", team, err)
 }
 
-// --- chat ID encoding -------------------------------------------------------
-
-// Chat IDs follow the Slack channel convention: "<channel_id>" for a plain
-// channel and "<channel_id>/<root_post_id>" for a thread.
-func parseChatID(chatID string) (channelID, rootID string) {
-	channelID, rootID, _ = strings.Cut(strings.TrimSpace(chatID), "/")
-	return channelID, rootID
-}
-
-func buildChatID(channelID, rootID string) string {
-	if rootID == "" {
-		return channelID
-	}
-	return channelID + "/" + rootID
-}
-
-// resolveTarget picks the destination channel and thread root for an
-// outbound message, falling back to the context topic and reply target.
-func resolveTarget(chatID string, outCtx *bus.InboundContext, replyTo string) (channelID, rootID string) {
-	if strings.TrimSpace(chatID) == "" && outCtx != nil {
-		chatID = outCtx.ChatID
-	}
-	channelID, rootID = parseChatID(chatID)
-	if rootID == "" && outCtx != nil {
-		rootID = strings.TrimSpace(outCtx.TopicID)
-	}
-	if rootID == "" {
-		rootID = strings.TrimSpace(replyTo)
-	}
-	return channelID, rootID
-}
-
 // --- outbound ----------------------------------------------------------------
 
-// Send posts a message, replying in the thread encoded in the chat ID.
-// Content over the Mattermost limit is split into several posts.
+// Send posts a message. The thread is taken from the per-turn context (the
+// post being answered), from an explicit reply target, or from a
+// "<channel>/<root>" chat ID; without any of them the post is top-level.
+// Content over the Mattermost limit is split into several posts. A pending
+// placeholder for the thread is edited into the first chunk.
 func (c *MattermostChannel) Send(ctx context.Context, msg bus.OutboundMessage) ([]string, error) {
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
@@ -271,72 +244,65 @@ func (c *MattermostChannel) Send(ctx context.Context, msg bus.OutboundMessage) (
 	if channelID == "" {
 		return nil, fmt.Errorf("invalid mattermost chat ID %q: %w", msg.ChatID, channels.ErrSendFailed)
 	}
+	if isFinalOutbound(msg.Context) {
+		defer c.threads.done(channelID, rootID)
+	}
 	if strings.TrimSpace(msg.Content) == "" {
 		return nil, nil
 	}
 
+	pending := c.takeIndicators(channelID, rootID)
 	chunks := channels.SplitMessage(msg.Content, maxMessageLength)
 	ids := make([]string, 0, len(chunks))
-	for _, chunk := range chunks {
-		id, err := c.createPost(ctx, channelID, rootID, chunk, nil)
+	for i, chunk := range chunks {
+		if i == 0 && pending.placeholderID != "" {
+			if err := c.patchPost(ctx, pending.placeholderID, chunk); err == nil {
+				ids = append(ids, encodeMessageID(channelID, rootID, pending.placeholderID))
+				continue
+			}
+			_ = c.deletePost(ctx, pending.placeholderID)
+		}
+		postID, err := c.createPost(ctx, channelID, rootID, chunk, nil)
 		if err != nil {
 			return ids, err
 		}
-		ids = append(ids, id)
+		ids = append(ids, encodeMessageID(channelID, rootID, postID))
 	}
 	return ids, nil
 }
 
 // EditMessage implements channels.MessageEditor via PUT /posts/{id}/patch.
+// messageID may be a raw post ID or an encoded "<channel>:[<root>:]<post>".
 func (c *MattermostChannel) EditMessage(ctx context.Context, chatID, messageID, content string) error {
-	if messageID == "" {
+	postID := parseMessageID(messageID).postID
+	if postID == "" {
 		return fmt.Errorf("mattermost edit: empty message id: %w", channels.ErrSendFailed)
 	}
-	body := map[string]any{"message": content}
-	return c.apiJSON(ctx, http.MethodPut, "/api/v4/posts/"+url.PathEscape(messageID)+"/patch", body, nil)
+	return c.patchPost(ctx, postID, content)
 }
 
 // DeleteMessage implements channels.MessageDeleter.
 func (c *MattermostChannel) DeleteMessage(ctx context.Context, chatID, messageID string) error {
-	if messageID == "" {
+	return c.deletePost(ctx, parseMessageID(messageID).postID)
+}
+
+func (c *MattermostChannel) patchPost(ctx context.Context, postID, content string) error {
+	body := map[string]any{"message": content}
+	return c.apiJSON(ctx, http.MethodPut, "/api/v4/posts/"+url.PathEscape(postID)+"/patch", body, nil)
+}
+
+func (c *MattermostChannel) deletePost(ctx context.Context, postID string) error {
+	if postID == "" {
 		return nil
 	}
-	return c.apiJSON(ctx, http.MethodDelete, "/api/v4/posts/"+url.PathEscape(messageID), nil, nil)
+	return c.apiJSON(ctx, http.MethodDelete, "/api/v4/posts/"+url.PathEscape(postID), nil, nil)
 }
 
-// SendPlaceholder implements channels.PlaceholderCapable (opt-in via the
-// channel's "placeholder" config).
-func (c *MattermostChannel) SendPlaceholder(ctx context.Context, chatID string) (string, error) {
-	if !c.bc.Placeholder.Enabled {
-		return "", nil
-	}
-	channelID, rootID := parseChatID(chatID)
-	if channelID == "" {
-		return "", fmt.Errorf("invalid mattermost chat ID %q", chatID)
-	}
-	return c.createPost(ctx, channelID, rootID, c.bc.Placeholder.GetRandomText(), nil)
-}
-
-// StartTyping implements channels.TypingCapable (opt-in via the channel's
-// "typing" config). Mattermost clears the indicator after a few seconds, so
-// it is refreshed until stop is called or typingTimeout elapses.
-func (c *MattermostChannel) StartTyping(ctx context.Context, chatID string) (func(), error) {
-	if !c.bc.Typing.Enabled {
-		return func() {}, nil
-	}
-	channelID, rootID := parseChatID(chatID)
-	if channelID == "" {
-		return func() {}, nil
-	}
-
-	c.typingMu.Lock()
-	if old, ok := c.typingStop[chatID]; ok {
-		close(old)
-	}
+// startTyping shows "is typing…" in the thread until the returned (idempotent)
+// stop is called or typingTimeout elapses. Mattermost clears the indicator
+// after a few seconds, so it is refreshed periodically.
+func (c *MattermostChannel) startTyping(channelID, rootID string) func() {
 	stop := make(chan struct{})
-	c.typingStop[chatID] = stop
-	c.typingMu.Unlock()
-
 	send := func() {
 		reqCtx, cancel := context.WithTimeout(c.ctx, 10*time.Second)
 		defer cancel()
@@ -364,44 +330,24 @@ func (c *MattermostChannel) StartTyping(ctx context.Context, chatID string) (fun
 			}
 		}
 	}()
-
 	var once sync.Once
-	return func() {
-		once.Do(func() {
-			c.typingMu.Lock()
-			defer c.typingMu.Unlock()
-			if cur, ok := c.typingStop[chatID]; ok && cur == stop {
-				close(stop)
-				delete(c.typingStop, chatID)
-			}
-		})
-	}, nil
+	return func() { once.Do(func() { close(stop) }) }
 }
 
-// ReactToMessage implements channels.ReactionCapable: adds 👀 to the inbound
-// post and returns an undo that removes it.
-func (c *MattermostChannel) ReactToMessage(ctx context.Context, chatID, messageID string) (func(), error) {
-	if messageID == "" || c.botUserID == "" {
-		return func() {}, nil
-	}
-	body := map[string]any{"user_id": c.botUserID, "post_id": messageID, "emoji_name": reactionEmoji}
-	if err := c.apiJSON(ctx, http.MethodPost, "/api/v4/reactions", body, nil); err != nil {
-		return func() {}, err
-	}
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			undoCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			path := fmt.Sprintf("/api/v4/users/%s/posts/%s/reactions/%s",
-				url.PathEscape(c.botUserID), url.PathEscape(messageID), reactionEmoji)
-			_ = c.apiJSON(undoCtx, http.MethodDelete, path, nil, nil)
-		})
-	}, nil
+func (c *MattermostChannel) addReaction(ctx context.Context, postID, emoji string) error {
+	body := map[string]any{"user_id": c.botUserID, "post_id": postID, "emoji_name": emoji}
+	return c.apiJSON(ctx, http.MethodPost, "/api/v4/reactions", body, nil)
+}
+
+func (c *MattermostChannel) removeReaction(ctx context.Context, postID, emoji string) error {
+	path := fmt.Sprintf("/api/v4/users/%s/posts/%s/reactions/%s",
+		url.PathEscape(c.botUserID), url.PathEscape(postID), url.PathEscape(emoji))
+	return c.apiJSON(ctx, http.MethodDelete, path, nil, nil)
 }
 
 // SendMedia implements channels.MediaSender: files are uploaded to
-// /api/v4/files and attached to posts (up to 10 per post).
+// /api/v4/files and attached to posts (up to 10 per post), in the same
+// thread Send would use.
 func (c *MattermostChannel) SendMedia(ctx context.Context, msg bus.OutboundMediaMessage) ([]string, error) {
 	if !c.IsRunning() {
 		return nil, channels.ErrNotRunning
@@ -413,6 +359,9 @@ func (c *MattermostChannel) SendMedia(ctx context.Context, msg bus.OutboundMedia
 	store := c.GetMediaStore()
 	if store == nil {
 		return nil, fmt.Errorf("no media store available: %w", channels.ErrSendFailed)
+	}
+	if pending := c.takeIndicators(channelID, rootID); pending.placeholderID != "" {
+		_ = c.deletePost(ctx, pending.placeholderID)
 	}
 
 	fileIDs := make([]string, 0, len(msg.Parts))
@@ -449,11 +398,11 @@ func (c *MattermostChannel) SendMedia(ctx context.Context, msg bus.OutboundMedia
 		if start == 0 {
 			text = caption
 		}
-		id, err := c.createPost(ctx, channelID, rootID, text, fileIDs[start:end])
+		postID, err := c.createPost(ctx, channelID, rootID, text, fileIDs[start:end])
 		if err != nil {
 			return ids, err
 		}
-		ids = append(ids, id)
+		ids = append(ids, encodeMessageID(channelID, rootID, postID))
 	}
 	return ids, nil
 }

@@ -34,6 +34,7 @@ type apiCall struct {
 	Method string
 	Path   string
 	Body   map[string]any
+	ID     string // ID returned for created posts
 }
 
 // fakeMattermost emulates the subset of the Mattermost v4 REST and
@@ -88,9 +89,10 @@ func (fm *fakeMattermost) handle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	fm.mu.Lock()
-	fm.calls = append(fm.calls, call)
 	fm.nextID++
 	id := fmt.Sprintf("post%022d", fm.nextID)
+	call.ID = id
+	fm.calls = append(fm.calls, call)
 	postCode := fm.postCode
 	fm.mu.Unlock()
 
@@ -98,6 +100,10 @@ func (fm *fakeMattermost) handle(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v4/users/me":
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": testBotID, "username": testBotName})
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v4/users/"+testUserID:
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"id": testUserID, "username": "alice", "first_name": "Alice", "last_name": "Smith",
+		})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v4/teams/name/myteam":
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": "teamid1"})
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v4/posts":
@@ -296,21 +302,27 @@ func TestInboundDirectMessage(t *testing.T) {
 	if msg.Content != "hello there" {
 		t.Errorf("content = %q", msg.Content)
 	}
-	if msg.Context.ChatID != testChanID+"/p1" || msg.Context.TopicID != "p1" {
-		t.Errorf("chat=%q topic=%q, want thread rooted at p1", msg.Context.ChatID, msg.Context.TopicID)
+	// Session scope is the channel; the thread travels with the message.
+	if msg.Context.ChatID != testChanID || msg.Context.TopicID != "" {
+		t.Errorf("chat=%q topic=%q, want plain channel and no topic", msg.Context.ChatID, msg.Context.TopicID)
 	}
-	if msg.Context.ChatType != "direct" || msg.Context.MessageID != "p1" {
-		t.Errorf("chatType=%q messageID=%q", msg.Context.ChatType, msg.Context.MessageID)
+	if msg.Context.ChatType != "direct" || msg.Context.MessageID != testChanID+":p1" ||
+		msg.Context.ReplyToMessageID != "" {
+		t.Errorf("chatType=%q messageID=%q replyTo=%q",
+			msg.Context.ChatType, msg.Context.MessageID, msg.Context.ReplyToMessageID)
 	}
-	if msg.Sender.CanonicalID != "mattermost:"+testUserID {
-		t.Errorf("sender canonical = %q", msg.Sender.CanonicalID)
+	if msg.Sender.CanonicalID != "mattermost:"+testUserID || msg.Sender.Username != "alice" ||
+		msg.Sender.DisplayName != "Alice Smith" {
+		t.Errorf("sender = %+v", msg.Sender)
 	}
 
-	// A reply inside an existing thread keeps the thread root.
+	// A reply inside an existing thread: same chat, root in the IDs.
 	sendPosted(t, conn, "D", post("p2", testUserID, "follow-up", "p1"), nil)
 	msg = nextInbound(t, mb)
-	if msg.Context.ChatID != testChanID+"/p1" {
-		t.Errorf("thread reply chat = %q", msg.Context.ChatID)
+	if msg.Context.ChatID != testChanID || msg.Context.MessageID != testChanID+":p1:p2" ||
+		msg.Context.ReplyToMessageID != testChanID+":p1" {
+		t.Errorf("thread reply chat=%q msg=%q replyTo=%q",
+			msg.Context.ChatID, msg.Context.MessageID, msg.Context.ReplyToMessageID)
 	}
 }
 
@@ -332,22 +344,22 @@ func TestInboundChannelMentionFiltering(t *testing.T) {
 	sendPosted(t, conn, "G", post("c4", testUserID, "thanks @picobot.", "c0"), nil)
 
 	msg := nextInbound(t, mb)
-	if msg.Context.MessageID != "c3" {
+	if msg.Context.MessageID != testChanID+":c3" {
 		t.Fatalf("first delivered message = %q, want c3 (unmentioned posts must be dropped)", msg.Context.MessageID)
 	}
 	if msg.Content != "what is up?" || !msg.Context.Mentioned || msg.Context.ChatType != "channel" {
 		t.Errorf("content=%q mentioned=%v chatType=%q", msg.Content, msg.Context.Mentioned, msg.Context.ChatType)
 	}
-	if msg.Context.ChatID != testChanID+"/c3" {
-		t.Errorf("chat = %q, want thread rooted at c3", msg.Context.ChatID)
+	if msg.Context.ChatID != testChanID {
+		t.Errorf("chat = %q, want plain channel", msg.Context.ChatID)
 	}
 
 	msg = nextInbound(t, mb)
-	if msg.Context.MessageID != "c4" || msg.Content != "thanks ." || msg.Context.ChatType != "group" {
+	if msg.Context.MessageID != testChanID+":c0:c4" || msg.Content != "thanks ." || msg.Context.ChatType != "group" {
 		t.Errorf("got id=%q content=%q type=%q", msg.Context.MessageID, msg.Content, msg.Context.ChatType)
 	}
-	if msg.Context.ChatID != testChanID+"/c0" {
-		t.Errorf("chat = %q, want existing root c0", msg.Context.ChatID)
+	if msg.Context.ReplyToMessageID != testChanID+":c0" {
+		t.Errorf("replyTo = %q, want thread root c0", msg.Context.ReplyToMessageID)
 	}
 }
 
@@ -361,7 +373,7 @@ func TestInboundGroupTriggerPrefix(t *testing.T) {
 	sendPosted(t, conn, "O", post("g1", testUserID, "no prefix", ""), nil)
 	sendPosted(t, conn, "O", post("g2", testUserID, "!ask weather", ""), nil)
 	msg := nextInbound(t, mb)
-	if msg.Context.MessageID != "g2" || msg.Content != "weather" {
+	if msg.Context.MessageID != testChanID+":g2" || msg.Content != "weather" {
 		t.Errorf("got id=%q content=%q", msg.Context.MessageID, msg.Content)
 	}
 }
@@ -380,7 +392,7 @@ func TestInboundIgnoresOwnSystemAndBotPosts(t *testing.T) {
 	sendPosted(t, conn, "D", bot, nil)
 	sendPosted(t, conn, "D", post("o4", testUserID, "real message", ""), nil)
 
-	if msg := nextInbound(t, mb); msg.Context.MessageID != "o4" {
+	if msg := nextInbound(t, mb); msg.Context.MessageID != testChanID+":o4" {
 		t.Fatalf("delivered %q, want only o4", msg.Context.MessageID)
 	}
 }
@@ -392,7 +404,7 @@ func TestInboundAllowFromRejects(t *testing.T) {
 
 	sendPosted(t, conn, "D", post("a1", testOtherID, "let me in", ""), nil)
 	sendPosted(t, conn, "D", post("a2", testUserID, "allowed", ""), nil)
-	if msg := nextInbound(t, mb); msg.Context.MessageID != "a2" {
+	if msg := nextInbound(t, mb); msg.Context.MessageID != testChanID+":a2" {
 		t.Fatalf("delivered %q, want a2 (a1 sender is not in allow_from)", msg.Context.MessageID)
 	}
 }
@@ -421,7 +433,7 @@ func TestInboundTeamFilter(t *testing.T) {
 		"mentions": `["` + testBotID + `"]`,
 	}})
 	sendPosted(t, conn, "O", post("t2", testUserID, "@picobot my team", ""), []string{testBotID})
-	if msg := nextInbound(t, mb2); msg.Context.MessageID != "t2" || msg.Context.SpaceID != "teamid1" {
+	if msg := nextInbound(t, mb2); msg.Context.MessageID != testChanID+":t2" || msg.Context.SpaceID != "teamid1" {
 		t.Fatalf("delivered %q space=%q, want t2 in teamid1", msg.Context.MessageID, msg.Context.SpaceID)
 	}
 }
@@ -430,36 +442,54 @@ func TestSendRepliesInThread(t *testing.T) {
 	fm := newFakeMattermost(t)
 	ch, _ := newTestChannel(t, fm, nil, nil)
 	startConnected(t, fm, ch)
+	ctx := context.Background()
 
-	ids, err := ch.Send(context.Background(), bus.OutboundMessage{ChatID: testChanID + "/root1", Content: "hi"})
-	if err != nil || len(ids) != 1 {
-		t.Fatalf("Send: ids=%v err=%v", ids, err)
+	send := func(msg bus.OutboundMessage) []string {
+		t.Helper()
+		ids, err := ch.Send(ctx, msg)
+		if err != nil || len(ids) != 1 {
+			t.Fatalf("Send(%+v): ids=%v err=%v", msg, ids, err)
+		}
+		return ids
 	}
-	// Plain channel ID with the thread in the context topic.
-	_, err = ch.Send(context.Background(), bus.OutboundMessage{
-		ChatID: testChanID, Content: "topic", Context: bus.InboundContext{TopicID: "root2"},
+	// 1. Turn reply to a top-level post: thread rooted at that post.
+	ids := send(bus.OutboundMessage{
+		ChatID: testChanID, Content: "a",
+		Context: bus.InboundContext{ChatID: testChanID, MessageID: testChanID + ":p1"},
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// No thread at all: top-level post.
-	if _, err = ch.Send(context.Background(), bus.OutboundMessage{ChatID: testChanID, Content: "top"}); err != nil {
-		t.Fatal(err)
-	}
+	// 2. Turn reply to a post inside thread r2.
+	send(bus.OutboundMessage{ChatID: testChanID, Content: "b", Context: bus.InboundContext{
+		ChatID: testChanID, MessageID: testChanID + ":r2:p5", ReplyToMessageID: testChanID + ":r2",
+	}})
+	// 3. Message tool with an explicit reply_to_message_id (a bot reply ID from #1).
+	send(bus.OutboundMessage{
+		ChatID: testChanID, Content: "c", ReplyToMessageID: ids[0],
+		Context: bus.NewOutboundContext("mattermost", testChanID, ids[0]),
+	})
+	// 4. Message tool with a bare channel and no reply target: top-level.
+	send(bus.OutboundMessage{
+		ChatID: testChanID, Content: "d",
+		Context: bus.NewOutboundContext("mattermost", testChanID, ""),
+	})
+	// 5. Explicit "<channel>/<root>" chat ID.
+	send(bus.OutboundMessage{ChatID: testChanID + "/root5", Content: "e"})
+	// 6. A reply target from another channel is ignored.
+	send(bus.OutboundMessage{ChatID: testChanID, Content: "f", ReplyToMessageID: "otherchan:x1"})
 
+	want := []string{"p1", "r2", "p1", "", "root5", ""}
 	posts := fm.callsTo(http.MethodPost, "/api/v4/posts")
-	if len(posts) != 3 {
-		t.Fatalf("posts = %d, want 3", len(posts))
+	if len(posts) != len(want) {
+		t.Fatalf("posts = %d, want %d", len(posts), len(want))
 	}
-	if posts[0].Body["channel_id"] != testChanID || posts[0].Body["root_id"] != "root1" ||
-		posts[0].Body["message"] != "hi" {
-		t.Errorf("post 0 body = %v", posts[0].Body)
+	for i, p := range posts {
+		root, _ := p.Body["root_id"].(string)
+		if root != want[i] || p.Body["channel_id"] != testChanID {
+			t.Errorf("post %d (%v): root_id=%q channel=%v, want root %q", i, p.Body["message"], root,
+				p.Body["channel_id"], want[i])
+		}
 	}
-	if posts[1].Body["root_id"] != "root2" {
-		t.Errorf("post 1 root_id = %v", posts[1].Body["root_id"])
-	}
-	if _, ok := posts[2].Body["root_id"]; ok {
-		t.Errorf("post 2 should be top-level, body = %v", posts[2].Body)
+	if !strings.HasPrefix(ids[0], testChanID+":p1:") {
+		t.Errorf("returned id %q, want <channel>:<root>:<post>", ids[0])
 	}
 }
 
@@ -528,93 +558,81 @@ func TestSendNotRunning(t *testing.T) {
 	}
 }
 
-func TestEditDeletePlaceholderTyping(t *testing.T) {
+func TestIndicatorsFollowTheThread(t *testing.T) {
 	fm := newFakeMattermost(t)
-	ch, _ := newTestChannel(t, fm, nil, func(bc *config.Channel, _ *config.MattermostSettings) {
+	ch, mb := newTestChannel(t, fm, nil, func(bc *config.Channel, _ *config.MattermostSettings) {
 		bc.Placeholder.Enabled = true
 		bc.Placeholder.Text = config.FlexibleStringSlice{"Thinking..."}
 		bc.Typing.Enabled = true
 	})
-	startConnected(t, fm, ch)
+	conn := startConnected(t, fm, ch)
 	ctx := context.Background()
-	chatID := testChanID + "/root9"
 
-	phID, err := ch.SendPlaceholder(ctx, chatID)
-	if err != nil || phID == "" {
-		t.Fatalf("SendPlaceholder: id=%q err=%v", phID, err)
-	}
-	if err = ch.EditMessage(ctx, chatID, phID, "final answer"); err != nil {
-		t.Fatalf("EditMessage: %v", err)
-	}
-	if err = ch.DeleteMessage(ctx, chatID, phID); err != nil {
-		t.Fatalf("DeleteMessage: %v", err)
-	}
+	sendPosted(t, conn, "D", post("q1", testUserID, "question", "root9"), nil)
+	in := nextInbound(t, mb)
 
 	posts := fm.callsTo(http.MethodPost, "/api/v4/posts")
 	if len(posts) != 1 || posts[0].Body["message"] != "Thinking..." || posts[0].Body["root_id"] != "root9" {
-		t.Errorf("placeholder posts = %v", posts)
+		t.Fatalf("placeholder posts = %v", posts)
 	}
-	patches := fm.callsTo(http.MethodPut, "/api/v4/posts/")
-	if len(patches) != 1 || patches[0].Path != "/api/v4/posts/"+phID+"/patch" ||
-		patches[0].Body["message"] != "final answer" {
-		t.Errorf("patches = %v", patches)
-	}
-	if dels := fm.callsTo(http.MethodDelete, "/api/v4/posts/"+phID); len(dels) != 1 {
-		t.Errorf("deletes = %v", dels)
-	}
-
-	stop, err := ch.StartTyping(ctx, chatID)
-	if err != nil {
-		t.Fatal(err)
+	if adds := fm.callsTo(http.MethodPost, "/api/v4/reactions"); len(adds) != 1 ||
+		adds[0].Body["post_id"] != "q1" || adds[0].Body["emoji_name"] != "eyes" {
+		t.Errorf("reactions = %v", adds)
 	}
 	deadline := time.Now().Add(testWaitTime)
 	for len(fm.callsTo(http.MethodPost, "/api/v4/users/me/typing")) == 0 && time.Now().Before(deadline) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	stop()
-	stop() // idempotent
-	typing := fm.callsTo(http.MethodPost, "/api/v4/users/me/typing")
-	if len(typing) == 0 || typing[0].Body["channel_id"] != testChanID || typing[0].Body["parent_id"] != "root9" {
-		t.Errorf("typing calls = %v", typing)
+	if typing := fm.callsTo(http.MethodPost, "/api/v4/users/me/typing"); len(typing) == 0 ||
+		typing[0].Body["channel_id"] != testChanID || typing[0].Body["parent_id"] != "root9" {
+		t.Errorf("typing = %v", typing)
+	}
+
+	// The reply (carrying the turn's inbound context) edits the placeholder.
+	ids, err := ch.Send(ctx, bus.OutboundMessage{ChatID: in.Context.ChatID, Content: "answer", Context: in.Context})
+	if err != nil || len(ids) != 1 {
+		t.Fatalf("Send: %v %v", ids, err)
+	}
+	if n := len(fm.callsTo(http.MethodPost, "/api/v4/posts")); n != 1 {
+		t.Errorf("reply created %d posts, want the placeholder to be edited instead", n-1)
+	}
+	patches := fm.callsTo(http.MethodPut, "/api/v4/posts/")
+	if len(patches) != 1 || patches[0].Body["message"] != "answer" {
+		t.Errorf("patches = %v", patches)
+	}
+	if dels := fm.callsTo(http.MethodDelete, "/api/v4/users/"+testBotID+"/posts/q1/reactions/eyes"); len(dels) != 1 {
+		t.Errorf("reaction not removed: %v", dels)
+	}
+
+	// Edit and delete accept the encoded IDs Send returned.
+	if err = ch.EditMessage(ctx, testChanID, ids[0], "edited"); err != nil {
+		t.Fatal(err)
+	}
+	if err = ch.DeleteMessage(ctx, testChanID, ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	postID := parseMessageID(ids[0]).postID
+	if p := fm.callsTo(http.MethodPut, "/api/v4/posts/"+postID+"/patch"); len(p) != 2 {
+		t.Errorf("edit by encoded id: %v", p)
+	}
+	if d := fm.callsTo(http.MethodDelete, "/api/v4/posts/"+postID); len(d) != 1 {
+		t.Errorf("delete by encoded id: %v", d)
 	}
 }
 
 func TestPlaceholderAndTypingDisabledByDefault(t *testing.T) {
 	fm := newFakeMattermost(t)
-	ch, _ := newTestChannel(t, fm, nil, nil)
-	startConnected(t, fm, ch)
+	ch, mb := newTestChannel(t, fm, nil, nil)
+	conn := startConnected(t, fm, ch)
 
-	id, err := ch.SendPlaceholder(context.Background(), testChanID)
-	if err != nil || id != "" {
-		t.Errorf("placeholder should be disabled: id=%q err=%v", id, err)
-	}
-	stop, _ := ch.StartTyping(context.Background(), testChanID)
-	stop()
+	sendPosted(t, conn, "D", post("d1", testUserID, "hi", ""), nil)
+	nextInbound(t, mb)
 	if n := len(fm.callsTo(http.MethodPost, "/api/v4/posts")) + len(fm.callsTo(http.MethodPost,
 		"/api/v4/users/me/typing")); n != 0 {
-		t.Errorf("unexpected API calls: %d", n)
+		t.Errorf("unexpected placeholder/typing calls: %d", n)
 	}
-}
-
-func TestReactToMessage(t *testing.T) {
-	fm := newFakeMattermost(t)
-	ch, _ := newTestChannel(t, fm, nil, nil)
-	startConnected(t, fm, ch)
-
-	undo, err := ch.ReactToMessage(context.Background(), testChanID+"/p1", "p1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	undo()
-	undo()
-	adds := fm.callsTo(http.MethodPost, "/api/v4/reactions")
-	if len(adds) != 1 || adds[0].Body["post_id"] != "p1" || adds[0].Body["user_id"] != testBotID ||
-		adds[0].Body["emoji_name"] != "eyes" {
-		t.Errorf("reaction adds = %v", adds)
-	}
-	dels := fm.callsTo(http.MethodDelete, "/api/v4/users/"+testBotID+"/posts/p1/reactions/eyes")
-	if len(dels) != 1 {
-		t.Errorf("reaction removes = %v", dels)
+	if adds := fm.callsTo(http.MethodPost, "/api/v4/reactions"); len(adds) != 1 {
+		t.Errorf("reaction should still be added: %v", adds)
 	}
 }
 
@@ -626,7 +644,11 @@ func TestStreamingEditsInPlace(t *testing.T) {
 	startConnected(t, fm, ch)
 	ctx := context.Background()
 
-	st, err := ch.BeginStream(ctx, testChanID+"/root")
+	// The thread comes from the turn's inbound context carried in ctx.
+	turnCtx := bus.WithInboundContext(ctx, bus.InboundContext{
+		ChatID: testChanID, MessageID: testChanID + ":root:p7", ReplyToMessageID: testChanID + ":root",
+	})
+	st, err := ch.BeginStream(turnCtx, testChanID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -667,7 +689,7 @@ func TestStreamingEditsInPlace(t *testing.T) {
 	}
 
 	// A canceled stream removes its partial post.
-	st2, _ := ch.BeginStream(ctx, testChanID+"/root")
+	st2, _ := ch.BeginStream(turnCtx, testChanID)
 	_ = st2.Update(ctx, "partial")
 	st2.Cancel(ctx)
 	if dels := fm.callsTo(http.MethodDelete, "/api/v4/posts/"); len(dels) != 1 {
@@ -721,17 +743,37 @@ func TestStripBotMention(t *testing.T) {
 	}
 }
 
-func TestParseChatID(t *testing.T) {
-	if c, r := parseChatID("chan/root"); c != "chan" || r != "root" {
-		t.Errorf("got %q %q", c, r)
+func TestMessageIDCodecAndTarget(t *testing.T) {
+	if got := encodeMessageID("c", "", "p"); got != "c:p" {
+		t.Errorf("top-level id = %q", got)
 	}
-	if c, r := parseChatID("chan"); c != "chan" || r != "" {
-		t.Errorf("got %q %q", c, r)
+	if got := encodeMessageID("c", "p", "p"); got != "c:p" {
+		t.Errorf("root post id = %q", got)
 	}
-	if c, r := resolveTarget("", &bus.InboundContext{ChatID: "chan", TopicID: "t"}, ""); c != "chan" || r != "t" {
-		t.Errorf("got %q %q", c, r)
+	if got := encodeMessageID("c", "r", "p"); got != "c:r:p" {
+		t.Errorf("thread id = %q", got)
 	}
-	if c, r := resolveTarget("chan", nil, "reply"); c != "chan" || r != "reply" {
-		t.Errorf("got %q %q", c, r)
+	for in, want := range map[string]msgRef{
+		"p":       {postID: "p"},
+		"c:p":     {channelID: "c", postID: "p"},
+		"c:r:p":   {channelID: "c", rootID: "r", postID: "p"},
+		"a:b:c:d": {},
+	} {
+		if got := parseMessageID(in); got != want {
+			t.Errorf("parseMessageID(%q) = %+v, want %+v", in, got, want)
+		}
+	}
+	if c, r := resolveTarget("chan", nil, ""); c != "chan" || r != "" {
+		t.Errorf("bare channel: %q %q", c, r)
+	}
+	if c, r := resolveTarget("", &bus.InboundContext{ChatID: "chan", MessageID: "chan:t:p"}, ""); c != "chan" ||
+		r != "t" {
+		t.Errorf("from context: %q %q", c, r)
+	}
+	if c, r := resolveTarget("chan", &bus.InboundContext{MessageID: "chan:p"}, "chan:x:y"); c != "chan" || r != "x" {
+		t.Errorf("explicit reply wins: %q %q", c, r)
+	}
+	if _, r := resolveTarget("chan", &bus.InboundContext{MessageID: "other:p"}, ""); r != "" {
+		t.Errorf("foreign context must be ignored, got root %q", r)
 	}
 }

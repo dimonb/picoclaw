@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	runtimeevents "github.com/sipeed/picoclaw/pkg/events"
 	"github.com/sipeed/picoclaw/pkg/logger"
@@ -22,6 +23,9 @@ func (al *AgentLoop) runTurn(ctx context.Context, ts *turnState, pipeline *Pipel
 	// Inject turnState and AgentLoop into context so tools (e.g. spawn) can retrieve them.
 	turnCtx = withTurnState(turnCtx, ts)
 	turnCtx = WithAgentLoop(turnCtx, al)
+	if inbound := ts.opts.Dispatch.InboundContext; inbound != nil {
+		turnCtx = bus.WithInboundContext(turnCtx, *cloneInboundContext(inbound))
+	}
 
 	al.registerActiveTurn(ts)
 	defer al.clearActiveTurn(ts)

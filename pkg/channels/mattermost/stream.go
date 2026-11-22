@@ -6,25 +6,30 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/channels"
 	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 // BeginStream implements channels.StreamingCapable (opt-in via
 // settings.streaming.enabled). Partial output is posted once and then
-// edited in place via PUT /posts/{id}/patch.
+// edited in place via PUT /posts/{id}/patch. The thread comes from the
+// turn's inbound context carried in ctx (chatID is only the channel).
 func (c *MattermostChannel) BeginStream(ctx context.Context, chatID string) (channels.Streamer, error) {
 	if !c.config.Streaming.Enabled {
 		return nil, fmt.Errorf("streaming disabled in config")
 	}
-	channelID, rootID := parseChatID(chatID)
+	var turn *bus.InboundContext
+	if inbound, ok := bus.InboundContextFrom(ctx); ok {
+		turn = &inbound
+	}
+	channelID, rootID := resolveTarget(chatID, turn, "")
 	if channelID == "" {
 		return nil, fmt.Errorf("invalid mattermost chat ID %q", chatID)
 	}
 	cfg := c.config.Streaming.WithDefaults(2, 100)
 	return &mattermostStreamer{
 		ch:        c,
-		chatID:    chatID,
 		channelID: channelID,
 		rootID:    rootID,
 		throttle:  time.Duration(cfg.ThrottleSeconds) * time.Second,
@@ -34,18 +39,30 @@ func (c *MattermostChannel) BeginStream(ctx context.Context, chatID string) (cha
 
 type mattermostStreamer struct {
 	ch        *MattermostChannel
-	chatID    string
 	channelID string
 	rootID    string
 	throttle  time.Duration
 	minGrowth int
 
 	mu        sync.Mutex
+	started   bool // pending thread indicators consumed
 	postID    string
 	lastLen   int
 	lastAt    time.Time
 	finalized bool
 	delivered []string
+}
+
+// start consumes the thread's pending indicators (stops typing/👀) and
+// adopts its placeholder post, if any, as the post to edit.
+func (s *mattermostStreamer) start() {
+	if s.started {
+		return
+	}
+	s.started = true
+	if pending := s.ch.takeIndicators(s.channelID, s.rootID); pending.placeholderID != "" && s.postID == "" {
+		s.postID = pending.placeholderID
+	}
 }
 
 // Update shows the partial content, creating the post on first call and
@@ -61,6 +78,7 @@ func (s *mattermostStreamer) Update(ctx context.Context, content string) error {
 		return nil
 	}
 
+	s.start()
 	// While streaming, only the head fits in one post; Finalize splits.
 	display := content
 	if runes := []rune(content); len(runes) > maxMessageLength {
@@ -72,7 +90,7 @@ func (s *mattermostStreamer) Update(ctx context.Context, content string) error {
 			return fmt.Errorf("mattermost stream: %w", err)
 		}
 		s.postID = id
-	} else if err := s.ch.EditMessage(ctx, s.chatID, s.postID, display); err != nil {
+	} else if err := s.ch.patchPost(ctx, s.postID, display); err != nil {
 		return fmt.Errorf("mattermost stream: %w", err)
 	}
 	s.lastLen = len(content)
@@ -88,24 +106,26 @@ func (s *mattermostStreamer) Finalize(ctx context.Context, content string) error
 	if s.finalized {
 		return nil
 	}
+	s.start()
 
 	chunks := channels.SplitMessage(content, maxMessageLength)
 	if len(chunks) == 0 {
 		// Nothing to show: drop the partial post, if any.
 		if s.postID != "" {
-			_ = s.ch.DeleteMessage(ctx, s.chatID, s.postID)
+			_ = s.ch.deletePost(ctx, s.postID)
 			s.postID = ""
 		}
 		s.finalized = true
+		s.ch.threads.done(s.channelID, s.rootID)
 		return nil
 	}
 
 	ids := make([]string, 0, len(chunks))
 	if s.postID != "" {
-		if err := s.ch.EditMessage(ctx, s.chatID, s.postID, chunks[0]); err != nil {
+		if err := s.ch.patchPost(ctx, s.postID, chunks[0]); err != nil {
 			return fmt.Errorf("mattermost stream finalize: %w", err)
 		}
-		ids = append(ids, s.postID)
+		ids = append(ids, encodeMessageID(s.channelID, s.rootID, s.postID))
 		chunks = chunks[1:]
 	}
 	for _, chunk := range chunks {
@@ -114,10 +134,11 @@ func (s *mattermostStreamer) Finalize(ctx context.Context, content string) error
 			s.delivered = ids
 			return fmt.Errorf("mattermost stream finalize: %w", err)
 		}
-		ids = append(ids, id)
+		ids = append(ids, encodeMessageID(s.channelID, s.rootID, id))
 	}
 	s.delivered = ids
 	s.finalized = true
+	s.ch.threads.done(s.channelID, s.rootID)
 	return nil
 }
 
@@ -129,7 +150,7 @@ func (s *mattermostStreamer) Cancel(ctx context.Context) {
 	if s.finalized || s.postID == "" {
 		return
 	}
-	if err := s.ch.DeleteMessage(ctx, s.chatID, s.postID); err != nil {
+	if err := s.ch.deletePost(ctx, s.postID); err != nil {
 		logger.DebugCF("mattermost", "failed to delete canceled stream post", map[string]any{"error": err.Error()})
 	}
 	s.postID = ""

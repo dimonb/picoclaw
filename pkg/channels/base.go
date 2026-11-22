@@ -271,6 +271,38 @@ func (c *BaseChannel) HandleMessageWithContext(
 	inboundCtx bus.InboundContext,
 	senderOpts ...bus.SenderInfo,
 ) {
+	c.handleInbound(ctx, deliveryChatID, content, media, inboundCtx, InboundOptions{}, senderOpts...)
+}
+
+// InboundOptions tunes how an inbound message is handed to the agent.
+type InboundOptions struct {
+	// DeferWhileBusy makes the agent wait until the session is idle and run
+	// the message as its own turn instead of steering it into a running turn
+	// (see bus.InboundMessage.DeferWhileBusy).
+	DeferWhileBusy bool
+}
+
+// HandleInboundContextWithOptions is HandleInboundContext with extra
+// queueing options.
+func (c *BaseChannel) HandleInboundContextWithOptions(
+	ctx context.Context,
+	deliveryChatID, content string,
+	media []string,
+	inboundCtx bus.InboundContext,
+	opts InboundOptions,
+	senderOpts ...bus.SenderInfo,
+) {
+	c.handleInbound(ctx, deliveryChatID, content, media, inboundCtx, opts, senderOpts...)
+}
+
+func (c *BaseChannel) handleInbound(
+	ctx context.Context,
+	deliveryChatID, content string,
+	media []string,
+	inboundCtx bus.InboundContext,
+	opts InboundOptions,
+	senderOpts ...bus.SenderInfo,
+) {
 	// Use SenderInfo-based allow check when available, else fall back to string
 	var sender bus.SenderInfo
 	if len(senderOpts) > 0 {
@@ -313,6 +345,8 @@ func (c *BaseChannel) HandleMessageWithContext(
 		Content:    content,
 		Media:      media,
 		MediaScope: scope,
+
+		DeferWhileBusy: opts.DeferWhileBusy,
 	}
 	msg = bus.NormalizeInboundMessage(msg)
 
