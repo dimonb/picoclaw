@@ -21,3 +21,15 @@ func InboundContextFrom(ctx context.Context) (InboundContext, bool) {
 	inbound, ok := ctx.Value(inboundContextKey{}).(InboundContext)
 	return inbound, ok
 }
+
+// InboundRawReplyPlacement is an InboundContext.Raw key a channel with
+// threads sets when the agent can choose where its reply goes. The value is
+// where the final answer goes by default: ReplyPlacementThread (the
+// message's thread) or ReplyPlacementTopLevel. Whatever the default, the
+// message tool posts into a message's thread with reply_to_message_id and at
+// the top level without it. The agent describes this choice in the prompt.
+const (
+	InboundRawReplyPlacement = "reply_placement"
+	ReplyPlacementThread     = "thread"
+	ReplyPlacementTopLevel   = "top_level"
+)

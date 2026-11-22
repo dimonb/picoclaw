@@ -109,6 +109,19 @@ func (al *AgentLoop) publishFinalResponse(
 	}
 
 	if alreadySentToSameChat {
+		logger.DebugCF(
+			"agent",
+			"Skipped outbound (message tool already sent to same chat)",
+			map[string]any{"channel": channel, "chat_id": chatID},
+		)
+		if inbound != nil && al.channelManager != nil {
+			// The agent delivered its answer itself (possibly somewhere else
+			// than the default, e.g. top level instead of the thread). Treat
+			// the final answer as silent so the channel clears what it
+			// showed for this turn (placeholder, typing, tool feedback).
+			al.publishSilentReply(ctx, inbound, channel, chatID, sessionKey)
+			return nil
+		}
 		if al.channelManager != nil && channel != "" && chatID != "" {
 			dismissCtx, dismissCancel := context.WithTimeout(ctx, 5*time.Second)
 			al.channelManager.DismissToolFeedback(
@@ -119,11 +132,6 @@ func (al *AgentLoop) publishFinalResponse(
 			)
 			dismissCancel()
 		}
-		logger.DebugCF(
-			"agent",
-			"Skipped outbound (message tool already sent to same chat)",
-			map[string]any{"channel": channel, "chat_id": chatID},
-		)
 		return nil
 	}
 
@@ -474,11 +482,11 @@ func (al *AgentLoop) publishSilentReply(
 	inbound *bus.InboundContext,
 	channel, chatID, sessionKey string,
 ) {
-	logger.InfoCF("agent", "Silent reply (NO_REPLY): nothing delivered",
-		map[string]any{"channel": channel, "chat_id": chatID, "session_key": sessionKey})
 	if channel == "" || chatID == "" {
 		return
 	}
+	logger.InfoCF("agent", "Silent final reply: nothing more delivered",
+		map[string]any{"channel": channel, "chat_id": chatID, "session_key": sessionKey})
 	msg := bus.OutboundMessage{
 		Channel:    channel,
 		ChatID:     chatID,

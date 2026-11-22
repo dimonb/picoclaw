@@ -340,6 +340,9 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 	case "G":
 		chatType = "group"
 	}
+	// Where the reply goes by default (DM top-level post: top level, ""),
+	// which is also where indicators show and the turn is tracked.
+	replyRoot := defaultReplyRoot(chatType, msgRef{channelID: post.ChannelID, rootID: post.RootID, postID: post.ID})
 
 	user := c.lookupUser(c.ctx, post.UserID, data.SenderName)
 	sender.Username = user.username
@@ -353,15 +356,18 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 		MessageID: encodeMessageID(post.ChannelID, post.RootID, post.ID),
 		Mentioned: mentioned || (!isDM && addressed),
 		Raw: map[string]string{
-			"platform":     config.ChannelMattermost,
-			"post_id":      post.ID,
-			"root_id":      post.RootID,
-			"thread_root":  rootID,
-			"channel_id":   post.ChannelID,
-			"channel_type": data.ChannelType,
-			"channel_name": data.ChannelName,
-			"sender_name":  user.username,
-			"team_id":      data.TeamID,
+			"platform":    config.ChannelMattermost,
+			"post_id":     post.ID,
+			"root_id":     post.RootID,
+			"thread_root": rootID,
+			"reply_root":  replyRoot,
+			// Lets the agent describe the thread/top-level reply choice.
+			bus.InboundRawReplyPlacement: replyPlacement(replyRoot),
+			"channel_id":                 post.ChannelID,
+			"channel_type":               data.ChannelType,
+			"channel_name":               data.ChannelName,
+			"sender_name":                user.username,
+			"team_id":                    data.TeamID,
 		},
 	}
 	if post.RootID != "" {
@@ -373,14 +379,14 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 	}
 
 	if addressed {
-		c.beginIndicators(c.ctx, post.ChannelID, rootID, post.ID)
+		c.beginIndicators(c.ctx, post.ChannelID, replyRoot, post.ID)
 	}
-	deferWhileBusy := c.threads.admit(post.ChannelID, rootID, addressed)
+	deferWhileBusy := c.threads.admit(post.ChannelID, replyRoot, addressed)
 
 	logger.DebugCF("mattermost", "Received message", map[string]any{
 		"sender_id": post.UserID,
 		"chat_id":   chatID,
-		"thread":    rootID,
+		"thread":    replyRoot,
 		"deferred":  deferWhileBusy,
 		"preview":   utils.Truncate(content, 50),
 	})

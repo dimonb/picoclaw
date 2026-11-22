@@ -121,6 +121,9 @@ type PromptBuildRequest struct {
 	// inbound context; group/channel chats get the group-chat note.
 	ChatType  string
 	Mentioned bool
+	// ReplyPlacement is the channel's default placement of the answer
+	// (bus.InboundRawReplyPlacement) in chats with threads, else "".
+	ReplyPlacement string
 
 	ActiveSkills []string
 	Overlays     []PromptPart

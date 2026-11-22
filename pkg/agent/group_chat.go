@@ -40,17 +40,60 @@ func (cb *ContextBuilder) groupChatNote(req PromptBuildRequest) string {
 	if !isGroupChatType(req.ChatType) {
 		return ""
 	}
-	guidance := defaultGroupChatGuidance
-	if cb != nil && cb.workspace != "" {
-		if data, err := os.ReadFile(filepath.Join(cb.workspace, groupChatGuidanceFile)); err == nil {
-			if custom := strings.TrimSpace(string(data)); custom != "" {
-				guidance = custom
-			}
-		}
-	}
+	guidance := cb.workspaceGuidance(groupChatGuidanceFile, defaultGroupChatGuidance)
 	addressed := "no"
 	if req.Mentioned {
 		addressed = "yes"
 	}
 	return guidance + "\nThe current message is addressed to you (mention or reply to you): " + addressed
+}
+
+// workspaceGuidance returns the content of <workspace>/file when it exists
+// and is not empty, else def.
+func (cb *ContextBuilder) workspaceGuidance(file, def string) string {
+	if cb == nil || cb.workspace == "" {
+		return def
+	}
+	if data, err := os.ReadFile(filepath.Join(cb.workspace, file)); err == nil {
+		if custom := strings.TrimSpace(string(data)); custom != "" {
+			return custom
+		}
+	}
+	return def
+}
+
+// Reply placement in channels with threads (the channel sets
+// bus.InboundRawReplyPlacement). The mechanism is the same for direct and
+// group chats; only the default (chosen by the channel) and the advice
+// differ. Each advice text can be replaced by a workspace file.
+const (
+	directThreadsGuidanceFile = "THREADS_DIRECT.md"
+	groupThreadsGuidanceFile  = "THREADS_GROUP.md"
+
+	defaultDirectThreadsGuidance = `## Threads
+This chat has threads. By default you mirror the user: a top-level message gets a normal top-level reply, a message inside a thread is answered in that thread. Keep short exchanges as normal messages; use a thread when the user is in one, or when a long answer or a side topic would otherwise clutter the chat.`
+
+	defaultGroupThreadsGuidance = `## Threads
+This chat has threads. Usually answer in the message's thread; post at the top level only when that really fits better (a short remark to the whole room, an announcement, one answer to several people).`
+
+	threadsMechanism = `To place a reply differently, send it with the message tool (reply_to_message_id=<msg id> puts it in that message's thread, no reply_to_message_id puts it at the top level), then answer exactly ` + bus.SilentReplyToken + `.`
+)
+
+// threadsNote returns the reply-placement section of the dynamic context, or
+// "" when the channel does not offer the choice.
+func (cb *ContextBuilder) threadsNote(req PromptBuildRequest) string {
+	var where string
+	switch req.ReplyPlacement {
+	case bus.ReplyPlacementThread:
+		where = "in its thread"
+	case bus.ReplyPlacementTopLevel:
+		where = "at the top level"
+	default:
+		return ""
+	}
+	guidance := cb.workspaceGuidance(directThreadsGuidanceFile, defaultDirectThreadsGuidance)
+	if isGroupChatType(req.ChatType) {
+		guidance = cb.workspaceGuidance(groupThreadsGuidanceFile, defaultGroupThreadsGuidance)
+	}
+	return guidance + "\n" + threadsMechanism + "\nBy default your answer to the current message goes " + where + "."
 }

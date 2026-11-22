@@ -74,11 +74,42 @@ func parseMessageID(id string) msgRef {
 	}
 }
 
+// Reply placement is one mechanism for DMs and channels; only the default
+// differs. By default a reply goes where defaultReplyRoot says (DM: mirror
+// the user, channel/group: the post's thread). The agent chooses otherwise by
+// sending through the message tool: reply_to_message_id=<id> posts into that
+// message's thread, no reply_to_message_id posts at the top level (the tool
+// sends a bare outbound context); it then answers NO_REPLY.
+
+// defaultReplyRoot is the thread root a reply to ref goes to by default. In a
+// DM the bot mirrors the user: a top-level post gets a top-level reply ("")
+// and a post inside a thread is answered in that thread. In channels and
+// groups replies go into the post's thread.
+func defaultReplyRoot(chatType string, ref msgRef) string {
+	if isDirectChat(chatType) {
+		return ref.rootID
+	}
+	return ref.threadRoot()
+}
+
+// replyPlacement describes a default reply root for the agent's prompt.
+func replyPlacement(replyRoot string) string {
+	if replyRoot == "" {
+		return bus.ReplyPlacementTopLevel
+	}
+	return bus.ReplyPlacementThread
+}
+
+func isDirectChat(chatType string) bool {
+	return strings.EqualFold(strings.TrimSpace(chatType), "direct")
+}
+
 // resolveTarget picks the channel and thread root for an outbound message.
 // Priority: an explicit "<channel>/<root>" chat ID, then the explicit reply
-// target, then the per-turn inbound context (thread root / post being
-// answered). References that point into another channel are ignored. With no
-// reply target the post is top-level.
+// target (always threads under it), then the per-turn inbound context: the
+// thread it was replying in, else the default placement for the message being
+// answered (defaultReplyRoot). References that point into another channel are
+// ignored. With no reply target the post is top-level.
 func resolveTarget(chatID string, outCtx *bus.InboundContext, replyTo string) (channelID, rootID string) {
 	if strings.TrimSpace(chatID) == "" && outCtx != nil {
 		chatID = outCtx.ChatID
@@ -87,16 +118,22 @@ func resolveTarget(chatID string, outCtx *bus.InboundContext, replyTo string) (c
 	if rootID != "" || channelID == "" {
 		return channelID, rootID
 	}
+	inChannel := func(ref msgRef) bool {
+		return ref.postID != "" && (ref.channelID == "" || ref.channelID == channelID)
+	}
 	candidates := []string{replyTo}
 	if outCtx != nil {
-		candidates = append(candidates, outCtx.ReplyToMessageID, outCtx.MessageID)
+		candidates = append(candidates, outCtx.ReplyToMessageID)
 	}
 	for _, candidate := range candidates {
-		ref := parseMessageID(candidate)
-		if ref.postID == "" || (ref.channelID != "" && ref.channelID != channelID) {
-			continue
+		if ref := parseMessageID(candidate); inChannel(ref) {
+			return channelID, ref.threadRoot()
 		}
-		return channelID, ref.threadRoot()
+	}
+	if outCtx != nil {
+		if ref := parseMessageID(outCtx.MessageID); inChannel(ref) {
+			return channelID, defaultReplyRoot(outCtx.ChatType, ref)
+		}
 	}
 	return channelID, ""
 }

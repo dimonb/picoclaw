@@ -81,7 +81,7 @@ func (t *MessageTool) Parameters() map[string]any {
 		},
 		"reply_to_message_id": map[string]any{
 			"type":        "string",
-			"description": "Optional: opaque channel-native message ID to reply to. Use a value from a previous <msg id=\"...\"> tag or from a wait_delivery=true response. Format depends on channel — Telegram: \"chat_id:msg_id\" or \"chat_id:topic_id:msg_id\"; Matrix: \"room_id event_id\"; Mattermost: \"channel_id:post_id\" or \"channel_id:root_id:post_id\" (replies go into that thread).",
+			"description": "Optional: opaque channel-native message ID to reply to. Use a value from a previous <msg id=\"...\"> tag or from a wait_delivery=true response. Format depends on channel — Telegram: \"chat_id:msg_id\" or \"chat_id:topic_id:msg_id\"; Matrix: \"room_id event_id\"; Mattermost: \"channel_id:post_id\" or \"channel_id:root_id:post_id\" (the message goes into that thread; without reply_to_message_id it is posted at the top level).",
 		},
 		"wait_delivery": map[string]any{
 			"type":        "boolean",

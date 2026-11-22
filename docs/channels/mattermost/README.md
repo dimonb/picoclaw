@@ -54,7 +54,12 @@ The token can also be supplied via `PICOCLAW_CHANNELS_MATTERMOST_BOT_TOKEN` (and
 - The 👀 reaction, typing indicator and placeholder appear up front only for posts that address the bot. For other channel posts, a reply (if any) simply appears.
 - Several posts sent while the bot is working on a channel are folded into the running turn, which gives one reply instead of one per line. An *addressed* post from another thread gets its own turn and its own threaded reply.
 - **One conversation per channel.** A DM is one continuous conversation, and each channel or group is one conversation across all of its threads, so the bot remembers context from other threads in the same channel.
-- Replies are still posted **in a thread**: under the thread the message belongs to, or under the message itself if it was top-level. Placeholders, streamed edits, the typing indicator and files go to that same thread. If messages arrive in two different threads at once, each is answered in its own thread.
+- **Where replies go** is one mechanism for DMs and channels; only the default differs:
+  - **DMs mirror the user:** a top-level message gets a top-level reply, and a message inside a thread is answered in that thread.
+  - **Channels and groups:** replies go into the thread of the message being answered (under the message itself if it was top-level).
+  - **The bot may choose otherwise.** It is told the default for each message and can send its reply with the message tool instead: `reply_to_message_id` puts the reply in that message's thread, and leaving it out posts at the top level. The bot then answers `NO_REPLY`. It is advised to keep short DM exchanges at the top level, and to leave a channel thread only when that really fits better (an announcement, one answer to several people).
+  - Placeholders, streamed edits, the typing indicator and files follow the default placement. They are removed if the bot posts elsewhere. If messages arrive in two different threads at once, each is answered in its own thread.
+  - The advice can be replaced per workspace with `THREADS_DIRECT.md` / `THREADS_GROUP.md` (defaults in `pkg/agent/group_chat.go`).
 - Message IDs shown to the agent (and accepted by the message tool's `reply_to_message_id`) look like `<channel_id>:<post_id>` for top-level posts and `<channel_id>:<root_id>:<post_id>` inside a thread. Sending to a bare channel ID with no reply target creates a top-level post.
 - The bot ignores its own posts, system messages (joins, header changes, …) and posts from other bots.
 - Replies longer than 16383 characters are split into several posts.
