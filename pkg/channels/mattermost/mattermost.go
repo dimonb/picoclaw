@@ -71,6 +71,7 @@ type MattermostChannel struct {
 
 	indMu      sync.Mutex
 	indicators map[string]*threadIndicators // "<channel>/<root>" -> pending UX
+	feedback   map[string]string            // "<channel>/<root>" -> tool-feedback post
 	threads    threadQueue
 	users      sync.Map // user id -> userInfo
 	botThreads sync.Map // "<channel>/<root>" -> bool (bot takes part in the thread)
@@ -113,6 +114,7 @@ func NewMattermostChannel(
 		reconnectMin: time.Second,
 		reconnectMax: time.Minute,
 		indicators:   make(map[string]*threadIndicators),
+		feedback:     make(map[string]string),
 	}, nil
 }
 
@@ -257,17 +259,20 @@ func (c *MattermostChannel) Send(ctx context.Context, msg bus.OutboundMessage) (
 	if strings.TrimSpace(msg.Content) == "" {
 		return nil, nil
 	}
+	if isToolFeedback(msg) {
+		return c.sendToolFeedback(ctx, channelID, rootID, msg.Content)
+	}
 
-	pending := c.takeIndicators(channelID, rootID)
+	reuse := c.takeReusablePost(ctx, channelID, rootID)
 	chunks := channels.SplitMessage(msg.Content, maxMessageLength)
 	ids := make([]string, 0, len(chunks))
 	for i, chunk := range chunks {
-		if i == 0 && pending.placeholderID != "" {
-			if err := c.patchPost(ctx, pending.placeholderID, chunk); err == nil {
-				ids = append(ids, encodeMessageID(channelID, rootID, pending.placeholderID))
+		if i == 0 && reuse != "" {
+			if err := c.patchPost(ctx, reuse, chunk); err == nil {
+				ids = append(ids, encodeMessageID(channelID, rootID, reuse))
 				continue
 			}
-			_ = c.deletePost(ctx, pending.placeholderID)
+			_ = c.deletePost(ctx, reuse)
 		}
 		postID, err := c.createPost(ctx, channelID, rootID, chunk, nil)
 		if err != nil {
@@ -367,9 +372,7 @@ func (c *MattermostChannel) SendMedia(ctx context.Context, msg bus.OutboundMedia
 	if store == nil {
 		return nil, fmt.Errorf("no media store available: %w", channels.ErrSendFailed)
 	}
-	if pending := c.takeIndicators(channelID, rootID); pending.placeholderID != "" {
-		_ = c.deletePost(ctx, pending.placeholderID)
-	}
+	c.discardPending(ctx, channelID, rootID)
 
 	fileIDs := make([]string, 0, len(msg.Parts))
 	caption := ""

@@ -220,6 +220,7 @@
         "team": "",
         "bot_username": "",
         "group_mode": "smart",
+        "disable_inbound_reaction": false,
         "streaming": {
           "enabled": false
         }

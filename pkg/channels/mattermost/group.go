@@ -79,33 +79,64 @@ func (c *MattermostChannel) HandleSilentReply(ctx context.Context, msg bus.Outbo
 	if channelID == "" {
 		return
 	}
-	if pending := c.takeIndicators(channelID, rootID); pending.placeholderID != "" {
-		_ = c.deletePost(ctx, pending.placeholderID)
-	}
+	c.discardPending(ctx, channelID, rootID)
 	c.threads.done(channelID, rootID)
 }
 
 // --- explicit reactions (reaction tool) -------------------------------------
 
-// reactionNames maps the emoji the reaction tool may use to Mattermost
-// emoji names.
+// reactionNames maps the emoji the reaction tool may use to Mattermost emoji
+// names. It covers Telegram's reaction set plus common extras; any other
+// Mattermost emoji (including custom ones) can be given as ":name:".
 var reactionNames = map[string]string{
-	"👍": "+1", "👎": "-1", "👀": "eyes", "❤️": "heart", "😂": "joy", "😄": "smile", "🎉": "tada",
-	"✅": "white_check_mark", "🙏": "pray", "🔥": "fire", "👏": "clap", "🤔": "thinking_face",
-	"😢": "cry", "😮": "open_mouth", "🚀": "rocket", "💯": "100", "👌": "ok_hand", "❌": "x",
+	"👍": "+1", "👎": "-1", "❤️": "heart", "🔥": "fire", "🥰": "smiling_face_with_3_hearts", "👏": "clap",
+	"😁": "grin", "🤔": "thinking_face", "🤯": "exploding_head", "😱": "scream", "🤬": "face_with_symbols_on_mouth",
+	"😢": "cry", "🎉": "tada", "🤩": "star-struck", "🤮": "face_vomiting", "💩": "hankey", "🙏": "pray",
+	"👌": "ok_hand", "🕊️": "dove_of_peace", "🤡": "clown_face", "🥱": "yawning_face", "🥴": "woozy_face",
+	"😍": "heart_eyes", "🐳": "whale", "🌚": "new_moon_with_face", "🌭": "hotdog", "💯": "100",
+	"🤣": "rolling_on_the_floor_laughing", "⚡": "zap", "🍌": "banana", "🏆": "trophy", "💔": "broken_heart",
+	"🤨": "face_with_raised_eyebrow", "😐": "neutral_face", "🍓": "strawberry", "🍾": "champagne", "💋": "kiss",
+	"😈": "smiling_imp", "😴": "sleeping", "😭": "sob", "🤓": "nerd_face", "👻": "ghost",
+	"👨‍💻": "male-technologist", "👀": "eyes", "🎃": "jack_o_lantern", "🙈": "see_no_evil", "😇": "innocent",
+	"😨": "fearful", "🤝": "handshake", "✍️": "writing_hand", "🤗": "hugging_face", "🫡": "saluting_face",
+	"🎅": "santa", "🎄": "christmas_tree", "☃️": "snowman", "💅": "nail_care", "🤪": "zany_face", "🗿": "moyai",
+	"🆒": "cool", "💘": "cupid", "🙉": "hear_no_evil", "🦄": "unicorn_face", "😘": "kissing_heart", "💊": "pill",
+	"🙊": "speak_no_evil", "😎": "sunglasses", "👾": "space_invader", "🤷": "shrug", "🤷‍♂️": "man-shrugging",
+	"🤷‍♀️": "woman-shrugging", "😡": "rage",
+	// common extras
+	"😂": "joy", "😄": "smile", "🙂": "slightly_smiling_face", "😉": "wink", "😅": "sweat_smile",
+	"😮": "open_mouth", "✅": "white_check_mark", "✔️": "heavy_check_mark", "❌": "x", "⚠️": "warning",
+	"🚀": "rocket", "💪": "muscle", "👋": "wave", "⭐": "star", "🤞": "crossed_fingers", "🆗": "ok",
+	"👆": "point_up_2", "🙌": "raised_hands", "💡": "bulb", "🐛": "bug", "📌": "pushpin", "⏳": "hourglass_flowing_sand",
 }
 
 var emojiNameRe = regexp.MustCompile(`^[a-z0-9_+\-]+$`)
 
+// reactionNamesBare is reactionNames keyed without variation selectors, so
+// "❤" and "❤️" both resolve.
+var reactionNamesBare = func() map[string]string {
+	m := make(map[string]string, len(reactionNames))
+	for emoji, name := range reactionNames {
+		m[stripVariationSelectors(emoji)] = name
+	}
+	return m
+}()
+
+func stripVariationSelectors(s string) string {
+	return strings.NewReplacer("\uFE0F", "", "\uFE0E", "").Replace(s)
+}
+
 func mattermostEmojiName(emoji string) (string, error) {
 	emoji = strings.TrimSpace(emoji)
-	if name, ok := reactionNames[emoji]; ok {
+	if name, ok := reactionNamesBare[stripVariationSelectors(emoji)]; ok {
 		return name, nil
 	}
 	if name := strings.Trim(emoji, ":"); emojiNameRe.MatchString(name) {
 		return name, nil
 	}
-	return "", fmt.Errorf("unsupported mattermost reaction %q: %w", emoji, channels.ErrSendFailed)
+	return "", fmt.Errorf(
+		"unsupported mattermost reaction %q (use a common emoji or a Mattermost emoji name like \":thumbsup:\"): %w",
+		emoji, channels.ErrSendFailed)
 }
 
 // SetMessageReaction implements channels.MessageReactor.
@@ -118,7 +149,11 @@ func (c *MattermostChannel) SetMessageReaction(ctx context.Context, chatID, mess
 	if postID == "" {
 		return fmt.Errorf("mattermost reaction: empty message id: %w", channels.ErrSendFailed)
 	}
-	return c.addReaction(ctx, postID, name)
+	if err := c.addReaction(ctx, postID, name); err != nil {
+		return err
+	}
+	c.keepReaction(postID, name)
+	return nil
 }
 
 // RemoveMessageReaction implements channels.MessageReactor.
@@ -127,23 +162,17 @@ func (c *MattermostChannel) RemoveMessageReaction(ctx context.Context, chatID, m
 	if err != nil {
 		return err
 	}
-	return c.removeReaction(ctx, parseMessageID(messageID).postID, name)
+	postID := parseMessageID(messageID).postID
+	if postID == "" {
+		return fmt.Errorf("mattermost reaction: empty message id: %w", channels.ErrSendFailed)
+	}
+	return c.removeReaction(ctx, postID, name)
 }
 
-// GetReactionSupport implements channels.MessageReactor.
+// GetReactionSupport implements channels.MessageReactor. Like Telegram it
+// reports any emoji: the channel maps it to a Mattermost name itself (see
+// reactionNames) and also accepts ":name:", which an allow-list in the
+// reaction tool would reject.
 func (c *MattermostChannel) GetReactionSupport(context.Context, string) channels.ReactionSupport {
-	allowed := make([]string, 0, len(reactionNames))
-	for emoji := range reactionNames {
-		allowed = append(allowed, emoji)
-	}
-	return channels.ReactionSupport{Allowed: sortedStrings(allowed)}
-}
-
-func sortedStrings(in []string) []string {
-	for i := 1; i < len(in); i++ {
-		for j := i; j > 0 && in[j] < in[j-1]; j-- {
-			in[j], in[j-1] = in[j-1], in[j]
-		}
-	}
-	return in
+	return channels.ReactionSupport{AnyUnicode: true}
 }

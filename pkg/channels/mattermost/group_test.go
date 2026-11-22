@@ -130,12 +130,20 @@ func TestMessageReactor(t *testing.T) {
 	if err := ch.SetMessageReaction(ctx, testChanID, "p2", ":tada:"); err != nil {
 		t.Fatal(err)
 	}
-	if err := ch.SetMessageReaction(ctx, testChanID, "p3", "🦄"); err == nil {
-		t.Error("unsupported emoji should fail")
+	if err := ch.SetMessageReaction(ctx, testChanID, "p3", "🦩"); err == nil {
+		t.Error("unmapped unicode emoji should fail")
+	}
+	// Telegram's set is covered, with or without the variation selector.
+	if err := ch.SetMessageReaction(ctx, testChanID, "p4", "❤"); err != nil {
+		t.Fatal(err)
+	}
+	if err := ch.SetMessageReaction(ctx, testChanID, "p5", "🤷‍♂️"); err != nil {
+		t.Fatal(err)
 	}
 	adds := fm.callsTo(http.MethodPost, "/api/v4/reactions")
-	if len(adds) != 2 || adds[0].Body["post_id"] != "p1" || adds[0].Body["emoji_name"] != "+1" ||
-		adds[1].Body["emoji_name"] != "tada" {
+	if len(adds) != 4 || adds[0].Body["post_id"] != "p1" || adds[0].Body["emoji_name"] != "+1" ||
+		adds[1].Body["emoji_name"] != "tada" || adds[2].Body["emoji_name"] != "heart" ||
+		adds[3].Body["emoji_name"] != "man-shrugging" {
 		t.Errorf("reactions = %v", adds)
 	}
 	if err := ch.RemoveMessageReaction(ctx, testChanID, testChanID+":p1", "👍"); err != nil {
@@ -144,8 +152,9 @@ func TestMessageReactor(t *testing.T) {
 	if dels := fm.callsTo(http.MethodDelete, "/api/v4/users/"+testBotID+"/posts/p1/reactions/+1"); len(dels) != 1 {
 		t.Errorf("remove = %v", dels)
 	}
-	if support := ch.GetReactionSupport(ctx, testChanID); support.AnyUnicode ||
-		len(support.Allowed) != len(reactionNames) {
+	// Any emoji, like Telegram: the channel maps it (and accepts ":name:",
+	// which a tool-side allow-list would reject).
+	if support := ch.GetReactionSupport(ctx, testChanID); !support.AnyUnicode {
 		t.Errorf("support = %+v", support)
 	}
 }

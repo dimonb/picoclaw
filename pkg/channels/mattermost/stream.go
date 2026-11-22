@@ -54,14 +54,18 @@ type mattermostStreamer struct {
 }
 
 // start consumes the thread's pending indicators (stops typing/👀) and
-// adopts its placeholder post, if any, as the post to edit.
-func (s *mattermostStreamer) start() {
+// adopts its placeholder (or tool-feedback) post, if any, as the post to edit.
+func (s *mattermostStreamer) start(ctx context.Context) {
 	if s.started {
 		return
 	}
 	s.started = true
-	if pending := s.ch.takeIndicators(s.channelID, s.rootID); pending.placeholderID != "" && s.postID == "" {
-		s.postID = pending.placeholderID
+	if reuse := s.ch.takeReusablePost(ctx, s.channelID, s.rootID); reuse != "" {
+		if s.postID == "" {
+			s.postID = reuse
+		} else {
+			_ = s.ch.deletePost(ctx, reuse)
+		}
 	}
 }
 
@@ -78,7 +82,7 @@ func (s *mattermostStreamer) Update(ctx context.Context, content string) error {
 		return nil
 	}
 
-	s.start()
+	s.start(ctx)
 	// While streaming, only the head fits in one post; Finalize splits.
 	display := content
 	if runes := []rune(content); len(runes) > maxMessageLength {
@@ -106,7 +110,7 @@ func (s *mattermostStreamer) Finalize(ctx context.Context, content string) error
 	if s.finalized {
 		return nil
 	}
-	s.start()
+	s.start(ctx)
 
 	chunks := channels.SplitMessage(content, maxMessageLength)
 	if len(chunks) == 0 {

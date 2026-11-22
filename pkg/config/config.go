@@ -644,12 +644,16 @@ type SlackSettings struct {
 // channel post and decides whether to answer) or "mention". The bot token is a Mattermost bot account access token
 // (or a personal access token) and is handled as a secret like Slack's tokens.
 type MattermostSettings struct {
-	URL         string          `json:"url"                    yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_URL"`
-	BotToken    SecureString    `json:"bot_token,omitzero"     yaml:"bot_token,omitempty" env:"PICOCLAW_CHANNELS_MATTERMOST_BOT_TOKEN"`
-	Team        string          `json:"team,omitempty"         yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_TEAM"`
-	BotUsername string          `json:"bot_username,omitempty" yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_BOT_USERNAME"`
-	GroupMode   string          `json:"group_mode,omitempty"   yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_GROUP_MODE"`
-	Streaming   StreamingConfig `json:"streaming,omitzero"     yaml:"-"`
+	URL         string          `json:"url"                      yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_URL"`
+	BotToken    SecureString    `json:"bot_token,omitzero"       yaml:"bot_token,omitempty" env:"PICOCLAW_CHANNELS_MATTERMOST_BOT_TOKEN"`
+	Team        string          `json:"team,omitempty"           yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_TEAM"`
+	BotUsername string          `json:"bot_username,omitempty"   yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_BOT_USERNAME"`
+	GroupMode   string          `json:"group_mode,omitempty"     yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_GROUP_MODE"`
+	Streaming   StreamingConfig `json:"streaming,omitzero"       yaml:"-"`
+	// DisableInboundReaction suppresses the automatic 👀 reaction on posts
+	// addressed to the bot (same key and meaning as Telegram's). Reactions the
+	// agent places with the reaction tool are not affected.
+	DisableInboundReaction bool `json:"disable_inbound_reaction" yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_DISABLE_INBOUND_REACTION"`
 }
 
 type MatrixSettings struct {

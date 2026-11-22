@@ -152,10 +152,11 @@ func threadKey(channelID, rootID string) string { return channelID + "/" + rootI
 // posts in different threads of one channel never consume each other's
 // placeholder.
 type threadIndicators struct {
-	stopTyping    func()
-	undoReaction  func()
-	placeholderID string
-	created       time.Time
+	stopTyping     func()
+	undoReaction   func()
+	reactionPostID string // post carrying the automatic 👀
+	placeholderID  string
+	created        time.Time
 }
 
 func (t *threadIndicators) stop() {
@@ -191,8 +192,9 @@ func (c *MattermostChannel) beginIndicators(ctx context.Context, channelID, root
 	if c.bc.Typing.Enabled {
 		ind.stopTyping = c.startTyping(channelID, rootID)
 	}
-	if postID != "" && c.botUserID != "" {
+	if postID != "" && c.botUserID != "" && !c.config.DisableInboundReaction {
 		if err := c.addReaction(ctx, postID, reactionEmoji); err == nil {
+			ind.reactionPostID = postID
 			var once sync.Once
 			ind.undoReaction = func() {
 				once.Do(func() {
@@ -214,6 +216,22 @@ func (c *MattermostChannel) beginIndicators(ctx context.Context, channelID, root
 	c.indMu.Lock()
 	c.indicators[key] = ind
 	c.indMu.Unlock()
+}
+
+// keepReaction is called when the agent itself reacts to postID with emoji
+// name: if that is the automatic 👀 still pending on the post, it is no
+// longer removed when the reply goes out (or the reply is NO_REPLY).
+func (c *MattermostChannel) keepReaction(postID, name string) {
+	if name != reactionEmoji {
+		return
+	}
+	c.indMu.Lock()
+	defer c.indMu.Unlock()
+	for _, ind := range c.indicators {
+		if ind.reactionPostID == postID {
+			ind.undoReaction = nil
+		}
+	}
 }
 
 // takeIndicators removes the thread's pending indicators, stops typing and
