@@ -302,19 +302,21 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 	}
 	content := c.stripBotMention(post.Message)
 
+	// DMs are always addressed. In channels a post is addressed when it
+	// mentions the bot, follows up in a thread the bot takes part in, or
+	// matches a group_trigger prefix. Mention mode drops everything else;
+	// smart mode hands it to the agent, which may answer NO_REPLY.
+	addressed := isDM
 	if !isDM {
-		if !mentioned {
-			// Channel posts require an @mention. Explicit group_trigger
-			// prefixes (if configured) are honored as an alternative.
-			if len(c.bc.GroupTrigger.Prefixes) == 0 {
-				return
+		addressed = mentioned || (post.RootID != "" && c.botInThread(c.ctx, post.ChannelID, post.RootID))
+		if !addressed && len(c.bc.GroupTrigger.Prefixes) > 0 {
+			if ok, cleaned := c.ShouldRespondInGroup(false, content); ok {
+				addressed, content = true, cleaned
 			}
 		}
-		respond, cleaned := c.ShouldRespondInGroup(mentioned, content)
-		if !respond {
+		if !addressed && (c.groupMode == groupModeMention || c.bc.GroupTrigger.MentionOnly) {
 			return
 		}
-		content = cleaned
 	}
 
 	// One session per channel: the chat ID is the plain channel ID and the
@@ -349,7 +351,7 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 		ChatType:  chatType,
 		SenderID:  post.UserID,
 		MessageID: encodeMessageID(post.ChannelID, post.RootID, post.ID),
-		Mentioned: mentioned,
+		Mentioned: mentioned || (!isDM && addressed),
 		Raw: map[string]string{
 			"platform":     config.ChannelMattermost,
 			"post_id":      post.ID,
@@ -370,7 +372,6 @@ func (c *MattermostChannel) handlePosted(raw json.RawMessage) {
 		inboundCtx.SpaceType = "team"
 	}
 
-	addressed := true // DMs, @mentions and prefix triggers
 	if addressed {
 		c.beginIndicators(c.ctx, post.ChannelID, rootID, post.ID)
 	}

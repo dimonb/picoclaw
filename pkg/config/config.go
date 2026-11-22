@@ -640,13 +640,15 @@ type SlackSettings struct {
 }
 
 // MattermostSettings configures the Mattermost channel (WebSocket inbound,
-// REST v4 outbound). The bot token is a Mattermost bot account access token
+// REST v4 outbound). GroupMode is "smart" (default: the agent sees every
+// channel post and decides whether to answer) or "mention". The bot token is a Mattermost bot account access token
 // (or a personal access token) and is handled as a secret like Slack's tokens.
 type MattermostSettings struct {
 	URL         string          `json:"url"                    yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_URL"`
 	BotToken    SecureString    `json:"bot_token,omitzero"     yaml:"bot_token,omitempty" env:"PICOCLAW_CHANNELS_MATTERMOST_BOT_TOKEN"`
 	Team        string          `json:"team,omitempty"         yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_TEAM"`
 	BotUsername string          `json:"bot_username,omitempty" yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_BOT_USERNAME"`
+	GroupMode   string          `json:"group_mode,omitempty"   yaml:"-"                   env:"PICOCLAW_CHANNELS_MATTERMOST_GROUP_MODE"`
 	Streaming   StreamingConfig `json:"streaming,omitzero"     yaml:"-"`
 }
 

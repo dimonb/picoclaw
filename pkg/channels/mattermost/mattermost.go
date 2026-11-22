@@ -54,6 +54,7 @@ type MattermostChannel struct {
 	botUserID   string
 	botUsername string
 	teamID      string
+	groupMode   string
 	mentionRe   *regexp.Regexp
 
 	ctx    context.Context
@@ -72,6 +73,7 @@ type MattermostChannel struct {
 	indicators map[string]*threadIndicators // "<channel>/<root>" -> pending UX
 	threads    threadQueue
 	users      sync.Map // user id -> userInfo
+	botThreads sync.Map // "<channel>/<root>" -> bool (bot takes part in the thread)
 }
 
 // NewMattermostChannel validates the settings and builds a channel instance.
@@ -88,6 +90,10 @@ func NewMattermostChannel(
 	if cfg.BotToken.String() == "" {
 		return nil, fmt.Errorf("mattermost bot_token is required")
 	}
+	groupMode, err := normalizeGroupMode(cfg.GroupMode)
+	if err != nil {
+		return nil, err
+	}
 
 	base := channels.NewBaseChannel(config.ChannelMattermost, cfg, messageBus, bc.AllowFrom,
 		channels.WithMaxMessageLength(maxMessageLength),
@@ -100,6 +106,7 @@ func NewMattermostChannel(
 		bc:           bc,
 		config:       cfg,
 		baseURL:      baseURL,
+		groupMode:    groupMode,
 		httpClient:   &http.Client{Timeout: httpTimeout},
 		dialer:       &websocket.Dialer{HandshakeTimeout: 30 * time.Second, Proxy: http.ProxyFromEnvironment},
 		ctx:          context.Background(),
@@ -424,6 +431,11 @@ func (c *MattermostChannel) createPost(
 	}
 	if err := c.apiJSON(ctx, http.MethodPost, "/api/v4/posts", body, &created); err != nil {
 		return "", err
+	}
+	if rootID != "" {
+		c.markBotThread(channelID, rootID)
+	} else {
+		c.markBotThread(channelID, created.ID) // a top-level bot post roots a thread
 	}
 	return created.ID, nil
 }

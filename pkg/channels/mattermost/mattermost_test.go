@@ -104,6 +104,11 @@ func (fm *fakeMattermost) handle(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]string{
 			"id": testUserID, "username": "alice", "first_name": "Alice", "last_name": "Smith",
 		})
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v4/posts/botroot/thread":
+		_ = json.NewEncoder(w).Encode(map[string]any{"posts": map[string]any{
+			"botroot": map[string]string{"user_id": testUserID},
+			"botrep":  map[string]string{"user_id": testBotID},
+		}})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v4/teams/name/myteam":
 		_ = json.NewEncoder(w).Encode(map[string]string{"id": "teamid1"})
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v4/posts":
@@ -263,6 +268,11 @@ func TestNewMattermostChannelValidation(t *testing.T) {
 	if _, err := NewMattermostChannel(bc, &config.MattermostSettings{URL: "https://mm.example.com"}, mb); err == nil {
 		t.Error("expected error for missing bot_token")
 	}
+	if _, err := NewMattermostChannel(bc, &config.MattermostSettings{
+		URL: "https://mm.example.com", BotToken: tok, GroupMode: "loud",
+	}, mb); err == nil {
+		t.Error("expected error for unknown group_mode")
+	}
 	ch, err := NewMattermostChannel(bc, &config.MattermostSettings{URL: "https://mm.example.com/", BotToken: tok}, mb)
 	if err != nil {
 		t.Fatalf("valid config: %v", err)
@@ -328,7 +338,9 @@ func TestInboundDirectMessage(t *testing.T) {
 
 func TestInboundChannelMentionFiltering(t *testing.T) {
 	fm := newFakeMattermost(t)
-	ch, mb := newTestChannel(t, fm, nil, nil)
+	ch, mb := newTestChannel(t, fm, nil, func(_ *config.Channel, s *config.MattermostSettings) {
+		s.GroupMode = "mention"
+	})
 	conn := startConnected(t, fm, ch)
 
 	// Not mentioned: ignored.
@@ -365,8 +377,9 @@ func TestInboundChannelMentionFiltering(t *testing.T) {
 
 func TestInboundGroupTriggerPrefix(t *testing.T) {
 	fm := newFakeMattermost(t)
-	ch, mb := newTestChannel(t, fm, nil, func(bc *config.Channel, _ *config.MattermostSettings) {
+	ch, mb := newTestChannel(t, fm, nil, func(bc *config.Channel, s *config.MattermostSettings) {
 		bc.GroupTrigger.Prefixes = []string{"!ask "}
+		s.GroupMode = "mention"
 	})
 	conn := startConnected(t, fm, ch)
 

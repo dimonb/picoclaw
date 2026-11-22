@@ -219,6 +219,7 @@
         "bot_token": "YOUR_MATTERMOST_BOT_TOKEN",
         "team": "",
         "bot_username": "",
+        "group_mode": "smart",
         "streaming": {
           "enabled": false
         }

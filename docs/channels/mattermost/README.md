@@ -20,6 +20,7 @@ Mattermost is an open-source, self-hostable team chat platform. PicoClaw connect
         "bot_token": "YOUR_MATTERMOST_BOT_TOKEN",
         "team": "",
         "bot_username": "",
+        "group_mode": "smart",
         "streaming": { "enabled": false }
       }
     }
@@ -34,6 +35,7 @@ Mattermost is an open-source, self-hostable team chat platform. PicoClaw connect
 | settings.bot_token     | string | Yes      | Bot account access token (or a personal access token). Treated as a secret, like Slack's tokens     |
 | settings.team          | string | No       | Team name or ID. When set, channel posts from other teams are ignored (DMs are always handled)      |
 | settings.bot_username  | string | No       | Overrides the username from `/api/v4/users/me` used to detect `@mentions` in text                   |
+| settings.group_mode    | string | No       | `smart` (default): the bot reads every post in its channels and decides itself whether to answer. `mention`: it only sees @mentions, follow-ups in its threads and `group_trigger` prefixes |
 | settings.streaming     | object | No       | `{"enabled": true}` streams partial replies by editing a post in place (`throttle_seconds`, `min_growth_chars` optional) |
 | allow_from             | array  | No       | Mattermost user IDs (or `mattermost:<user_id>`) allowed to talk to the bot; empty means everyone    |
 | typing.enabled         | bool   | No       | Show the "is typing…" indicator while the agent works                                                |
@@ -44,13 +46,19 @@ The token can also be supplied via `PICOCLAW_CHANNELS_MATTERMOST_BOT_TOKEN` (and
 
 ## Behavior
 
-- **Direct messages** are always answered. **Channel and group messages** are answered only when the bot is @mentioned; the mention is removed from the text before it reaches the agent.
+- **Direct messages** are always answered.
+- **Channel and group messages** depend on `group_mode`:
+  - **`smart` (default):** the bot reads every post in channels it is a member of and behaves like a colleague in the chat. It answers when it is addressed, when the topic concerns it, or when it has something genuinely useful to add. Otherwise it stays silent: the agent answers `NO_REPLY`, and nothing is posted.
+  - **`mention`:** only @mentions, follow-ups in threads the bot takes part in, and `group_trigger.prefixes` reach the agent. Use this for noisy or expensive channels.
+- A follow-up in a thread where the bot has replied counts as addressing the bot, like replying to the bot in Telegram. The @mention is removed from the text before it reaches the agent. `@channel`, `@all` and `@here` alone do not count as a mention.
+- The 👀 reaction, typing indicator and placeholder appear up front only for posts that address the bot. For other channel posts, a reply (if any) simply appears.
+- Several posts sent while the bot is working on a channel are folded into the running turn, which gives one reply instead of one per line. An *addressed* post from another thread gets its own turn and its own threaded reply.
 - **One conversation per channel.** A DM is one continuous conversation, and each channel or group is one conversation across all of its threads, so the bot remembers context from other threads in the same channel.
 - Replies are still posted **in a thread**: under the thread the message belongs to, or under the message itself if it was top-level. Placeholders, streamed edits, the typing indicator and files go to that same thread. If messages arrive in two different threads at once, each is answered in its own thread.
 - Message IDs shown to the agent (and accepted by the message tool's `reply_to_message_id`) look like `<channel_id>:<post_id>` for top-level posts and `<channel_id>:<root_id>:<post_id>` inside a thread. Sending to a bare channel ID with no reply target creates a top-level post.
 - The bot ignores its own posts, system messages (joins, header changes, …) and posts from other bots.
 - Replies longer than 16383 characters are split into several posts.
-- Inbound posts receive a 👀 reaction while the agent works. Attachments are downloaded for the agent; files the agent sends are uploaded as attachments.
+- Addressed posts receive a 👀 reaction while the agent works, and the agent can react with emoji through the reaction tool (👍 ❤️ 🎉 ✅ 👀 🙏 🔥 …). Attachments are downloaded for the agent; files the agent sends are uploaded as attachments.
 
 ## Setup
 
