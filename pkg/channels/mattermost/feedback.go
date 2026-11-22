@@ -19,7 +19,8 @@ import (
 // own post and stays in the chat (as in Telegram).
 //
 // A tracked post that no answer or cleanup claims (e.g. the turn was stopped)
-// is deleted after indicatorTTL by sweepFeedback.
+// is deleted by sweepFeedback once it is older than indicatorTTL and its
+// thread has no unfinished turn.
 
 const toolFeedbackKind = "tool_feedback"
 
@@ -63,12 +64,13 @@ func (c *MattermostChannel) sendToolFeedback(ctx context.Context, channelID, roo
 }
 
 // sweepFeedback deletes tool-feedback posts older than indicatorTTL that no
-// answer or cleanup claimed.
+// answer or cleanup claimed. The post of a thread whose turn is still running
+// is kept however long its current tool call takes (see activeTurnMaxAge).
 func (c *MattermostChannel) sweepFeedback(ctx context.Context) {
 	var stale []string
 	c.indMu.Lock()
 	for key, fb := range c.feedback {
-		if time.Since(fb.at) > indicatorTTL {
+		if time.Since(fb.at) > indicatorTTL && !c.threads.turnActive(key) {
 			stale = append(stale, fb.id)
 			delete(c.feedback, key)
 		}

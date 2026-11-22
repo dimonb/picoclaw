@@ -26,6 +26,11 @@ import (
 const (
 	indicatorTTL   = 30 * time.Minute
 	threadQueueTTL = 30 * time.Minute
+	// activeTurnMaxAge bounds how long a thread counts as having an
+	// unfinished turn without a reply (a turn that was stopped or crashed
+	// never ends): its indicators and tool-feedback post are not swept as
+	// stale before that.
+	activeTurnMaxAge = 6 * time.Hour
 	// metadata keys used by the agent on outbound messages (pkg/agent).
 	outboundKindKey   = "outbound_kind"
 	outboundKindFinal = "final"
@@ -196,7 +201,9 @@ func (c *MattermostChannel) beginIndicators(ctx context.Context, channelID, root
 	key := threadKey(channelID, rootID)
 	c.indMu.Lock()
 	for k, ind := range c.indicators {
-		if time.Since(ind.created) > indicatorTTL {
+		// A turn may run longer than indicatorTTL (one long tool call):
+		// its typing and placeholder stay until the reply takes them.
+		if time.Since(ind.created) > indicatorTTL && !c.threads.turnActive(k) {
 			ind.stop()
 			delete(c.indicators, k)
 		}
@@ -280,6 +287,9 @@ func (c *MattermostChannel) takeIndicators(channelID, rootID string) threadIndic
 type threadQueue struct {
 	mu        sync.Mutex
 	byChannel map[string][]queuedThread
+	// active marks threads with an unfinished turn: set when a post of the
+	// thread is handed to the agent, cleared when the turn ends (done).
+	active map[string]time.Time
 }
 
 type queuedThread struct {
@@ -297,6 +307,15 @@ func (q *threadQueue) admit(channelID, root string, addressed bool) bool {
 		q.byChannel = make(map[string][]queuedThread)
 	}
 	now := time.Now()
+	if q.active == nil {
+		q.active = make(map[string]time.Time)
+	}
+	for key, at := range q.active {
+		if now.Sub(at) > activeTurnMaxAge {
+			delete(q.active, key)
+		}
+	}
+	q.active[threadKey(channelID, root)] = now
 	list := q.byChannel[channelID]
 	for len(list) > 0 && now.Sub(list[0].at) > threadQueueTTL {
 		list = list[1:]
@@ -323,9 +342,13 @@ func (q *threadQueue) admit(channelID, root string, addressed bool) bool {
 func (q *threadQueue) done(channelID, root string) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	delete(q.active, threadKey(channelID, root))
 	list := q.byChannel[channelID]
 	for i, t := range list {
 		if t.root == root {
+			for _, earlier := range list[:i] {
+				delete(q.active, threadKey(channelID, earlier.root))
+			}
 			if rest := list[i+1:]; len(rest) > 0 {
 				q.byChannel[channelID] = rest
 			} else {
@@ -334,6 +357,15 @@ func (q *threadQueue) done(channelID, root string) {
 			return
 		}
 	}
+}
+
+// turnActive reports whether the thread with key "<channel>/<root>" has an
+// unfinished turn (see activeTurnMaxAge).
+func (q *threadQueue) turnActive(key string) bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	at, ok := q.active[key]
+	return ok && time.Since(at) < activeTurnMaxAge
 }
 
 // --- sender profiles ----------------------------------------------------------
