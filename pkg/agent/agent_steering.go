@@ -15,7 +15,9 @@ func (al *AgentLoop) processMessageSync(ctx context.Context, msg bus.InboundMess
 	}
 
 	response, err := al.processMessage(ctx, msg)
-	if pubErr := al.publishResponseOrError(ctx, msg.Channel, msg.ChatID, msg.SessionKey, response, err); pubErr != nil {
+	if pubErr := al.publishResponseOrError(
+		ctx, &msg.Context, msg.Channel, msg.ChatID, msg.SessionKey, response, err,
+	); pubErr != nil {
 		logger.ErrorCF("agent", "Failed to publish response in processMessageSync",
 			map[string]any{
 				"channel":     msg.Channel,
@@ -30,8 +32,9 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 	// Process the initial message
 	response, err := al.processMessage(ctx, initialMsg)
 	if err != nil {
-		if pubErr := al.maybePublishError(
+		if pubErr := al.maybePublishErrorFor(
 			ctx,
+			&initialMsg.Context,
 			initialMsg.Channel,
 			initialMsg.ChatID,
 			initialMsg.SessionKey,
@@ -78,7 +81,9 @@ func (al *AgentLoop) runTurnWithSteering(ctx context.Context, initialMsg bus.Inb
 
 	// Publish final response
 	if finalResponse != "" {
-		al.PublishResponseIfNeeded(ctx, target.Channel, target.ChatID, target.SessionKey, finalResponse)
+		al.publishFinalResponse(
+			ctx, &initialMsg.Context, target.Channel, target.ChatID, target.SessionKey, finalResponse,
+		)
 	}
 }
 

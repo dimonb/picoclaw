@@ -18,11 +18,23 @@ import (
 )
 
 func (al *AgentLoop) maybePublishError(ctx context.Context, channel, chatID, sessionKey string, err error) error {
+	return al.maybePublishErrorFor(ctx, nil, channel, chatID, sessionKey, err)
+}
+
+// maybePublishErrorFor is maybePublishError addressed to the message being
+// answered (see publishFinalResponse).
+func (al *AgentLoop) maybePublishErrorFor(
+	ctx context.Context,
+	inbound *bus.InboundContext,
+	channel, chatID, sessionKey string,
+	err error,
+) error {
 	if errors.Is(err, context.Canceled) {
 		return nil
 	}
-	return al.PublishResponseIfNeeded(
+	return al.publishFinalResponse(
 		ctx,
+		inbound,
 		channel,
 		chatID,
 		sessionKey,
@@ -32,20 +44,47 @@ func (al *AgentLoop) maybePublishError(ctx context.Context, channel, chatID, ses
 
 func (al *AgentLoop) publishResponseOrError(
 	ctx context.Context,
+	inbound *bus.InboundContext,
 	channel, chatID, sessionKey string,
 	response string,
 	err error,
 ) error {
 	if err != nil {
-		if pubErr := al.maybePublishError(ctx, channel, chatID, sessionKey, err); pubErr != nil {
+		if pubErr := al.maybePublishErrorFor(ctx, inbound, channel, chatID, sessionKey, err); pubErr != nil {
 			return pubErr
 		}
 		return nil
 	}
-	return al.PublishResponseIfNeeded(ctx, channel, chatID, sessionKey, response)
+	return al.publishFinalResponse(ctx, inbound, channel, chatID, sessionKey, response)
 }
 
 func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatID, sessionKey, response string) error {
+	return al.publishFinalResponse(ctx, nil, channel, chatID, sessionKey, response)
+}
+
+// finalOutboundContext addresses a final response. When the turn's inbound
+// context belongs to the same chat it is attached, so channels can tell which
+// message is being answered (Mattermost replies into that post's thread,
+// Slack into its thread_ts via TopicID). ReplyToMessageID is cleared: the
+// final answer is not a quote-reply to whatever the user was replying to,
+// which keeps Telegram/Discord/Slack/VK reply behavior unchanged.
+func finalOutboundContext(inbound *bus.InboundContext, channel, chatID string) bus.InboundContext {
+	if inbound == nil || strings.TrimSpace(inbound.ChatID) != strings.TrimSpace(chatID) ||
+		(inbound.Channel != "" && inbound.Channel != channel) {
+		return bus.NewOutboundContext(channel, chatID, "")
+	}
+	outboundCtx := outboundContextFromInbound(inbound, channel, chatID, "")
+	outboundCtx.ReplyToMessageID = ""
+	return outboundCtx
+}
+
+// publishFinalResponse publishes a turn's final response. inbound (optional)
+// is the context of the message being answered.
+func (al *AgentLoop) publishFinalResponse(
+	ctx context.Context,
+	inbound *bus.InboundContext,
+	channel, chatID, sessionKey, response string,
+) error {
 	// Trim, not just an empty check: a model told to stay silent unless it has
 	// something to report answers with a space rather than an empty string, and
 	// " " is not deliverable — Telegram rejects it as RICH_MESSAGE_EMPTY and
@@ -85,7 +124,7 @@ func (al *AgentLoop) PublishResponseIfNeeded(ctx context.Context, channel, chatI
 	}
 
 	msg := bus.OutboundMessage{
-		Context:    bus.NewOutboundContext(channel, chatID, ""),
+		Context:    finalOutboundContext(inbound, channel, chatID),
 		SessionKey: sessionKey,
 		Content:    response,
 	}
