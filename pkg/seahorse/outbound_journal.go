@@ -12,6 +12,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/sipeed/picoclaw/pkg/bus"
 )
 
 const outboundReceiptTimeout = 10 * time.Second
@@ -139,7 +141,7 @@ func (j *outboundJournal) replay(s *Store) error {
 		if r.Created == "" || r.Delivery.Channel == "" || r.Delivery.MessageID == "" {
 			return fmt.Errorf("invalid receipt %s", path)
 		}
-		if err := s.insertOutboundDelivery(ctx, r.Delivery, r.Created); err != nil {
+		if err := s.insertOutboundDelivery(ctx, legacyReceiptOrigin(r.Delivery), r.Created); err != nil {
 			return err
 		}
 		if err := os.Remove(path); err != nil {
@@ -152,6 +154,17 @@ func (j *outboundJournal) replay(s *Store) error {
 		}
 	}
 	return nil
+}
+
+// legacyReceiptOrigin sets the origin of a receipt queued by a version from
+// before OutboundDelivery.Origin, by the same rule as the database migration
+// (ensureOutboundDeliveryOriginColumn): with a session key it is a send
+// (edits never carried one); without, it stays unknown and is not trusted.
+func legacyReceiptOrigin(d OutboundDelivery) OutboundDelivery {
+	if d.Origin == "" && d.SessionKey != "" {
+		d.Origin = bus.OutboundOriginSend
+	}
+	return d
 }
 
 func (j *outboundJournal) record(s *Store, d OutboundDelivery) error {

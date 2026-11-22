@@ -48,14 +48,15 @@ func (s *Store) insertOutboundDelivery(ctx context.Context, d OutboundDelivery, 
 	if err != nil {
 		return fmt.Errorf("encode delivery parts: %w", err)
 	}
-	// A send makes the row "send" for good; an edit only updates the
-	// content and never moves an existing row to another chat or session.
+	// A send makes the row "send" for good. Anything else (an edit, or a
+	// record of unknown origin) only updates the content and never moves an
+	// existing row to another chat, topic or session.
 	_, err = s.db.ExecContext(ctx, `INSERT INTO outbound_deliveries
  (channel,account,channel_message_id,chat_id,topic_id,session_key,content,parts,created_at,origin)
  VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(channel,account,channel_message_id) DO UPDATE SET
- chat_id=CASE WHEN excluded.chat_id='' OR excluded.origin='edit' THEN outbound_deliveries.chat_id ELSE excluded.chat_id END,
- topic_id=CASE WHEN excluded.topic_id='' OR excluded.origin='edit' THEN outbound_deliveries.topic_id ELSE excluded.topic_id END,
- session_key=CASE WHEN excluded.session_key='' OR excluded.origin='edit' THEN outbound_deliveries.session_key ELSE excluded.session_key END,
+ chat_id=CASE WHEN excluded.chat_id='' OR excluded.origin<>'send' THEN outbound_deliveries.chat_id ELSE excluded.chat_id END,
+ topic_id=CASE WHEN excluded.topic_id='' OR excluded.origin<>'send' THEN outbound_deliveries.topic_id ELSE excluded.topic_id END,
+ session_key=CASE WHEN excluded.session_key='' OR excluded.origin<>'send' THEN outbound_deliveries.session_key ELSE excluded.session_key END,
  origin=CASE WHEN outbound_deliveries.origin='send' OR excluded.origin='send' THEN 'send' ELSE excluded.origin END,
  content=excluded.content,parts=excluded.parts`, d.Channel, d.Account, d.MessageID, d.ChatID, d.TopicID, d.SessionKey, d.Content, string(parts), created, d.Origin)
 	return err

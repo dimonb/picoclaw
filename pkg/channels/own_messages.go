@@ -90,6 +90,22 @@ func lookupKey(ch Channel, canonicalRef string) string {
 	return canonicalRef
 }
 
+// refInChat reports whether the canonical reference points into chatID
+// itself. For a channel with a MessageRefCanonicalizer the native message ID
+// alone, seen from chatID, must give the same canonical form: Telegram
+// "A:45", Matrix "!A:server $e", Mattermost "chanA:post". A reference into
+// another chat ("B:45", "!B:server $e") is never the bot's own message in
+// chatID, whatever the delivery records say: rows written by older versions
+// may list it under chatID (an edit moved the row's chat), and the channel
+// would act on the chat embedded in the reference. Other channels' refs carry
+// no chat and are compared as they are.
+func refInChat(ch Channel, chatID, canonicalRef string) bool {
+	if _, ok := ch.(MessageRefCanonicalizer); !ok {
+		return true
+	}
+	return canonicalMessageRef(ch, chatID, lookupKey(ch, canonicalRef)) == canonicalRef
+}
+
 // rememberOwnDelivery records a confirmed send in the in-memory record.
 func (m *Manager) rememberOwnDelivery(channel, chatID, messageID string) {
 	ch, _ := m.GetChannel(channel)
@@ -101,7 +117,7 @@ func (m *Manager) rememberOwnDelivery(channel, chatID, messageID string) {
 // lookup. Unknown means "not own".
 func (m *Manager) isOwnMessage(ctx context.Context, channel string, ch Channel, chatID, messageID string) bool {
 	want := canonicalMessageRef(ch, chatID, messageID)
-	if want == "" {
+	if want == "" || !refInChat(ch, chatID, want) {
 		return false
 	}
 	if m.ownRefs.has(channel, chatID, want) {

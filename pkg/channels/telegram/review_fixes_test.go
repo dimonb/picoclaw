@@ -147,3 +147,38 @@ func TestManagerEditOwnMessageOnlyInCurrentChat(t *testing.T) {
 		assert.Contains(t, string(call.Data.BodyRaw), `"chat_id":-100`)
 	}
 }
+
+// Review 4, fix 1, with the real Telegram channel: a durable row written by
+// an older version lists the bot's message -200:45 under chat -100 (an old
+// edit moved it). From -100, editing or deleting -200:45 is refused and
+// nothing reaches the API (EditMessage would act on chat -200). The bot's
+// own -100:45 found the same way is still editable.
+func TestManagerOldRowCrossChatEditRefused(t *testing.T) {
+	caller := &stubCaller{
+		callFn: func(context.Context, string, *ta.RequestData) (*ta.Response, error) {
+			return successResponseWithMessageID(t, 45), nil
+		},
+	}
+	ch := newTestChannel(t, caller)
+	cfg := &config.Config{Channels: config.ChannelsConfig{"telegram": &config.Channel{Type: "telegram"}}}
+	m, err := channels.NewManager(cfg, bus.NewMessageBus(), nil)
+	require.NoError(t, err)
+	m.RegisterChannel("telegram", ch)
+	m.SetDeliveryLookup(func(_ context.Context, _, chatID, _ string) ([]string, error) {
+		if chatID == "-100" {
+			return []string{"-200:45", "-100:45"}, nil
+		}
+		return nil, nil
+	})
+	ctx := context.Background()
+
+	err = m.EditMessage(ctx, "telegram", "-100", "-200:45", "hijack")
+	assert.True(t, errors.Is(err, channels.ErrNotOwnMessage), "edit -200:45 from -100: err = %v", err)
+	err = m.DeleteMessage(ctx, "telegram", "-100", "-200:45")
+	assert.True(t, errors.Is(err, channels.ErrNotOwnMessage), "delete -200:45 from -100: err = %v", err)
+	require.Empty(t, caller.calls, "nothing may reach the API")
+
+	require.NoError(t, m.EditMessage(ctx, "telegram", "-100", "45", "fixed"))
+	require.Len(t, caller.calls, 1)
+	assert.Contains(t, string(caller.calls[0].Data.BodyRaw), `"chat_id":-100`)
+}

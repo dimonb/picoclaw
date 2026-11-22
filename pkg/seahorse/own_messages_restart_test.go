@@ -51,7 +51,8 @@ func (c *telegramRefChannel) CanonicalMessageRef(chatID, messageID string) strin
 	parts := strings.Split(messageID, ":")
 	switch len(parts) {
 	case 1:
-		return chatID + ":" + parts[0]
+		chat, _, _ := strings.Cut(chatID, "/") // "chat/topic"
+		return chat + ":" + parts[0]
 	case 2:
 		return messageID
 	case 3:
@@ -156,5 +157,98 @@ func TestMatrixOwnMessageBeyondLookupLimitAfterRestart(t *testing.T) {
 	}
 	if err := m.DeleteMessage(ctx, "matrix", room, "$theirs:example.org"); !errors.Is(err, channels.ErrNotOwnMessage) {
 		t.Errorf("foreign event: err = %v, want ErrNotOwnMessage", err)
+	}
+}
+
+// openLegacyDeliveryStore returns a store over a database from before the
+// origin column, holding rows, then migrated (as on upgrade).
+func openLegacyDeliveryStore(t *testing.T, rows string) *Store {
+	t.Helper()
+	db := openTestDB(t)
+	if _, err := db.Exec(`CREATE TABLE outbound_deliveries (delivery_id INTEGER PRIMARY KEY AUTOINCREMENT,channel TEXT NOT NULL,account TEXT NOT NULL DEFAULT '',channel_message_id TEXT NOT NULL,chat_id TEXT NOT NULL DEFAULT '',topic_id TEXT NOT NULL DEFAULT '',session_key TEXT NOT NULL DEFAULT '',content TEXT NOT NULL DEFAULT '',parts TEXT NOT NULL DEFAULT '[]',created_at TEXT NOT NULL DEFAULT (datetime('now')),UNIQUE(channel,account,channel_message_id))`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO outbound_deliveries (channel,channel_message_id,chat_id,session_key,content) VALUES ` + rows); err != nil {
+		t.Fatal(err)
+	}
+	if err := runSchema(db); err != nil {
+		t.Fatalf("migration: %v", err)
+	}
+	return &Store{db: db}
+}
+
+// Review 4, fix 1: in older versions an edit of the bot's message B:45 made
+// from chat A moved its row to chat A (keeping B's session), so after the
+// upgrade the row is a "send" listed under A. From chat A the message must
+// still be neither editable nor deletable: the channel would act in chat B.
+// The bot's own messages in A stay editable and deletable.
+func TestOldEditRowDoesNotOpenAnotherChat_TelegramLike(t *testing.T) {
+	s := openLegacyDeliveryStore(t, `
+ ('telegram','-200:45','-100','agent:main:telegram:-200','moved by an old edit'),
+ ('telegram','-100:45','-100','agent:main:telegram:-100','own in A'),
+ ('telegram','-100:5:46','-100/5','agent:main:telegram:-100/5','own in a topic of A')`)
+	ctx := context.Background()
+	ch := &telegramRefChannel{restartChannel{name: "telegram"}}
+	m := newStoreManager(t, s, "telegram", ch)
+
+	for _, id := range []string{"-200:45", "-200:7:45"} {
+		if err := m.EditMessage(ctx, "telegram", "-100", id, "x"); !errors.Is(err, channels.ErrNotOwnMessage) {
+			t.Errorf("edit %q from A: err = %v, want ErrNotOwnMessage", id, err)
+		}
+		if err := m.DeleteMessage(ctx, "telegram", "-100", id); !errors.Is(err, channels.ErrNotOwnMessage) {
+			t.Errorf("delete %q from A: err = %v, want ErrNotOwnMessage", id, err)
+		}
+	}
+	if len(ch.edited) != 0 || len(ch.deleted) != 0 {
+		t.Fatalf("reached the channel: edited=%v deleted=%v", ch.edited, ch.deleted)
+	}
+	for _, id := range []string{"45", "-100:45"} {
+		if err := m.EditMessage(ctx, "telegram", "-100", id, "fixed"); err != nil {
+			t.Errorf("edit own %q in A: %v", id, err)
+		}
+	}
+	if err := m.EditMessage(ctx, "telegram", "-100/5", "46", "fixed"); err != nil {
+		t.Errorf("edit own topic message: %v", err)
+	}
+	if err := m.DeleteMessage(ctx, "telegram", "-100/5", "-100:5:46"); err != nil {
+		t.Errorf("delete own topic message: %v", err)
+	}
+	if len(ch.edited) != 3 || len(ch.deleted) != 1 {
+		t.Errorf("edited=%v deleted=%v", ch.edited, ch.deleted)
+	}
+}
+
+// The same for Matrix "room event" references.
+func TestOldEditRowDoesNotOpenAnotherChat_MatrixLike(t *testing.T) {
+	s := openLegacyDeliveryStore(t, `
+ ('matrix','!B:example.org $e:example.org','!A:example.org','agent:main:matrix:!B','moved by an old edit'),
+ ('matrix','!A:example.org $mine:example.org','!A:example.org','agent:main:matrix:!A','own in A')`)
+	ctx := context.Background()
+	ch := &matrixRefChannel{restartChannel{name: "matrix"}}
+	m := newStoreManager(t, s, "matrix", ch)
+	const roomA = "!A:example.org"
+
+	if err := m.EditMessage(ctx, "matrix", roomA, "!B:example.org $e:example.org", "x"); !errors.Is(
+		err,
+		channels.ErrNotOwnMessage,
+	) {
+		t.Errorf("edit B's event from A: err = %v", err)
+	}
+	if err := m.DeleteMessage(ctx, "matrix", roomA, "!B:example.org $e:example.org"); !errors.Is(
+		err,
+		channels.ErrNotOwnMessage,
+	) {
+		t.Errorf("delete B's event from A: err = %v", err)
+	}
+	if len(ch.edited) != 0 || len(ch.deleted) != 0 {
+		t.Fatalf("reached the channel: edited=%v deleted=%v", ch.edited, ch.deleted)
+	}
+	for _, id := range []string{"$mine:example.org", roomA + " $mine:example.org"} {
+		if err := m.EditMessage(ctx, "matrix", roomA, id, "fixed"); err != nil {
+			t.Errorf("edit own %q: %v", id, err)
+		}
+	}
+	if err := m.DeleteMessage(ctx, "matrix", roomA, "$mine:example.org"); err != nil {
+		t.Errorf("delete own: %v", err)
 	}
 }

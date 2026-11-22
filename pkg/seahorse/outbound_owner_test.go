@@ -2,6 +2,9 @@ package seahorse
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"testing"
 
@@ -101,5 +104,61 @@ func TestOutboundDeliveryOriginMigration(t *testing.T) {
 	}
 	if got, _ := s.OutboundDeliveryRefs(ctx, "telegram", "-100", "8", 0); len(got) != 0 {
 		t.Errorf("sessionless legacy row after migration: %v, want not own", got)
+	}
+}
+
+// Review 4, fix 2: a record of unknown origin (a receipt an older version
+// queued for an edit) must not move a send row to another chat or session.
+func TestOutboundDeliveryUnknownOriginKeepsSendRow(t *testing.T) {
+	s := openTestStore(t)
+	ctx := context.Background()
+	for _, d := range []OutboundDelivery{
+		{Channel: "telegram", ChatID: "-200", MessageID: "-200:45", SessionKey: "s-B", Content: "a", Origin: bus.OutboundOriginSend},
+		{Channel: "telegram", ChatID: "-100", MessageID: "-200:45", Content: "edited from A"}, // no origin
+	} {
+		if err := s.RecordOutboundDelivery(ctx, d); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var chat, session, origin string
+	if err := s.db.QueryRowContext(ctx, `SELECT chat_id,session_key,origin FROM outbound_deliveries
+ WHERE channel_message_id='-200:45'`).Scan(&chat, &session, &origin); err != nil {
+		t.Fatal(err)
+	}
+	if chat != "-200" || session != "s-B" || origin != bus.OutboundOriginSend {
+		t.Errorf("after unknown-origin record: chat=%q session=%q origin=%q", chat, session, origin)
+	}
+	if got, _ := s.OutboundDeliveryRefs(ctx, "telegram", "-100", "45", 0); len(got) != 0 {
+		t.Errorf("row moved into chat A: %v", got)
+	}
+}
+
+// Review 4, fix 2: receipts queued in the journal by a version from before
+// the origin field are replayed by the migration's rule: with a session key
+// a send, without one unknown (not trusted).
+func TestJournalReplayOfLegacyReceipts(t *testing.T) {
+	s := openTestStore(t)
+	dir := t.TempDir()
+	j, err := openOutboundJournal(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, raw := range []string{
+		`{"delivery":{"Channel":"telegram","ChatID":"-100","SessionKey":"s","MessageID":"-100:7","Content":"sent"},"created_at":"2026-11-01 10:00:00"}`,
+		`{"delivery":{"Channel":"telegram","ChatID":"-100","MessageID":"-100:8","Content":"edited"},"created_at":"2026-11-01 10:00:01"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%020d.json", i+1)), []byte(raw), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := j.replay(s); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if got, _ := s.OutboundDeliveryRefs(ctx, "telegram", "-100", "7", 0); len(got) != 1 {
+		t.Errorf("legacy send receipt with a session: %v, want own", got)
+	}
+	if got, _ := s.OutboundDeliveryRefs(ctx, "telegram", "-100", "8", 0); len(got) != 0 {
+		t.Errorf("legacy receipt without a session: %v, want not own", got)
 	}
 }
