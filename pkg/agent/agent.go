@@ -723,6 +723,11 @@ func (al *AgentLoop) maybeDeliverFinalResponse(
 	if !opts.SendResponse || result.finalContent == "" {
 		return "", nil
 	}
+	if bus.IsSilentReply(result.finalContent) {
+		al.publishSilentReply(ctx, opts.Dispatch.InboundContext, opts.Dispatch.Channel(),
+			opts.Dispatch.ChatID(), opts.Dispatch.SessionKey)
+		return "", nil
+	}
 	agentID, sessionKey, scope := outboundTurnMetadata(
 		agent.ID,
 		opts.Dispatch.SessionKey,

@@ -916,6 +916,9 @@ func (cb *ContextBuilder) BuildMessagesFromPrompt(req PromptBuildRequest) []prov
 			req.SenderID,
 			req.SenderDisplayName,
 		)
+		if note := cb.groupChatNote(req); note != "" {
+			dynamicCtx += "\n\n" + note
+		}
 		dynamicChars = len(dynamicCtx)
 		runtimePart := PromptPart{
 			ID:      "context.runtime",

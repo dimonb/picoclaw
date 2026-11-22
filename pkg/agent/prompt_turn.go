@@ -31,6 +31,10 @@ func promptBuildRequestForTurn(
 		ActiveSkills:      activeSkillNames(ts.agent, ts.opts),
 		Overlays:          promptOverlaysForOptions(ts.opts),
 	}
+	if inbound := ts.opts.Dispatch.InboundContext; inbound != nil {
+		req.ChatType = inbound.ChatType
+		req.Mentioned = inbound.Mentioned
+	}
 	hasCallableTools := true
 	if ts.profile.Enabled {
 		hasCallableTools = turnProfileHasCallableTools(ts.profile, ts.agent.Tools.ToProviderDefs()) ||

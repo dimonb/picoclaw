@@ -1399,6 +1399,9 @@ func (c *TelegramChannel) handleMessages(ctx context.Context, messages []*telego
 		isMentioned = c.isBotMentioned(message)
 		if isMentioned {
 			content = c.stripBotMention(content)
+		} else {
+			// A reply to one of the bot's own messages addresses the bot.
+			isMentioned = c.isReplyToBot(message)
 		}
 		respond, cleaned := c.ShouldRespondInGroup(isMentioned, content)
 		if !respond {
@@ -1946,6 +1949,17 @@ func logParseFailed(err error, format telegramFormat) {
 }
 
 // isBotMentioned checks if the bot is mentioned in the message via entities.
+// isReplyToBot reports whether message replies to a message sent by this bot
+// (forum topic roots are not replies).
+func (c *TelegramChannel) isReplyToBot(message *telego.Message) bool {
+	if c.bot == nil || message == nil || message.ReplyToMessage == nil || message.ReplyToMessage.From == nil ||
+		isTelegramForumTopicRootReply(message) {
+		return false
+	}
+	botID := c.bot.ID()
+	return botID != 0 && message.ReplyToMessage.From.ID == botID
+}
+
 func (c *TelegramChannel) isBotMentioned(message *telego.Message) bool {
 	text, entities := telegramEntityTextAndList(message)
 	if text == "" || len(entities) == 0 {

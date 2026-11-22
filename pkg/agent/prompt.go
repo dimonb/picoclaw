@@ -117,6 +117,10 @@ type PromptBuildRequest struct {
 	SenderUsername    string
 	MessageID         string
 	ReplyToMessageID  string
+	// ChatType ("direct", "group", "channel") and Mentioned come from the
+	// inbound context; group/channel chats get the group-chat note.
+	ChatType  string
+	Mentioned bool
 
 	ActiveSkills []string
 	Overlays     []PromptPart

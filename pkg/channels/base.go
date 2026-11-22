@@ -356,7 +356,10 @@ func (c *BaseChannel) handleInbound(
 	// If streaming actually activates, preSend will skip the placeholder edit (streamActive map)
 	// and the typing stop will still be called. This avoids the problem of compile-time interface
 	// checks incorrectly skipping indicators when streaming may not work at runtime.
-	if c.owner != nil && c.placeholderRecorder != nil {
+	// Group messages that do not address the bot may well end in a silent
+	// reply (NO_REPLY), so they get no typing / reaction / placeholder up
+	// front; the answer, if any, simply appears.
+	if c.owner != nil && c.placeholderRecorder != nil && isAddressedInbound(inboundCtx) {
 		// Typing
 		if tc, ok := c.owner.(TypingCapable); ok {
 			if stop, err := tc.StartTyping(ctx, deliveryChatID); err == nil {
@@ -399,6 +402,18 @@ func (c *BaseChannel) handleInbound(
 			"chat_id": deliveryChatID,
 			"error":   err.Error(),
 		})
+	}
+}
+
+// isAddressedInbound reports whether an inbound message is directed at the
+// bot: every direct message, and group/channel messages that mention it (or
+// that the channel otherwise marks as addressed via Mentioned).
+func isAddressedInbound(inboundCtx bus.InboundContext) bool {
+	switch strings.ToLower(strings.TrimSpace(inboundCtx.ChatType)) {
+	case "group", "channel":
+		return inboundCtx.Mentioned
+	default:
+		return true
 	}
 }
 

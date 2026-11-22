@@ -382,6 +382,11 @@ func (p *streamingChunkPublisher) Update(ctx context.Context, accumulated string
 	if p == nil || p.streamer == nil || strings.TrimSpace(accumulated) == "" {
 		return
 	}
+	// Never leak the silent-reply token: hold output back while it could
+	// still turn out to be NO_REPLY.
+	if bus.IsSilentReplyPrefix(accumulated) {
+		return
+	}
 	if setter, ok := p.streamer.(interface{ SetModelName(modelName string) }); ok {
 		setter.SetModelName(p.modelName)
 	}
@@ -437,6 +442,12 @@ func (p *streamingChunkPublisher) Err() error {
 
 func (p *streamingChunkPublisher) Finalize(ctx context.Context, content string, contextUsage *bus.ContextUsage) error {
 	if p == nil || p.streamer == nil {
+		return nil
+	}
+	if bus.IsSilentReply(content) {
+		// Silent turn: drop any draft instead of finalizing it. The normal
+		// final path then publishes the silent cleanup signal.
+		p.streamer.Cancel(ctx)
 		return nil
 	}
 	if strings.TrimSpace(content) == "" && !p.published {

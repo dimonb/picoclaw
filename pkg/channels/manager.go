@@ -171,6 +171,46 @@ func outboundMessageIsToolFeedback(msg bus.OutboundMessage) bool {
 	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), "tool_feedback")
 }
 
+func outboundMessageIsSilent(msg bus.OutboundMessage) bool {
+	if len(msg.Context.Raw) == 0 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(msg.Context.Raw["message_kind"]), bus.MessageKindSilent)
+}
+
+// handleSilentReply runs when the agent decided not to reply (NO_REPLY):
+// nothing is delivered, and whatever the turn showed while working (typing,
+// inbound reaction, placeholder, tool feedback) is removed.
+func (m *Manager) handleSilentReply(ctx context.Context, name string, ch Channel, msg bus.OutboundMessage) {
+	chatID := outboundMessageChatID(msg)
+	key := name + ":" + chatID
+	if v, loaded := m.typingStops.LoadAndDelete(key); loaded {
+		if entry, ok := v.(typingEntry); ok {
+			entry.stop()
+		}
+	}
+	if v, loaded := m.reactionUndos.LoadAndDelete(key); loaded {
+		if entry, ok := v.(reactionEntry); ok {
+			entry.undo()
+		}
+	}
+	if v, loaded := m.placeholders.LoadAndDelete(key); loaded {
+		if entry, ok := v.(placeholderEntry); ok && entry.id != "" {
+			if deleter, ok := ch.(MessageDeleter); ok {
+				_ = deleter.DeleteMessage(ctx, chatID, entry.id) // best effort
+			}
+		}
+	}
+	dismissTrackedToolFeedbackMessage(ctx, ch, chatID, &msg.Context)
+	if handler, ok := ch.(SilentReplyHandler); ok {
+		handler.HandleSilentReply(ctx, msg)
+	}
+	logger.DebugCF("channels", "Silent reply: nothing delivered", map[string]any{
+		"channel": name,
+		"chat_id": chatID,
+	})
+}
+
 func outboundMessageIsToolCalls(msg bus.OutboundMessage) bool {
 	if len(msg.Context.Raw) == 0 {
 		return false
@@ -1580,6 +1620,16 @@ func (m *Manager) runWorker(ctx context.Context, name string, w *channelWorker) 
 		case msg, ok := <-w.queue:
 			if !ok {
 				return
+			}
+			if outboundMessageIsSilent(msg) {
+				m.handleSilentReply(ctx, name, w.ch, msg)
+				if msg.Feedback != nil {
+					select {
+					case msg.Feedback <- bus.DeliveryResult{}:
+					default:
+					}
+				}
+				continue
 			}
 			maxLen := 0
 			if mlp, ok := w.ch.(MessageLengthProvider); ok {

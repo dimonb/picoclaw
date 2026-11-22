@@ -93,6 +93,10 @@ func (al *AgentLoop) publishFinalResponse(
 	if strings.TrimSpace(response) == "" {
 		return nil
 	}
+	if bus.IsSilentReply(response) {
+		al.publishSilentReply(ctx, inbound, channel, chatID, sessionKey)
+		return nil
+	}
 
 	alreadySentToSameChat := false
 	defaultAgent := al.GetRegistry().GetDefaultAgent()
@@ -458,4 +462,42 @@ func awaitDelivery(
 	case <-ctx.Done():
 		return bus.DeliveryResult{}, ctx.Err()
 	}
+}
+
+// publishSilentReply handles a turn whose final answer is NO_REPLY: nothing
+// is delivered. A content-less outbound marked bus.MessageKindSilent goes
+// through the normal outbound queue (after anything the turn already queued)
+// so the channel manager removes typing, reactions, placeholders and tool
+// feedback shown for the turn. The assistant NO_REPLY stays in history.
+func (al *AgentLoop) publishSilentReply(
+	ctx context.Context,
+	inbound *bus.InboundContext,
+	channel, chatID, sessionKey string,
+) {
+	logger.InfoCF("agent", "Silent reply (NO_REPLY): nothing delivered",
+		map[string]any{"channel": channel, "chat_id": chatID, "session_key": sessionKey})
+	if channel == "" || chatID == "" {
+		return
+	}
+	msg := bus.OutboundMessage{
+		Channel:    channel,
+		ChatID:     chatID,
+		Context:    finalOutboundContext(inbound, channel, chatID),
+		SessionKey: sessionKey,
+	}
+	if msg.Context.Raw == nil {
+		msg.Context.Raw = make(map[string]string, 2)
+	}
+	msg.Context.Raw[metadataKeyMessageKind] = bus.MessageKindSilent
+	markFinalOutbound(&msg)
+	if al.channelManager != nil {
+		if _, ok := al.channelManager.GetChannel(channel); ok {
+			if _, err := al.PublishOutboundSync(ctx, msg); err != nil {
+				logger.DebugCF("agent", "Silent reply cleanup not delivered",
+					map[string]any{"channel": channel, "error": err.Error()})
+			}
+			return
+		}
+	}
+	_ = al.bus.PublishOutbound(ctx, msg)
 }
